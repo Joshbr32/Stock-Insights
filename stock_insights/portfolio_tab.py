@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+
 from datetime import date
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QDate, QPoint, QSettings, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QCompleter,
     QDateEdit,
@@ -225,10 +228,54 @@ class TradeEditDialog(QDialog):
         )
 
 
+
+
+class TradeHistoryColumnsDialog(QDialog):
+    def __init__(self, columns: List[tuple[str, str]], visible_keys: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Trade History Columns")
+        self.resize(320, 360)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        self._checks: Dict[str, QCheckBox] = {}
+        for key, label in columns:
+            cb = QCheckBox(label)
+            cb.setChecked(key in visible_keys)
+            self._checks[key] = cb
+            root.addWidget(cb)
+
+        root.addStretch(1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def selected_keys(self) -> List[str]:
+        return [key for key, cb in self._checks.items() if cb.isChecked()]
+
+
 class PortfolioTab(QWidget):
     SETTINGS_KEY = "portfolio/trades"
     LEGACY_HOLDINGS_KEY = "portfolio/holdings"
     GOAL_KEY = "portfolio/goal_target"
+    TRADE_HISTORY_VISIBLE_COLUMNS_KEY = "portfolio/trade_history_visible_columns"
+
+    TRADE_HISTORY_COLUMNS = [
+        ("instrument", "Instrument"),
+        ("share_count", "Share count"),
+        ("status", "Status"),
+        ("buy_price", "Buy Price"),
+        ("sell_price", "Sell Price"),
+        ("trade_profit", "Trade Profit"),
+        ("open_date", "Open Date"),
+        ("close_date", "Close Date"),
+        ("days_to_close", "Days to Close"),
+        ("avg_daily_return", "Avg Daily Return"),
+    ]
 
     def __init__(self, settings: QSettings, parent=None):
         super().__init__(parent)
@@ -271,6 +318,32 @@ class PortfolioTab(QWidget):
             return max(1, int(self._settings.value("trade_defaults/quantity_increment", 1) or 1))
         except Exception:
             return 1
+
+    def _default_trade_history_visible_keys(self) -> List[str]:
+        return [key for key, _ in self.TRADE_HISTORY_COLUMNS]
+
+    def _trade_history_visible_keys(self) -> List[str]:
+        raw = self._settings.value(self.TRADE_HISTORY_VISIBLE_COLUMNS_KEY, [])
+        if isinstance(raw, str):
+            try:
+                import json
+                raw = json.loads(raw)
+            except Exception:
+                raw = []
+        if not isinstance(raw, list):
+            raw = []
+        valid = {key for key, _ in self.TRADE_HISTORY_COLUMNS}
+        visible = [str(key) for key in raw if str(key) in valid]
+        return visible or self._default_trade_history_visible_keys()
+
+    def _save_trade_history_visible_keys(self, keys: List[str]):
+        valid = {key for key, _ in self.TRADE_HISTORY_COLUMNS}
+        cleaned = [key for key in keys if key in valid]
+        if not cleaned:
+            cleaned = self._default_trade_history_visible_keys()
+        self._settings.setValue(self.TRADE_HISTORY_VISIBLE_COLUMNS_KEY, json.dumps(cleaned))
+        self._settings.sync()
+
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -330,6 +403,8 @@ class PortfolioTab(QWidget):
             ("open_trades", "Open Trades"),
             ("closed_trades", "Closed Trades"),
             ("avg_profit_per_trade", "Avg Profit / Trade"),
+            ("avg_trade_value", "Avg Trade Value"),
+            ("avg_roi_pct", "Avg ROI %"),
             ("best_trade", "Best Trade"),
             ("avg_daily_closed_profit", "Avg Daily Return"),
         ]
@@ -354,9 +429,9 @@ class PortfolioTab(QWidget):
             "Qty",
             "Avg Cost",
             "Mark",
+            "Unrealized P/L",
             "Market Value",
             "Weight %",
-            "Unrealized P/L",
         ])
         self.holdings_table.verticalHeader().setVisible(False)
         self.holdings_table.setAlternatingRowColors(True)
@@ -378,19 +453,8 @@ class PortfolioTab(QWidget):
         trade_layout.setContentsMargins(14, 18, 14, 14)
         trade_layout.setSpacing(10)
 
-        self.trade_table = QTableWidget(0, 10)
-        self.trade_table.setHorizontalHeaderLabels([
-            "Instrument",
-            "Share count",
-            "Status",
-            "Buy Price",
-            "Sell Price",
-            "Trade Profit",
-            "Open Date",
-            "Close Date",
-            "Days to Close",
-            "Avg Daily Return",
-        ])
+        self.trade_table = QTableWidget(0, len(self.TRADE_HISTORY_COLUMNS))
+        self.trade_table.setHorizontalHeaderLabels([label for _, label in self.TRADE_HISTORY_COLUMNS])
         self.trade_table.verticalHeader().setVisible(False)
         self.trade_table.setAlternatingRowColors(True)
         self.trade_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -403,9 +467,11 @@ class PortfolioTab(QWidget):
         self.btn_add_trade = QPushButton("+ Add Trade")
         self.btn_edit_trade = QPushButton("Edit Selected")
         self.btn_delete_trade = QPushButton("Delete Selected")
+        self.btn_trade_columns = QPushButton("Columns…")
         trade_btns.addWidget(self.btn_add_trade)
         trade_btns.addWidget(self.btn_edit_trade)
         trade_btns.addWidget(self.btn_delete_trade)
+        trade_btns.addWidget(self.btn_trade_columns)
         trade_btns.addStretch(1)
         trade_layout.addLayout(trade_btns)
         root.addWidget(self.trade_group, 1)
@@ -413,6 +479,7 @@ class PortfolioTab(QWidget):
         self.btn_add_trade.clicked.connect(self._add_trade)
         self.btn_edit_trade.clicked.connect(self._edit_trade)
         self.btn_delete_trade.clicked.connect(self._delete_trade)
+        self.btn_trade_columns.clicked.connect(self._open_trade_history_columns_dialog)
         self.goal_preset.currentTextChanged.connect(self._on_goal_preset_changed)
 
     def _load_state(self):
@@ -566,6 +633,22 @@ class PortfolioTab(QWidget):
         self._save_trades()
         self.refresh_view()
 
+    def _open_trade_history_columns_dialog(self):
+        dlg = TradeHistoryColumnsDialog(
+            self.TRADE_HISTORY_COLUMNS,
+            self._trade_history_visible_keys(),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._save_trade_history_visible_keys(dlg.selected_keys())
+        self.refresh_view(selected_trade_source_index=self._selected_trade_source_index())
+
+
+
+    def open_trade_history_view_settings(self):
+        self._open_trade_history_columns_dialog()
+
     def _open_holdings_context_menu(self, pos: QPoint):
         row = self.holdings_table.rowAt(pos.y())
         if row < 0:
@@ -710,34 +793,43 @@ class PortfolioTab(QWidget):
         self.analytics_labels["open_trades"].setText(f"{analytics.open_trades:,d}")
         self.analytics_labels["closed_trades"].setText(f"{analytics.closed_trades:,d}")
         self.analytics_labels["avg_profit_per_trade"].setText(self._money_or_dash(analytics.avg_profit_per_trade))
+        self.analytics_labels["avg_trade_value"].setText(self._money_or_dash(analytics.avg_trade_value))
+        self.analytics_labels["avg_roi_pct"].setText(self._pct(analytics.avg_roi_pct))
         self.analytics_labels["best_trade"].setText(self._money_or_dash(analytics.best_trade))
         self.analytics_labels["avg_daily_closed_profit"].setText(self._money_or_dash(analytics.avg_daily_closed_profit))
 
     def _render_trade_table(self, rows, selected_trade_source_index: Optional[int]):
+        self.trade_table.setColumnCount(len(self.TRADE_HISTORY_COLUMNS))
+        self.trade_table.setHorizontalHeaderLabels([label for _, label in self.TRADE_HISTORY_COLUMNS])
         self.trade_table.setRowCount(len(rows))
         self._trade_row_indices = [row.index for row in rows]
 
+        visible_keys = set(self._trade_history_visible_keys())
+        for col, (key, _) in enumerate(self.TRADE_HISTORY_COLUMNS):
+            self.trade_table.setColumnHidden(col, key not in visible_keys)
+
         for r, row in enumerate(rows):
-            values = [
-                row.instrument,
-                self._qty(row.share_count),
-                row.status,
-                self._money(row.buy_price),
-                self._money_or_dash(row.sell_price),
-                self._money_or_dash(row.trade_profit),
-                self._date_or_dash(row.open_date),
-                self._date_or_dash(row.close_date),
-                self._int_or_dash(row.days_to_close),
-                self._money_or_dash(row.avg_daily_return),
-            ]
-            for c, value in enumerate(values):
+            value_map = {
+                "instrument": row.instrument,
+                "share_count": self._qty(row.share_count),
+                "status": row.status,
+                "buy_price": self._money(row.buy_price),
+                "sell_price": self._money_or_dash(row.sell_price),
+                "trade_profit": self._money_or_dash(row.trade_profit),
+                "open_date": self._date_or_dash(row.open_date),
+                "close_date": self._date_or_dash(row.close_date),
+                "days_to_close": self._int_or_dash(row.days_to_close),
+                "avg_daily_return": self._money_or_dash(row.avg_daily_return),
+            }
+            for c, (key, _) in enumerate(self.TRADE_HISTORY_COLUMNS):
+                value = value_map[key]
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                if c == 0:
+                if key == "instrument":
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)
-                if c == 5 and row.trade_profit is not None:
+                if key == "trade_profit" and row.trade_profit is not None:
                     if row.trade_profit > 0:
                         item.setForeground(Qt.GlobalColor.darkGreen)
                     elif row.trade_profit < 0:
@@ -762,9 +854,9 @@ class PortfolioTab(QWidget):
                 self._qty(row.qty),
                 self._money(row.avg_cost),
                 self._money_or_dash(row.mark),
+                self._money(row.unrealized_pl),
                 self._money(row.market_value),
                 self._pct(row.weight_pct),
-                self._money(row.unrealized_pl),
             ]
             for c, value in enumerate(values):
                 item = QTableWidgetItem(value)

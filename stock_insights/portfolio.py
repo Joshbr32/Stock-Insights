@@ -102,6 +102,8 @@ class TradeAnalytics:
     closed_trades: int = 0
     open_trades: int = 0
     avg_profit_per_trade: Optional[float] = None
+    avg_trade_value: Optional[float] = None
+    avg_roi_pct: Optional[float] = None
     best_trade: Optional[float] = None
     avg_daily_closed_profit: Optional[float] = None
 
@@ -387,14 +389,23 @@ def compute_portfolio(
 def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
     closed = [t for t in trades if t.is_closed and t.trade_profit is not None]
     profits = [float(t.trade_profit or 0.0) for t in closed]
+    trade_values = [float(t.buy_price) * int(t.share_count) for t in closed]
     realized_profit = sum(profits)
     elapsed = business_days_elapsed_in_year()
+
+    avg_profit_per_trade = (realized_profit / len(closed)) if closed else None
+    avg_trade_value = (sum(trade_values) / len(trade_values)) if trade_values else None
+    avg_roi_pct = ((avg_profit_per_trade / avg_trade_value) * 100.0) if (
+        avg_profit_per_trade is not None and avg_trade_value not in (None, 0)
+    ) else None
 
     return TradeAnalytics(
         realized_profit=realized_profit,
         closed_trades=len(closed),
         open_trades=sum(1 for t in trades if not t.is_closed),
-        avg_profit_per_trade=(realized_profit / len(closed)) if closed else None,
+        avg_profit_per_trade=avg_profit_per_trade,
+        avg_trade_value=avg_trade_value,
+        avg_roi_pct=avg_roi_pct,
         best_trade=max(profits) if profits else None,
         avg_daily_closed_profit=(realized_profit / elapsed) if elapsed > 0 else None,
     )

@@ -416,6 +416,11 @@ class MainWindow(QMainWindow):
         self.act_toggle_sidebar.setShortcut(QKeySequence("Ctrl+B"))
         self.act_toggle_sidebar.triggered.connect(self._toggle_sidebar)
 
+        act_trade_history_columns = view_menu.addAction("Trade History Columns…")
+        act_trade_history_columns.triggered.connect(
+            lambda: getattr(self.portfolio_tab, "open_trade_history_view_settings", lambda: None)()
+        )
+
         status_corner = QWidget(self)
         status_row = QHBoxLayout(status_corner)
         status_row.setContentsMargins(8, 0, 8, 0)
