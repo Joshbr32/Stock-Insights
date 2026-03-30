@@ -293,9 +293,7 @@ class MainWindow(QMainWindow):
 
         theme_override = s.value("ui/THEME_OVERRIDE", "System")
         self.theme.set_override_mode(theme_override)
-
-        self.SIM_COMM_BUY_DEFAULT = float(s.value("sim/commission_buy_default", self.SIM_COMM_BUY_DEFAULT))
-        self.SIM_COMM_SELL_DEFAULT = float(s.value("sim/commission_sell_default", self.SIM_COMM_SELL_DEFAULT))
+        self.theme.set_match_system_accent(s.value("ui/MATCH_SYSTEM_ACCENT", True, type=bool))
 
         sidebar_visible = s.value("ui/sidebar_visible", True, type=bool)
         sizes = s.value("ui/splitter_sizes", [])
@@ -326,8 +324,7 @@ class MainWindow(QMainWindow):
         s.setValue("intervals/L1_ENABLED", self.L1_ENABLED)
         s.setValue("intervals/L2_ENABLED", self.L2_ENABLED)
         s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
-        s.setValue("sim/commission_buy_default", self.SIM_COMM_BUY_DEFAULT)
-        s.setValue("sim/commission_sell_default", self.SIM_COMM_SELL_DEFAULT)
+        s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
         s.sync()
 
     def _open_settings_dialog(self):
@@ -342,8 +339,12 @@ class MainWindow(QMainWindow):
             "THEME_OVERRIDE": self._settings().value(
                 "ui/THEME_OVERRIDE", getattr(self.theme, "override_mode", "System")
             ),
-            "SIM_COMM_BUY_DEFAULT": self.SIM_COMM_BUY_DEFAULT,
-            "SIM_COMM_SELL_DEFAULT": self.SIM_COMM_SELL_DEFAULT,
+            "MATCH_SYSTEM_ACCENT": self._settings().value(
+                "ui/MATCH_SYSTEM_ACCENT", getattr(self.theme, "match_system_accent", True), type=bool
+            ),
+            "GOAL_PRESET_1": float(self._settings().value("goals/preset_1", 250000.0) or 250000.0),
+            "GOAL_PRESET_2": float(self._settings().value("goals/preset_2", 500000.0) or 500000.0),
+            "GOAL_PRESET_3": float(self._settings().value("goals/preset_3", 1000000.0) or 1000000.0),
         }
         dlg = SettingsDialog(self, self._settings(), cv)
         result = dlg.exec()
@@ -356,13 +357,13 @@ class MainWindow(QMainWindow):
             self.L2_ENABLED = bool(vals["L2_ENABLED"])
 
             self.theme.set_override_mode(vals["THEME_OVERRIDE"])
+            self.theme.set_match_system_accent(vals["MATCH_SYSTEM_ACCENT"])
             s = self._settings()
             s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
-
-            self.SIM_COMM_BUY_DEFAULT = float(vals["SIM_COMM_BUY_DEFAULT"])
-            self.SIM_COMM_SELL_DEFAULT = float(vals["SIM_COMM_SELL_DEFAULT"])
-            s.setValue("sim/commission_buy_default", self.SIM_COMM_BUY_DEFAULT)
-            s.setValue("sim/commission_sell_default", self.SIM_COMM_SELL_DEFAULT)
+            s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
+            s.setValue("goals/preset_1", float(vals["GOAL_PRESET_1"]))
+            s.setValue("goals/preset_2", float(vals["GOAL_PRESET_2"]))
+            s.setValue("goals/preset_3", float(vals["GOAL_PRESET_3"]))
             s.sync()
 
             self.timer_l1.setInterval(self.L1_INTERVAL)
@@ -372,6 +373,8 @@ class MainWindow(QMainWindow):
             (self.timer_l2.start() if self.L2_ENABLED else self.timer_l2.stop())
 
             self._save_settings()
+            if hasattr(self, "portfolio_tab"):
+                self.portfolio_tab.reload_goal_presets()
 
     def _open_user_account_dialog(self):
         dlg = UserAccountDialog(self, self._settings())
@@ -383,23 +386,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
-        # Top status bar area
-        top_bar = QHBoxLayout()
         self.spinner = SpinnerLabel()
         self.lbl_updating = QLabel("")
         self.lbl_status = QLabel("")
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
-        self.progress.setFixedWidth(160)
+        self.progress.setFixedWidth(120)
         self.progress.setVisible(False)
-
-        top_bar.addWidget(self.spinner)
-        top_bar.addWidget(self.lbl_updating)
-        top_bar.addSpacing(12)
-        top_bar.addWidget(self.lbl_status)
-        top_bar.addStretch(1)
-        top_bar.addWidget(self.progress)
-        root.addLayout(top_bar)
 
         # Menus
         file_menu = self.menuBar().addMenu("&File")
@@ -418,6 +411,16 @@ class MainWindow(QMainWindow):
         self.act_toggle_sidebar.setCheckable(True)
         self.act_toggle_sidebar.setShortcut(QKeySequence("Ctrl+B"))
         self.act_toggle_sidebar.triggered.connect(self._toggle_sidebar)
+
+        status_corner = QWidget(self)
+        status_row = QHBoxLayout(status_corner)
+        status_row.setContentsMargins(8, 0, 8, 0)
+        status_row.setSpacing(8)
+        status_row.addWidget(self.spinner)
+        status_row.addWidget(self.lbl_updating)
+        status_row.addWidget(self.lbl_status)
+        status_row.addWidget(self.progress)
+        self.menuBar().setCornerWidget(status_corner, Qt.Corner.TopRightCorner)
 
         # Splitter
         self.splitter = QSplitter(Qt.Orientation.Horizontal)

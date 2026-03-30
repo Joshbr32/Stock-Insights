@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -18,8 +17,6 @@ from PySide6.QtWidgets import (
 
 
 class CollapsibleGroup(QWidget):
-    """Simple collapsible container used by the settings dialog."""
-
     def __init__(self, title: str, collapsed: bool = False, parent=None):
         super().__init__(parent)
         root = QVBoxLayout(self)
@@ -50,29 +47,22 @@ class CollapsibleGroup(QWidget):
         root.addLayout(header)
         root.addWidget(self.content)
 
-    def _toggle(self, checked: bool) -> None:
+    def _toggle(self, checked: bool):
         self.btn.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
         self.content.setVisible(checked)
 
-    def setContentLayout(self, layout) -> None:
+    def setContentLayout(self, layout):
         QWidget().setLayout(self._content_layout)
         self._content_layout = layout
         self.content.setLayout(layout)
 
 
 class SettingsDialog(QDialog):
-    """Application settings dialog.
-
-    Current groups:
-    - Data Refresh: timer intervals and auto refresh toggles
-    - Appearance: theme override
-    """
-
     def __init__(self, parent=None, settings=None, current_values=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.resize(460, 320)
+        self.resize(520, 460)
 
         self.settings = settings
         cv = current_values or {}
@@ -80,7 +70,6 @@ class SettingsDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
-        # Data refresh settings
         grp_refresh = CollapsibleGroup("Data Refresh", collapsed=False)
         refresh_form = QFormLayout()
         refresh_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -88,17 +77,17 @@ class SettingsDialog(QDialog):
         self.sb_l1 = QSpinBox()
         self.sb_l1.setRange(5, 600)
         self.sb_l1.setSuffix(" s")
-        self.sb_l1.setValue(int(cv.get("L1_INTERVAL", 20_000) / 1000))
+        self.sb_l1.setValue(int(cv.get("L1_INTERVAL", 20000) / 1000))
 
         self.sb_l2 = QSpinBox()
         self.sb_l2.setRange(1, 120)
         self.sb_l2.setSuffix(" min")
-        self.sb_l2.setValue(int(cv.get("L2_INTERVAL", 300_000) / 60_000))
+        self.sb_l2.setValue(int(cv.get("L2_INTERVAL", 300000) / 60000))
 
         self.sb_net = QSpinBox()
         self.sb_net.setRange(5, 600)
         self.sb_net.setSuffix(" s")
-        self.sb_net.setValue(int(cv.get("NET_INTERVAL", 10_000) / 1000))
+        self.sb_net.setValue(int(cv.get("NET_INTERVAL", 10000) / 1000))
 
         self.cb_l1 = QCheckBox("Enable Level 1 auto refresh")
         self.cb_l2 = QCheckBox("Enable Level 2 auto refresh")
@@ -113,7 +102,37 @@ class SettingsDialog(QDialog):
         grp_refresh.setContentLayout(refresh_form)
         root.addWidget(grp_refresh)
 
-        # Appearance settings
+        grp_goals = CollapsibleGroup("Goals", collapsed=False)
+        goals_form = QFormLayout()
+        goals_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.goal_preset_1 = QDoubleSpinBox()
+        self.goal_preset_1.setRange(0, 100_000_000)
+        self.goal_preset_1.setDecimals(2)
+        self.goal_preset_1.setPrefix("$ ")
+        self.goal_preset_1.setSingleStep(10_000)
+        self.goal_preset_1.setValue(float(cv.get("GOAL_PRESET_1", 250_000.0)))
+
+        self.goal_preset_2 = QDoubleSpinBox()
+        self.goal_preset_2.setRange(0, 100_000_000)
+        self.goal_preset_2.setDecimals(2)
+        self.goal_preset_2.setPrefix("$ ")
+        self.goal_preset_2.setSingleStep(10_000)
+        self.goal_preset_2.setValue(float(cv.get("GOAL_PRESET_2", 500_000.0)))
+
+        self.goal_preset_3 = QDoubleSpinBox()
+        self.goal_preset_3.setRange(0, 100_000_000)
+        self.goal_preset_3.setDecimals(2)
+        self.goal_preset_3.setPrefix("$ ")
+        self.goal_preset_3.setSingleStep(10_000)
+        self.goal_preset_3.setValue(float(cv.get("GOAL_PRESET_3", 1_000_000.0)))
+
+        goals_form.addRow(QLabel("Preset 1:"), self.goal_preset_1)
+        goals_form.addRow(QLabel("Preset 2:"), self.goal_preset_2)
+        goals_form.addRow(QLabel("Preset 3:"), self.goal_preset_3)
+        grp_goals.setContentLayout(goals_form)
+        root.addWidget(grp_goals)
+
         grp_appearance = CollapsibleGroup("Appearance", collapsed=False)
         app_form = QFormLayout()
         app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -121,11 +140,15 @@ class SettingsDialog(QDialog):
         self.cmb_theme = QComboBox()
         self.cmb_theme.addItems(["System", "Light", "Dark"])
         self.cmb_theme.setCurrentText(cv.get("THEME_OVERRIDE", "System"))
+
+        self.cb_match_system_accent = QCheckBox("Match System Accent Colour")
+        self.cb_match_system_accent.setChecked(bool(cv.get("MATCH_SYSTEM_ACCENT", True)))
+
         app_form.addRow(QLabel("Theme:"), self.cmb_theme)
+        app_form.addRow(self.cb_match_system_accent)
         grp_appearance.setContentLayout(app_form)
         root.addWidget(grp_appearance)
 
-        # Dialog buttons
         btns = QHBoxLayout()
         btn_ok = QPushButton("OK")
         btn_cancel = QPushButton("Cancel")
@@ -143,5 +166,9 @@ class SettingsDialog(QDialog):
             "NET_INTERVAL": self.sb_net.value() * 1000,
             "L1_ENABLED": self.cb_l1.isChecked(),
             "L2_ENABLED": self.cb_l2.isChecked(),
+            "GOAL_PRESET_1": float(self.goal_preset_1.value()),
+            "GOAL_PRESET_2": float(self.goal_preset_2.value()),
+            "GOAL_PRESET_3": float(self.goal_preset_3.value()),
             "THEME_OVERRIDE": self.cmb_theme.currentText(),
+            "MATCH_SYSTEM_ACCENT": self.cb_match_system_accent.isChecked(),
         }

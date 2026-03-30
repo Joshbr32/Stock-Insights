@@ -1,154 +1,141 @@
-from __future__ import annotations
-
-"""Application theme management.
-
-The manager reads Windows system theme and accent state when available and then
-builds one app-wide palette + stylesheet. The stylesheet is assembled from
-shared component builders so light/dark themes stay consistent and easier to
-maintain.
-"""
-
 import ctypes
 import sys
 from typing import Optional, Tuple
-
-from PySide6.QtCore import QObject, QTimer
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import QTimer, QObject
+from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import QApplication
 
 if sys.platform.startswith("win"):
     import winreg
 
 
-DEFAULT_ACCENT_RGB = (0, 120, 215)
-
-
 def _windows_high_contrast_enabled() -> bool:
     if not sys.platform.startswith("win"):
         return False
     try:
-        spi_get_high_contrast = 0x0042
+        SPI_GETHIGHCONTRAST = 0x0042
 
         class HIGHCONTRAST(ctypes.Structure):
-            _fields_ = [
-                ("cbSize", ctypes.c_uint),
-                ("dwFlags", ctypes.c_uint),
-                ("lpszDefaultScheme", ctypes.c_wchar_p),
-            ]
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_uint), ("lpszDefaultScheme", ctypes.c_wchar_p)]
 
         hc = HIGHCONTRAST()
         hc.cbSize = ctypes.sizeof(HIGHCONTRAST)
-        ctypes.windll.user32.SystemParametersInfoW(
-            spi_get_high_contrast,
-            hc.cbSize,
-            ctypes.byref(hc),
-            0,
-        )
-        hcf_high_contrast_on = 0x00000001
-        return bool(hc.dwFlags & hcf_high_contrast_on)
+        ctypes.windll.user32.SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, ctypes.byref(hc), 0)
+        HCF_HIGHCONTRASTON = 0x00000001
+        return bool(hc.dwFlags & HCF_HIGHCONTRASTON)
     except Exception:
         return False
 
 
 class ThemeManager(QObject):
-    """Applies and watches the application theme state."""
-
-    override_mode: str = "System"  # valid values: System | Light | Dark
+    override_mode: str = "System"
+    match_system_accent: bool = True
 
     def __init__(self, window, poll_secs: int = 3):
         super().__init__(window)
         self.win = window
         self.poll_secs = poll_secs
-        self._last_state: Optional[tuple] = None
+        self._last_state = None
         self._timer: Optional[QTimer] = None
+        self._fixed_light_accent = (10, 102, 194)
+        self._fixed_dark_accent = (96, 165, 250)
 
     def _windows_is_light(self) -> bool:
         try:
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-            ) as key:
-                value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-                return bool(value)
+            ) as k:
+                v, _ = winreg.QueryValueEx(k, "AppsUseLightTheme")
+                return bool(v)
         except Exception:
             return False
 
     def _windows_accent_rgb(self) -> Tuple[int, int, int]:
-        # Try Explorer\Accent first.
         try:
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
-            ) as key:
-                value, _ = winreg.QueryValueEx(key, "AccentColor")
-                return (value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF)
+            ) as k:
+                v, _ = winreg.QueryValueEx(k, "AccentColor")
+                r = v & 0xFF
+                g = (v >> 8) & 0xFF
+                b = (v >> 16) & 0xFF
+                return (r, g, b)
         except Exception:
             pass
-
-        # Fall back to DWM.
         try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM") as key:
-                value, _ = winreg.QueryValueEx(key, "ColorizationColor")
-                return ((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM") as k:
+                v, _ = winreg.QueryValueEx(k, "ColorizationColor")
+                r = (v >> 16) & 0xFF
+                g = (v >> 8) & 0xFF
+                b = v & 0xFF
+                return (r, g, b)
         except Exception:
             pass
-
-        # Last resort: DwmGetColorizationColor.
         try:
             color = ctypes.c_uint()
             opaque_blend = ctypes.c_int()
-            if ctypes.windll.dwmapi.DwmGetColorizationColor(
-                ctypes.byref(color),
-                ctypes.byref(opaque_blend),
-            ) == 0:
-                value = color.value  # AARRGGBB
-                return ((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+            if ctypes.windll.dwmapi.DwmGetColorizationColor(ctypes.byref(color), ctypes.byref(opaque_blend)) == 0:
+                v = color.value
+                r = (v >> 16) & 0xFF
+                g = (v >> 8) & 0xFF
+                b = v & 0xFF
+                return (r, g, b)
         except Exception:
             pass
+        return self._fixed_light_accent
 
-        return DEFAULT_ACCENT_RGB
+    def _accent_for_mode(self, is_light: bool) -> Tuple[int, int, int]:
+        if self.match_system_accent and sys.platform.startswith("win"):
+            return self._windows_accent_rgb()
+        return self._fixed_light_accent if is_light else self._fixed_dark_accent
 
     def current_state(self) -> tuple:
         if self.override_mode in ("Light", "Dark"):
             is_light = self.override_mode == "Light"
-            r, g, b = self._windows_accent_rgb() if sys.platform.startswith("win") else DEFAULT_ACCENT_RGB
-            return (is_light, r, g, b)
-
-        if sys.platform.startswith("win"):
+        elif sys.platform.startswith("win"):
             is_light = self._windows_is_light()
-            r, g, b = self._windows_accent_rgb()
         else:
             is_light = False
-            r, g, b = DEFAULT_ACCENT_RGB
-        return (is_light, r, g, b)
 
-    def set_override_mode(self, mode: str) -> None:
+        r, g, b = self._accent_for_mode(is_light)
+        return (is_light, r, g, b, self.match_system_accent)
+
+    def set_override_mode(self, mode: str):
         self.override_mode = mode if mode in ("System", "Light", "Dark") else "System"
         self.apply()
 
-    def start_watching(self) -> None:
+    def set_match_system_accent(self, enabled: bool):
+        self.match_system_accent = bool(enabled)
+        self.apply()
+
+    def start_watching(self):
         if self._timer is None:
             self._timer = QTimer(self.win)
             self._timer.setInterval(self.poll_secs * 1000)
             self._timer.timeout.connect(self._maybe_update_theme)
             self._timer.start()
 
-    def _maybe_update_theme(self) -> None:
+    def _maybe_update_theme(self):
         state = self.current_state()
         if state != self._last_state:
             self.apply()
 
-    def apply(self) -> None:
+    def apply(self):
         if sys.platform.startswith("win") and _windows_high_contrast_enabled():
             self.win.setStyleSheet("")
             return
-
-        is_light, r, g, b = self.current_state()
-        self._last_state = (is_light, r, g, b)
+        is_light, r, g, b, match_system_accent = self.current_state()
+        self._last_state = (is_light, r, g, b, match_system_accent)
         accent = QColor(r, g, b)
 
-        palette = self._light_palette(accent) if is_light else self._dark_palette(accent)
-        stylesheet = self._build_stylesheet(accent, is_light=is_light)
+        if is_light:
+            palette = self._light_palette(accent)
+            stylesheet = self._light_stylesheet(accent)
+        else:
+            palette = self._dark_palette(accent)
+            stylesheet = self._dark_stylesheet(accent)
 
         app = QApplication.instance()
         if app is not None:
@@ -166,156 +153,97 @@ class ThemeManager(QObject):
         self.win.update()
 
     def _dark_palette(self, accent: QColor) -> QPalette:
-        palette = QPalette()
-        palette.setColor(QPalette.ColorRole.Window, QColor("#0f1115"))
-        palette.setColor(QPalette.ColorRole.Base, QColor("#14171d"))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#171a21"))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#10131a"))
-        palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#eaeef2"))
-        palette.setColor(QPalette.ColorRole.Text, QColor("#eaeef2"))
-        palette.setColor(QPalette.ColorRole.Button, QColor("#1f2430"))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor("#eaeef2"))
-        palette.setColor(QPalette.ColorRole.Highlight, accent)
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor("#eaeef2"))
-        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#a9b1bd"))
-        return palette
+        p = QPalette()
+        p.setColor(QPalette.Window, QColor("#0f1115"))
+        p.setColor(QPalette.Base, QColor("#14171d"))
+        p.setColor(QPalette.AlternateBase, QColor("#171a21"))
+        p.setColor(QPalette.ToolTipBase, QColor("#10131a"))
+        p.setColor(QPalette.ToolTipText, QColor("#eaeef2"))
+        p.setColor(QPalette.Text, QColor("#eaeef2"))
+        p.setColor(QPalette.Button, QColor("#1f2430"))
+        p.setColor(QPalette.ButtonText, QColor("#eaeef2"))
+        p.setColor(QPalette.Highlight, accent)
+        p.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+        p.setColor(QPalette.WindowText, QColor("#eaeef2"))
+        p.setColor(QPalette.PlaceholderText, QColor("#a9b1bd"))
+        return p
 
     def _light_palette(self, accent: QColor) -> QPalette:
-        palette = QPalette()
-        palette.setColor(QPalette.ColorRole.Window, QColor("#ffffff"))
-        palette.setColor(QPalette.ColorRole.Base, QColor("#f8fafc"))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#eef2f7"))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#f3f5f7"))
-        palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#0f1115"))
-        palette.setColor(QPalette.ColorRole.Text, QColor("#0f1115"))
-        palette.setColor(QPalette.ColorRole.Button, QColor("#ffffff"))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor("#0f1115"))
-        palette.setColor(QPalette.ColorRole.Highlight, accent)
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor("#0f1115"))
-        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#4b5563"))
-        return palette
+        p = QPalette()
+        p.setColor(QPalette.Window, QColor("#ffffff"))
+        p.setColor(QPalette.Base, QColor("#f8fafc"))
+        p.setColor(QPalette.AlternateBase, QColor("#eef2f7"))
+        p.setColor(QPalette.ToolTipBase, QColor("#f3f5f7"))
+        p.setColor(QPalette.ToolTipText, QColor("#0f1115"))
+        p.setColor(QPalette.Text, QColor("#0f1115"))
+        p.setColor(QPalette.Button, QColor("#ffffff"))
+        p.setColor(QPalette.ButtonText, QColor("#0f1115"))
+        p.setColor(QPalette.Highlight, accent)
+        p.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+        p.setColor(QPalette.WindowText, QColor("#0f1115"))
+        p.setColor(QPalette.PlaceholderText, QColor("#4b5563"))
+        return p
 
-    def _build_stylesheet(self, accent: QColor, *, is_light: bool) -> str:
-        theme = self._theme_tokens(accent, is_light=is_light)
-        return "\n".join(
-            [
-                self._window_rules(theme),
-                self._input_rules(theme),
-                self._tab_rules(theme),
-                self._group_rules(theme),
-                self._table_rules(theme),
-                self._combo_rules(theme),
-                self._menu_rules(theme),
-                self._progress_rules(theme),
-            ]
-        )
-
-    def _theme_tokens(self, accent: QColor, *, is_light: bool) -> dict[str, str]:
-        if is_light:
-            return {
-                "accent": accent.name(),
-                "window": "#ffffff",
-                "left_pane": "#f6f7f9",
-                "left_border": "#e5e7eb",
-                "title": "#374151",
-                "tooltip": "#f3f5f7",
-                "text": "#0f1115",
-                "input_bg": "#ffffff",
-                "input_border": "#e5e7eb",
-                "button_bg": "#ffffff",
-                "button_hover": "#f5f7fb",
-                "button_pressed": "#eef2f7",
-                "tab_bg": "#ffffff",
-                "tab_selected": "#f5f7fb",
-                "group_border": "#e5e7eb",
-                "table_alt": "#f8fafc",
-                "header_bg": "#f3f4f6",
-            }
-        return {
-            "accent": accent.name(),
-            "window": "#0f1115",
-            "left_pane": "#10131a",
-            "left_border": "#232833",
-            "title": "#a9b1bd",
-            "tooltip": "#10131a",
-            "text": "#eaeef2",
-            "input_bg": "#171a21",
-            "input_border": "#232833",
-            "button_bg": "#1f2430",
-            "button_hover": "#262d3a",
-            "button_pressed": "#2b3240",
-            "tab_bg": "#171a21",
-            "tab_selected": "#1f2430",
-            "group_border": "#232833",
-            "table_alt": "#14171d",
-            "header_bg": "#171a21",
-        }
-
-    @staticmethod
-    def _window_rules(theme: dict[str, str]) -> str:
+    def _dark_stylesheet(self, accent: QColor) -> str:
+        acc = accent.name()
         return f"""
-        QMainWindow {{ background: {theme['window']}; color: {theme['text']}; }}
-        #leftPane {{ background: {theme['left_pane']}; border-right: 1px solid {theme['left_border']}; }}
-        #leftTitle {{ color: {theme['title']}; font-size: 14px; font-weight: 700; padding: 8px 4px; }}
-        QToolTip {{ color: {theme['text']}; background: {theme['tooltip']}; border: 1px solid {theme['left_border']}; }}
-        """
-
-    @staticmethod
-    def _input_rules(theme: dict[str, str]) -> str:
-        return f"""
-        QLineEdit {{ background: {theme['input_bg']}; border: 1px solid {theme['input_border']}; border-radius: 8px; padding: 6px 10px; color: {theme['text']}; }}
-        QLineEdit:focus {{ border: 1px solid {theme['accent']}; }}
-        QPushButton {{ background: {theme['button_bg']}; border: 1px solid {theme['input_border']}; color: {theme['text']}; border-radius: 8px; padding: 8px 12px; font-weight: 600; }}
-        QPushButton:hover {{ background: {theme['button_hover']}; }}
-        QPushButton:pressed {{ background: {theme['button_pressed']}; }}
-        QPushButton:focus {{ outline: none; border: 1px solid {theme['accent']}; }}
-        """
-
-    @staticmethod
-    def _tab_rules(theme: dict[str, str]) -> str:
-        return f"""
-        QTabBar::tab {{ background: {theme['tab_bg']}; color: {theme['text']}; padding: 8px 14px; border: 1px solid {theme['left_border']}; border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 6px; }}
-        QTabBar::tab:selected {{ background: {theme['tab_selected']}; border-color: {theme['accent']}; }}
-        QTabWidget::pane {{ border: 1px solid {theme['left_border']}; top: -0.2em; }}
-        """
-
-    @staticmethod
-    def _group_rules(theme: dict[str, str]) -> str:
-        return f"""
-        QGroupBox {{ border: 1px solid {theme['group_border']}; border-radius: 10px; margin-top: 16px; }}
-        QGroupBox::title {{ left: 12px; padding: 0 4px; color: {theme['title']}; }}
-        """
-
-    @staticmethod
-    def _table_rules(theme: dict[str, str]) -> str:
-        return f"""
-        QTableWidget {{ background: {theme['window']}; gridline-color: {theme['group_border']}; color: {theme['text']}; alternate-background-color: {theme['table_alt']}; border: 1px solid {theme['group_border']}; border-radius: 8px; }}
-        QHeaderView::section {{ background: {theme['header_bg']}; color: {theme['text']}; border: 0px; padding: 6px; }}
-        QTableWidget::item:selected {{ background: {theme['accent']}; color: white; }}
-        """
-
-    @staticmethod
-    def _combo_rules(theme: dict[str, str]) -> str:
-        return f"""
-        QComboBox {{ background: {theme['input_bg']}; color: {theme['text']}; border: 1px solid {theme['input_border']}; border-radius: 8px; padding: 6px 10px; }}
-        QComboBox:focus {{ border: 1px solid {theme['accent']}; }}
-        QComboBox QAbstractItemView {{ background: {theme['input_bg']}; color: {theme['text']}; selection-background-color: {theme['accent']}; selection-color: white; border: 1px solid {theme['input_border']}; }}
-        """
-
-    @staticmethod
-    def _menu_rules(theme: dict[str, str]) -> str:
-        return f"""
-        QMenu {{ background: {theme['input_bg']}; color: {theme['text']}; border: 1px solid {theme['input_border']}; }}
+        QMainWindow {{ background: #0f1115; color: #eaeef2; }}
+        #leftPane {{ background: #10131a; border-right: 1px solid #232833; }}
+        #leftTitle {{ color: #a9b1bd; font-size: 14px; font-weight: 700; padding: 8px 4px; }}
+        QToolTip {{ color: #eaeef2; background: #10131a; border: 1px solid #232833; }}
+        QLineEdit {{ background: #171a21; border: 1px solid #232833; border-radius: 8px; padding: 6px 10px; color: #eaeef2; }}
+        QLineEdit:focus {{ border: 1px solid {acc}; box-shadow: 0 0 0 2px {acc}33; }}
+        QPushButton {{ background: #1f2430; border: 1px solid #2b3240; color: #eaeef2; border-radius: 8px; padding: 8px 12px; font-weight: 600; }}
+        QPushButton:hover {{ background: #262d3a; }}
+        QPushButton:pressed {{ background: #2b3240; }}
+        QPushButton:focus {{ outline: none; border: 1px solid {acc}; }}
+        QTabBar::tab {{ background: #171a21; color: #eaeef2; padding: 8px 14px; border: 1px solid #232833; border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 6px; }}
+        QTabBar::tab:selected {{ background: #1f2430; border-color: {acc}; }}
+        QTabWidget::pane {{ border: 1px solid #232833; top: -0.2em; }}
+        QGroupBox {{ border: 1px solid #232833; border-radius: 10px; margin-top: 16px; }}
+        QGroupBox::title {{ left: 12px; padding: 0 4px; color: #a9b1bd; }}
+        QTableWidget {{ background: #0f1115; gridline-color: #232833; color: #eaeef2; alternate-background-color: #14171d; border: 1px solid #232833; border-radius: 8px; }}
+        QHeaderView::section {{ background: #171a21; color: #eaeef2; border: 0px; padding: 6px; }}
+        QTableWidget::item:selected {{ background: {acc}; color: white; }}
+        QComboBox {{ background: #171a21; color: #eaeef2; border: 1px solid #232833; border-radius: 8px; padding: 6px 10px; }}
+        QComboBox:focus {{ border: 1px solid {acc}; }}
+        QComboBox QAbstractItemView {{ background: #171a21; color: #eaeef2; selection-background-color: {acc}; selection-color: white; border: 1px solid #232833; }}
+        QMenu {{ background: #171a21; color: #eaeef2; border: 1px solid #232833; }}
         QMenu::item {{ padding: 6px 18px 6px 18px; }}
-        QMenu::item:selected {{ background: {theme['accent']}; color: white; }}
-        QMenu::separator {{ height: 1px; background: {theme['group_border']}; margin: 4px 6px; }}
+        QMenu::item:selected {{ background: {acc}; color: white; }}
+        QMenu::separator {{ height: 1px; background: #232833; margin: 4px 6px; }}
+        QProgressBar {{ background: #171a21; border: 1px solid #232833; border-radius: 8px; text-align: center; color: #eaeef2; }}
+        QProgressBar::chunk {{ background-color: {acc}; border-radius: 8px; }}
         """
 
-    @staticmethod
-    def _progress_rules(theme: dict[str, str]) -> str:
+    def _light_stylesheet(self, accent: QColor) -> str:
+        acc = accent.name()
         return f"""
-        QProgressBar {{ background: {theme['input_bg']}; border: 1px solid {theme['input_border']}; border-radius: 8px; text-align: center; color: {theme['text']}; }}
-        QProgressBar::chunk {{ background-color: {theme['accent']}; border-radius: 8px; }}
+        QMainWindow {{ background: #ffffff; color: #0f1115; }}
+        #leftPane {{ background: #f6f7f9; border-right: 1px solid #e5e7eb; }}
+        #leftTitle {{ color: #374151; font-size: 14px; font-weight: 700; padding: 8px 4px; }}
+        QToolTip {{ color: #0f1115; background: #f3f5f7; border: 1px solid #e5e7eb; }}
+        QLineEdit {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px 10px; color: #0f1115; }}
+        QLineEdit:focus {{ border: 1px solid {acc}; box-shadow: 0 0 0 2px {acc}22; }}
+        QPushButton {{ background: #ffffff; border: 1px solid #e5e7eb; color: #0f1115; border-radius: 8px; padding: 8px 12px; font-weight: 600; }}
+        QPushButton:hover {{ background: #f5f7fb; }}
+        QPushButton:pressed {{ background: #eef2f7; }}
+        QPushButton:focus {{ outline: none; border: 1px solid {acc}; }}
+        QTabBar::tab {{ background: #ffffff; color: #0f1115; padding: 8px 14px; border: 1px solid #e5e7eb; border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 6px; }}
+        QTabBar::tab:selected {{ background: #f5f7fb; border-color: {acc}; }}
+        QTabWidget::pane {{ border: 1px solid #e5e7eb; top: -0.2em; }}
+        QGroupBox {{ border: 1px solid #e5e7eb; border-radius: 10px; margin-top: 16px; }}
+        QGroupBox::title {{ left: 12px; padding: 0 4px; color: #374151; }}
+        QTableWidget {{ background: #ffffff; gridline-color: #e5e7eb; color: #0f1115; alternate-background-color: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; }}
+        QHeaderView::section {{ background: #f3f4f6; color: #0f1115; border: 0px; padding: 6px; }}
+        QTableWidget::item:selected {{ background: {acc}; color: white; }}
+        QComboBox {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px 10px; }}
+        QComboBox:focus {{ border: 1px solid {acc}; }}
+        QComboBox QAbstractItemView {{ background: #ffffff; color: #0f1115; selection-background-color: {acc}; selection-color: white; border: 1px solid #e5e7eb; }}
+        QMenu {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb; }}
+        QMenu::item {{ padding: 6px 18px 6px 18px; }}
+        QMenu::item:selected {{ background: {acc}; color: white; }}
+        QMenu::separator {{ height: 1px; background: #e5e7eb; margin: 4px 6px; }}
+        QProgressBar {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; text-align: center; color: #0f1115; }}
+        QProgressBar::chunk {{ background-color: {acc}; border-radius: 8px; }}
         """
