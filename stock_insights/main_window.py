@@ -345,6 +345,8 @@ class MainWindow(QMainWindow):
             "GOAL_PRESET_1": float(self._settings().value("goals/preset_1", 250000.0) or 250000.0),
             "GOAL_PRESET_2": float(self._settings().value("goals/preset_2", 500000.0) or 500000.0),
             "GOAL_PRESET_3": float(self._settings().value("goals/preset_3", 1000000.0) or 1000000.0),
+            "TRADE_DEFAULT_QUANTITY": int(self._settings().value("trade_defaults/default_quantity", 1) or 1),
+            "TRADE_QUANTITY_INCREMENT": int(self._settings().value("trade_defaults/quantity_increment", 1) or 1),
         }
         dlg = SettingsDialog(self, self._settings(), cv)
         result = dlg.exec()
@@ -364,6 +366,8 @@ class MainWindow(QMainWindow):
             s.setValue("goals/preset_1", float(vals["GOAL_PRESET_1"]))
             s.setValue("goals/preset_2", float(vals["GOAL_PRESET_2"]))
             s.setValue("goals/preset_3", float(vals["GOAL_PRESET_3"]))
+            s.setValue("trade_defaults/default_quantity", int(vals["TRADE_DEFAULT_QUANTITY"]))
+            s.setValue("trade_defaults/quantity_increment", int(vals["TRADE_QUANTITY_INCREMENT"]))
             s.sync()
 
             self.timer_l1.setInterval(self.L1_INTERVAL)

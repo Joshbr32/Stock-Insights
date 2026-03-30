@@ -51,12 +51,14 @@ GROUP_STYLE = (
 class TradeEditDialog(QDialog):
     """Trade entry dialog matching the uploaded Excel tracker structure."""
 
-    def __init__(self, trade: Optional[Trade] = None, watchlist_symbols: Optional[List[str]] = None, parent=None):
+    def __init__(self, trade: Optional[Trade] = None, watchlist_symbols: Optional[List[str]] = None, default_quantity: int = 1, quantity_increment: int = 1, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Trade")
         self.resize(440, 360)
         self._editing = trade
         self._watchlist_symbols = [str(s).strip().upper() for s in (watchlist_symbols or []) if str(s).strip()]
+        self._default_quantity = max(1, int(default_quantity or 1))
+        self._quantity_increment = max(1, int(quantity_increment or 1))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -82,6 +84,7 @@ class TradeEditDialog(QDialog):
 
         self.share_count_spin = QSpinBox()
         self.share_count_spin.setRange(1, 1_000_000_000)
+        self.share_count_spin.setSingleStep(self._quantity_increment)
 
         self.buy_price_spin = QDoubleSpinBox()
         self.buy_price_spin.setRange(0.0, 1_000_000_000.0)
@@ -143,7 +146,7 @@ class TradeEditDialog(QDialog):
     def _apply_trade(self, trade: Optional[Trade]):
         today = date.today()
         self.instrument_edit.setCurrentText(trade.normalized_instrument() if trade else "")
-        self.share_count_spin.setValue(max(1, int(trade.share_count) if trade else 1))
+        self.share_count_spin.setValue(max(1, int(trade.share_count) if trade else self._default_quantity))
         self.buy_price_spin.setValue(float(trade.buy_price) if trade else self.buy_price_spin.minimum())
         self.sell_price_spin.setValue(float(trade.sell_price) if trade and trade.sell_price is not None else self.sell_price_spin.minimum())
         self.status_combo.setCurrentText(trade.status if trade else "OPEN")
@@ -230,6 +233,18 @@ class PortfolioTab(QWidget):
                 self._marks[symbol] = float(price)
         self.refresh_view()
 
+    def _trade_default_quantity(self) -> int:
+        try:
+            return max(1, int(self._settings.value("trade_defaults/default_quantity", 1) or 1))
+        except Exception:
+            return 1
+
+    def _trade_quantity_increment(self) -> int:
+        try:
+            return max(1, int(self._settings.value("trade_defaults/quantity_increment", 1) or 1))
+        except Exception:
+            return 1
+
     # ---------- UI ----------
 
     def _build_ui(self):
@@ -248,18 +263,8 @@ class PortfolioTab(QWidget):
 
         goal_controls = QHBoxLayout()
         self.goal_preset = QComboBox()
-        self.goal_preset.addItems(["250K USD", "500K USD", "1M USD", "Custom"])
-        self.goal_target_label = QLabel("Target")
-        self.goal_target_spin = QDoubleSpinBox()
-        self.goal_target_spin.setRange(0.0, 100_000_000.0)
-        self.goal_target_spin.setDecimals(2)
-        self.goal_target_spin.setPrefix("$ ")
-        self.goal_target_spin.setSingleStep(10_000.0)
-        goal_controls.addWidget(QLabel("Goal preset"))
+        goal_controls.addWidget(QLabel("Annual Target Profit"))
         goal_controls.addWidget(self.goal_preset)
-        goal_controls.addSpacing(16)
-        goal_controls.addWidget(self.goal_target_label)
-        goal_controls.addWidget(self.goal_target_spin)
         goal_controls.addStretch(1)
         goal_layout.addLayout(goal_controls)
 
@@ -385,7 +390,6 @@ class PortfolioTab(QWidget):
         self.btn_edit_trade.clicked.connect(self._edit_trade)
         self.btn_delete_trade.clicked.connect(self._delete_trade)
         self.goal_preset.currentTextChanged.connect(self._on_goal_preset_changed)
-        self.goal_target_spin.valueChanged.connect(self._on_goal_target_changed)
 
     # ---------- Persistence ----------
 
@@ -427,10 +431,7 @@ class PortfolioTab(QWidget):
                 self._save_trades()
 
         saved_goal = float(self._settings.value(self.GOAL_KEY, 500000.0) or 500000.0)
-        self.goal_target_spin.blockSignals(True)
-        self.goal_target_spin.setValue(saved_goal)
-        self.goal_target_spin.blockSignals(False)
-        self._sync_goal_preset(saved_goal)
+        self.reload_goal_presets(saved_goal)
 
     def _save_trades(self):
         self._settings.setValue(self.SETTINGS_KEY, trades_to_json(self._trades))
@@ -501,45 +502,58 @@ class PortfolioTab(QWidget):
         self._save_trades()
         self.refresh_view()
 
-    def _update_goal_target_visibility(self):
-        is_custom = self.goal_preset.currentText() == "Custom"
-        self.goal_target_label.setVisible(is_custom)
-        self.goal_target_spin.setVisible(is_custom)
+    def _goal_preset_values(self) -> List[float]:
+        return [
+            float(self._settings.value("goals/preset_1", 250000.0) or 250000.0),
+            float(self._settings.value("goals/preset_2", 500000.0) or 500000.0),
+            float(self._settings.value("goals/preset_3", 1000000.0) or 1000000.0),
+        ]
+
+    @staticmethod
+    def _format_goal_preset(value: float) -> str:
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.2f}M USD"
+        if value >= 1_000:
+            return f"{value / 1_000:.0f}K USD"
+        return f"$ {value:,.2f}"
+
+    def _current_goal_target(self) -> float:
+        values = self._goal_preset_values()
+        idx = max(0, min(self.goal_preset.currentIndex(), len(values) - 1))
+        return values[idx]
+
+    def reload_goal_presets(self, selected_value: Optional[float] = None):
+        values = self._goal_preset_values()
+        labels = [self._format_goal_preset(v) for v in values]
+        if selected_value is None:
+            try:
+                selected_value = float(self._settings.value(self.GOAL_KEY, values[0]) or values[0])
+            except Exception:
+                selected_value = values[0]
+
+        selected_index = 0
+        for idx, value in enumerate(values):
+            if abs(float(value) - float(selected_value)) < 0.01:
+                selected_index = idx
+                break
+
+        self.goal_preset.blockSignals(True)
+        self.goal_preset.clear()
+        self.goal_preset.addItems(labels)
+        self.goal_preset.setCurrentIndex(selected_index)
+        self.goal_preset.blockSignals(False)
+
+        self._settings.setValue(self.GOAL_KEY, float(values[selected_index]))
+        self._settings.sync()
+        self.refresh_view()
 
     def _on_goal_preset_changed(self, text: str):
-        self._update_goal_target_visibility()
-        if text == "250K USD":
-            value = 250_000.0
-        elif text == "500K USD":
-            value = 500_000.0
-        elif text == "1M USD":
-            value = 1_000_000.0
-        else:
-            return
-        self.goal_target_spin.blockSignals(True)
-        self.goal_target_spin.setValue(value)
-        self.goal_target_spin.blockSignals(False)
-        self._on_goal_target_changed(value)
+        self._on_goal_target_changed(self._current_goal_target())
 
     def _on_goal_target_changed(self, value: float):
         self._settings.setValue(self.GOAL_KEY, float(value))
         self._settings.sync()
-        self._sync_goal_preset(value)
         self.refresh_view()
-
-    def _sync_goal_preset(self, value: float):
-        if abs(value - 250_000.0) < 0.01:
-            preset = "250K USD"
-        elif abs(value - 500_000.0) < 0.01:
-            preset = "500K USD"
-        elif abs(value - 1_000_000.0) < 0.01:
-            preset = "1M USD"
-        else:
-            preset = "Custom"
-        self.goal_preset.blockSignals(True)
-        self.goal_preset.setCurrentText(preset)
-        self.goal_preset.blockSignals(False)
-        self._update_goal_target_visibility()
 
     # ---------- Rendering ----------
 
@@ -548,7 +562,7 @@ class PortfolioTab(QWidget):
         realized_by_symbol = compute_realized_pl_by_symbol(self._trades)
         holding_rows, summary = compute_portfolio(self._holdings, self._marks, realized_by_symbol)
         analytics = compute_trade_analytics(self._trades)
-        goal = compute_goal_progress(self._trades, float(self.goal_target_spin.value()), unrealized_profit=summary.unrealized_pl)
+        goal = compute_goal_progress(self._trades, self._current_goal_target(), unrealized_profit=summary.unrealized_pl)
         trade_rows = compute_trade_rows(self._trades)
 
         self._render_goal(goal)

@@ -133,6 +133,23 @@ class SettingsDialog(QDialog):
         grp_goals.setContentLayout(goals_form)
         root.addWidget(grp_goals)
 
+        grp_trade_defaults = CollapsibleGroup("Trade Defaults", collapsed=False)
+        trade_defaults_form = QFormLayout()
+        trade_defaults_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.trade_default_quantity = QSpinBox()
+        self.trade_default_quantity.setRange(1, 1_000_000_000)
+        self.trade_default_quantity.setValue(int(cv.get("TRADE_DEFAULT_QUANTITY", 1)))
+
+        self.trade_quantity_increment = QSpinBox()
+        self.trade_quantity_increment.setRange(1, 1_000_000_000)
+        self.trade_quantity_increment.setValue(int(cv.get("TRADE_QUANTITY_INCREMENT", 1)))
+
+        trade_defaults_form.addRow(QLabel("Default Quantity:"), self.trade_default_quantity)
+        trade_defaults_form.addRow(QLabel("Quantity Increment:"), self.trade_quantity_increment)
+        grp_trade_defaults.setContentLayout(trade_defaults_form)
+        root.addWidget(grp_trade_defaults)
+
         grp_appearance = CollapsibleGroup("Appearance", collapsed=False)
         app_form = QFormLayout()
         app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -169,6 +186,8 @@ class SettingsDialog(QDialog):
             "GOAL_PRESET_1": float(self.goal_preset_1.value()),
             "GOAL_PRESET_2": float(self.goal_preset_2.value()),
             "GOAL_PRESET_3": float(self.goal_preset_3.value()),
+            "TRADE_DEFAULT_QUANTITY": int(self.trade_default_quantity.value()),
+            "TRADE_QUANTITY_INCREMENT": int(self.trade_quantity_increment.value()),
             "THEME_OVERRIDE": self.cmb_theme.currentText(),
             "MATCH_SYSTEM_ACCENT": self.cb_match_system_accent.isChecked(),
         }

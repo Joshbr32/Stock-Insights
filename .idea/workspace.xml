@@ -4,27 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/StockInsights.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/cache.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/data.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/logging_utils.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/portfolio.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/settings_dialog.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/simulator.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/theme.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/widgets.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/workers.py" afterDir="false" />
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="UI Changes to theme.py and goals">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab_goal.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/settings_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/settings_dialog.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -41,6 +26,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
+  "lastFilter": {
+    "state": "OPEN",
+    "assignee": "Joshbr32"
+  }
+}]]></component>
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/Joshbr32/Stock-Insights.git",
+    "accountId": "75d25b20-f277-4acc-b4b0-53829651bcb6"
+  }
+}]]></component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 8
 }</component>
@@ -139,6 +136,31 @@
       <workItem from="1761574998375" duration="2358000" />
       <workItem from="1762789656047" duration="32000" />
     </task>
+    <task id="LOCAL-00001" summary="First main commit">
+      <option name="closed" value="true" />
+      <created>1774901074010</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1774901074010</updated>
+    </task>
+    <task id="LOCAL-00002" summary="Minor Files">
+      <option name="closed" value="true" />
+      <created>1774901097694</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1774901097694</updated>
+    </task>
+    <task id="LOCAL-00003" summary="UI Changes to theme.py and goals">
+      <option name="closed" value="true" />
+      <created>1774901169588</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1774901169588</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -154,6 +176,12 @@
         </entry>
       </map>
     </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="First main commit" />
+    <MESSAGE value="Minor Files" />
+    <MESSAGE value="UI Changes to theme.py and goals" />
+    <option name="LAST_COMMIT_MESSAGE" value="UI Changes to theme.py and goals" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/StockInsights$main.coverage" NAME="main Coverage Results" MODIFIED="1761477027747" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
