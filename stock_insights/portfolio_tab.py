@@ -258,11 +258,45 @@ class TradeHistoryColumnsDialog(QDialog):
         return [key for key, cb in self._checks.items() if cb.isChecked()]
 
 
+class GoalDashboardAccountsDialog(QDialog):
+    def __init__(self, accounts: List[str], included_accounts: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Goal Dashboard Accounts")
+        self.resize(340, 320)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        info = QLabel("Select which accounts are included for annual goal tracking.")
+        info.setWordWrap(True)
+        root.addWidget(info)
+
+        self._checks: Dict[str, QCheckBox] = {}
+        included = set(included_accounts)
+        for account in accounts:
+            cb = QCheckBox(account)
+            cb.setChecked(account in included)
+            self._checks[account] = cb
+            root.addWidget(cb)
+
+        root.addStretch(1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def selected_accounts(self) -> List[str]:
+        return [account for account, cb in self._checks.items() if cb.isChecked()]
+
+
 class PortfolioTab(QWidget):
     SETTINGS_KEY = "portfolio/trades"
     LEGACY_HOLDINGS_KEY = "portfolio/holdings"
     GOAL_KEY = "portfolio/goal_target"
     TRADE_HISTORY_VISIBLE_COLUMNS_KEY = "portfolio/trade_history_visible_columns"
+    GOAL_DASHBOARD_ACCOUNTS_KEY = "portfolio/goal_dashboard_accounts"
 
     TRADE_HISTORY_COLUMNS = [
         ("instrument", "Instrument"),
@@ -345,6 +379,66 @@ class PortfolioTab(QWidget):
         self._settings.sync()
 
 
+    def _account_names(self) -> List[str]:
+        raw = self._settings.value("user_account/accounts", ["Default"])
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = [x.strip() for x in raw.split(",") if x.strip()]
+        if not isinstance(raw, list):
+            raw = ["Default"]
+        out: List[str] = []
+        seen = set()
+        for item in raw:
+            name = str(item or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+        return out or ["Default"]
+
+    def _goal_dashboard_accounts(self) -> List[str]:
+        accounts = self._account_names()
+        raw = self._settings.value(self.GOAL_DASHBOARD_ACCOUNTS_KEY, [])
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = [x.strip() for x in raw.split(",") if x.strip()]
+        if not isinstance(raw, list):
+            raw = []
+        selected = [name for name in raw if name in accounts]
+        if not selected:
+            selected = list(accounts)
+        if set(selected) != set(accounts) or len(selected) != len(raw):
+            self._settings.setValue(self.GOAL_DASHBOARD_ACCOUNTS_KEY, json.dumps(selected))
+            self._settings.sync()
+        return selected
+
+    def sync_goal_dashboard_accounts(self):
+        accounts = self._account_names()
+        existing = self._goal_dashboard_accounts()
+        selected = [name for name in accounts if name in existing]
+        if not selected:
+            selected = list(accounts)
+        if set(selected) != set(existing) or len(selected) != len(existing):
+            self._settings.setValue(self.GOAL_DASHBOARD_ACCOUNTS_KEY, json.dumps(selected))
+            self._settings.sync()
+
+    def open_goal_dashboard_accounts_dialog(self):
+        accounts = self._account_names()
+        selected = self._goal_dashboard_accounts()
+        dlg = GoalDashboardAccountsDialog(accounts, selected, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = dlg.selected_accounts()
+        if not chosen:
+            chosen = list(accounts)
+        self._settings.setValue(self.GOAL_DASHBOARD_ACCOUNTS_KEY, json.dumps(chosen))
+        self._settings.sync()
+        self.refresh_view()
+
+
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -372,7 +466,6 @@ class PortfolioTab(QWidget):
         goal_fields = [
             ("realized_profit", "Realized Profit"),
             ("unrealized_profit", "Unrealized Profit"),
-            ("total_profit", "Total Profit"),
             ("remaining_profit", "Profit to Goal"),
             ("monthly_profit_to_goal", "Monthly Profit to Goal"),
             ("weekly_profit_to_goal", "Weekly Profit to Goal"),
@@ -467,11 +560,9 @@ class PortfolioTab(QWidget):
         self.btn_add_trade = QPushButton("+ Add Trade")
         self.btn_edit_trade = QPushButton("Edit Selected")
         self.btn_delete_trade = QPushButton("Delete Selected")
-        self.btn_trade_columns = QPushButton("Columns…")
         trade_btns.addWidget(self.btn_add_trade)
         trade_btns.addWidget(self.btn_edit_trade)
         trade_btns.addWidget(self.btn_delete_trade)
-        trade_btns.addWidget(self.btn_trade_columns)
         trade_btns.addStretch(1)
         trade_layout.addLayout(trade_btns)
         root.addWidget(self.trade_group, 1)
@@ -479,7 +570,6 @@ class PortfolioTab(QWidget):
         self.btn_add_trade.clicked.connect(self._add_trade)
         self.btn_edit_trade.clicked.connect(self._edit_trade)
         self.btn_delete_trade.clicked.connect(self._delete_trade)
-        self.btn_trade_columns.clicked.connect(self._open_trade_history_columns_dialog)
         self.goal_preset.currentTextChanged.connect(self._on_goal_preset_changed)
 
     def _load_state(self):
@@ -519,6 +609,7 @@ class PortfolioTab(QWidget):
                 self._save_trades()
 
         saved_goal = float(self._settings.value(self.GOAL_KEY, 500000.0) or 500000.0)
+        self.sync_goal_dashboard_accounts()
         self.reload_goal_presets(saved_goal)
 
     def _save_trades(self):
@@ -779,7 +870,6 @@ class PortfolioTab(QWidget):
     def _render_goal(self, goal: GoalProgress):
         self.goal_labels["realized_profit"].setText(self._money(goal.realized_profit))
         self.goal_labels["unrealized_profit"].setText(self._money(goal.unrealized_profit))
-        self.goal_labels["total_profit"].setText(self._money(goal.total_profit))
         self.goal_labels["remaining_profit"].setText(self._money(goal.remaining_profit))
         self.goal_labels["monthly_profit_to_goal"].setText(self._money_or_dash(goal.monthly_profit_to_goal))
         self.goal_labels["weekly_profit_to_goal"].setText(self._money_or_dash(goal.weekly_profit_to_goal))

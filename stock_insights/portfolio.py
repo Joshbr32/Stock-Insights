@@ -420,7 +420,7 @@ def compute_goal_progress(
     today = today or date.today()
     realized_profit = sum(float(t.trade_profit or 0.0) for t in trades if t.is_closed)
     total_profit = realized_profit + float(unrealized_profit)
-    remaining_profit = float(goal_target) - total_profit
+    remaining_profit = float(goal_target) - realized_profit
 
     elapsed = business_days_elapsed_in_year(today)
     remaining_days = business_days_remaining_in_year(today)

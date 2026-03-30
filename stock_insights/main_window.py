@@ -36,6 +36,9 @@ class UserAccountDialog(QDialog):
 
         form_group = QGroupBox("User")
         form_layout = QGridLayout(form_group)
+        form_layout.setContentsMargins(14, 18, 14, 14)
+        form_layout.setHorizontalSpacing(12)
+        form_layout.setVerticalSpacing(10)
 
         self.username_edit = QLineEdit()
         self.username_edit.setPlaceholderText("Username")
@@ -57,6 +60,8 @@ class UserAccountDialog(QDialog):
 
         accounts_group = QGroupBox("Accounts")
         accounts_layout = QVBoxLayout(accounts_group)
+        accounts_layout.setContentsMargins(14, 18, 14, 14)
+        accounts_layout.setSpacing(10)
 
         self.accounts_table = QTableWidget(0, 1)
         self.accounts_table.setHorizontalHeaderLabels(["Account Name"])
@@ -216,6 +221,22 @@ class UserAccountDialog(QDialog):
             self._settings.setValue("user_account/password", self.password_edit.text())
             self._settings.setValue("user_account/accounts", json.dumps(accounts))
             self._settings.setValue("user_account/active_account", active)
+
+            raw_goal_accounts = self._settings.value("portfolio/goal_dashboard_accounts", [])
+            if isinstance(raw_goal_accounts, str):
+                try:
+                    raw_goal_accounts = json.loads(raw_goal_accounts)
+                except Exception:
+                    raw_goal_accounts = [x.strip() for x in raw_goal_accounts.split(",") if x.strip()]
+            if not isinstance(raw_goal_accounts, list):
+                raw_goal_accounts = []
+            selected_goal_accounts = {str(name).strip() for name in raw_goal_accounts if str(name).strip()}
+            if not selected_goal_accounts:
+                selected_goal_accounts = set(accounts)
+            else:
+                selected_goal_accounts.update(accounts)
+            ordered_goal_accounts = [name for name in accounts if name in selected_goal_accounts]
+            self._settings.setValue("portfolio/goal_dashboard_accounts", json.dumps(ordered_goal_accounts))
             self._settings.sync()
         self.accept()
 
@@ -382,7 +403,12 @@ class MainWindow(QMainWindow):
 
     def _open_user_account_dialog(self):
         dlg = UserAccountDialog(self, self._settings())
-        dlg.exec()
+        if dlg.exec() == QDialog.DialogCode.Accepted and hasattr(self, "portfolio_tab"):
+            try:
+                self.portfolio_tab.sync_goal_dashboard_accounts()
+                self.portfolio_tab.refresh_view()
+            except Exception:
+                pass
 
     # ------- UI -------
     def _build_ui(self):
@@ -400,11 +426,11 @@ class MainWindow(QMainWindow):
 
         # Menus
         file_menu = self.menuBar().addMenu("&File")
-        act_settings = file_menu.addAction("Settings…")
+        act_settings = file_menu.addAction("Settings")
         act_settings.setShortcut("Ctrl+,")
         act_settings.triggered.connect(self._open_settings_dialog)
 
-        act_user_account = file_menu.addAction("User Account…")
+        act_user_account = file_menu.addAction("User Account")
         act_user_account.triggered.connect(self._open_user_account_dialog)
 
         file_menu.addSeparator()
@@ -416,9 +442,14 @@ class MainWindow(QMainWindow):
         self.act_toggle_sidebar.setShortcut(QKeySequence("Ctrl+B"))
         self.act_toggle_sidebar.triggered.connect(self._toggle_sidebar)
 
-        act_trade_history_columns = view_menu.addAction("Trade History Columns…")
+        act_trade_history_columns = view_menu.addAction("Trade History Columns")
         act_trade_history_columns.triggered.connect(
             lambda: getattr(self.portfolio_tab, "open_trade_history_view_settings", lambda: None)()
+        )
+
+        act_goal_dashboard_accounts = view_menu.addAction("Goal Dashboard Accounts")
+        act_goal_dashboard_accounts.triggered.connect(
+            lambda: getattr(self.portfolio_tab, "open_goal_dashboard_accounts_dialog", lambda: None)()
         )
 
         status_corner = QWidget(self)
