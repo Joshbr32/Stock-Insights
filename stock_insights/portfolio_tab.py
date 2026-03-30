@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDate, QSettings, Qt
+from PySide6.QtCore import QDate, QPoint, QSettings, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -51,14 +52,24 @@ GROUP_STYLE = (
 class TradeEditDialog(QDialog):
     """Trade entry dialog matching the uploaded Excel tracker structure."""
 
-    def __init__(self, trade: Optional[Trade] = None, watchlist_symbols: Optional[List[str]] = None, default_quantity: int = 1, quantity_increment: int = 1, parent=None):
+    def __init__(
+        self,
+        trade: Optional[Trade] = None,
+        watchlist_symbols: Optional[List[str]] = None,
+        default_quantity: int = 1,
+        quantity_increment: int = 1,
+        close_holdings_mode: bool = False,
+        parent=None,
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Trade")
-        self.resize(440, 360)
         self._editing = trade
         self._watchlist_symbols = [str(s).strip().upper() for s in (watchlist_symbols or []) if str(s).strip()]
         self._default_quantity = max(1, int(default_quantity or 1))
         self._quantity_increment = max(1, int(quantity_increment or 1))
+        self._close_holdings_mode = bool(close_holdings_mode)
+
+        self.setWindowTitle("Close Holdings" if self._close_holdings_mode else "Trade")
+        self.resize(440, 360)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -128,7 +139,7 @@ class TradeEditDialog(QDialog):
         root.addWidget(self.preview_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.btn_save = QPushButton("Save")
+        self.btn_save = QPushButton("Close" if self._close_holdings_mode else "Save")
         buttons.addButton(self.btn_save, QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.rejected.connect(self.reject)
         self.btn_save.clicked.connect(self._accept_if_valid)
@@ -140,6 +151,7 @@ class TradeEditDialog(QDialog):
         self.sell_price_spin.valueChanged.connect(self._update_preview)
 
         self._apply_trade(trade)
+        self._apply_mode_constraints()
         self._sync_status(self.status_combo.currentText())
         self._update_preview()
 
@@ -148,14 +160,30 @@ class TradeEditDialog(QDialog):
         self.instrument_edit.setCurrentText(trade.normalized_instrument() if trade else "")
         self.share_count_spin.setValue(max(1, int(trade.share_count) if trade else self._default_quantity))
         self.buy_price_spin.setValue(float(trade.buy_price) if trade else self.buy_price_spin.minimum())
-        self.sell_price_spin.setValue(float(trade.sell_price) if trade and trade.sell_price is not None else self.sell_price_spin.minimum())
-        self.status_combo.setCurrentText(trade.status if trade else "OPEN")
+        self.sell_price_spin.setValue(
+            float(trade.sell_price) if trade and trade.sell_price is not None else self.sell_price_spin.minimum()
+        )
+        if self._close_holdings_mode:
+            self.status_combo.setCurrentText("CLOSED")
+        else:
+            self.status_combo.setCurrentText(trade.status if trade else "OPEN")
 
         open_date = trade.open_date if trade and trade.open_date else today
         close_date = trade.close_date if trade and trade.close_date else today
         self.open_date_edit.setDate(QDate(open_date.year, open_date.month, open_date.day))
         self.close_date_edit.setDate(QDate(close_date.year, close_date.month, close_date.day))
         self.notes_edit.setText(trade.notes if trade else "")
+
+    def _apply_mode_constraints(self):
+        if not self._close_holdings_mode:
+            return
+        self.status_combo.setCurrentText("CLOSED")
+        self.status_combo.setEnabled(False)
+        self.instrument_edit.setEnabled(False)
+        self.share_count_spin.setEnabled(False)
+        self.buy_price_spin.setEnabled(False)
+        self.open_date_edit.setEnabled(False)
+        self.notes_edit.setEnabled(False)
 
     def _sync_status(self, status: str):
         closed = status == "CLOSED"
@@ -209,11 +237,10 @@ class PortfolioTab(QWidget):
         self._trades: List[Trade] = []
         self._holdings: List[Holding] = []
         self._trade_row_indices: List[int] = []
+        self._holding_row_instruments: List[str] = []
         self._build_ui()
         self._load_state()
         self.refresh_view()
-
-    # ---------- Public interface used by main window ----------
 
     def holdings_symbols(self) -> List[str]:
         seen = set()
@@ -245,14 +272,11 @@ class PortfolioTab(QWidget):
         except Exception:
             return 1
 
-    # ---------- UI ----------
-
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
-        # Goal dashboard + analytics
         top_row = QHBoxLayout()
 
         self.goal_group = QGroupBox("Goal Dashboard")
@@ -318,7 +342,6 @@ class PortfolioTab(QWidget):
 
         root.addLayout(top_row)
 
-        # Holdings
         self.holdings_group = QGroupBox("Open Holdings")
         self.holdings_group.setStyleSheet(GROUP_STYLE)
         holdings_layout = QVBoxLayout(self.holdings_group)
@@ -341,13 +364,14 @@ class PortfolioTab(QWidget):
         self.holdings_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.holdings_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.holdings_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.holdings_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.holdings_table.customContextMenuRequested.connect(self._open_holdings_context_menu)
         holdings_layout.addWidget(self.holdings_table)
 
         self.holdings_summary = QLabel("—")
         holdings_layout.addWidget(self.holdings_summary)
         root.addWidget(self.holdings_group)
 
-        # Trade history
         self.trade_group = QGroupBox("Trade History")
         self.trade_group.setStyleSheet(GROUP_STYLE)
         trade_layout = QVBoxLayout(self.trade_group)
@@ -391,12 +415,9 @@ class PortfolioTab(QWidget):
         self.btn_delete_trade.clicked.connect(self._delete_trade)
         self.goal_preset.currentTextChanged.connect(self._on_goal_preset_changed)
 
-    # ---------- Persistence ----------
-
     def _load_state(self):
         self._trades = trades_from_json(self._settings.value(self.SETTINGS_KEY, []))
 
-        # Optional one-time migration from the older holdings-only model.
         if not self._trades:
             legacy = self._settings.value(self.LEGACY_HOLDINGS_KEY, [])
             legacy_rows = []
@@ -437,8 +458,6 @@ class PortfolioTab(QWidget):
         self._settings.setValue(self.SETTINGS_KEY, trades_to_json(self._trades))
         self._settings.sync()
 
-    # ---------- Actions ----------
-
     def _watchlist_symbols(self) -> List[str]:
         parent = self.window()
         watch = getattr(parent, "watch", None)
@@ -465,8 +484,47 @@ class PortfolioTab(QWidget):
             return None
         return source_index
 
+    def _selected_holding_instrument(self) -> Optional[str]:
+        view_row = self.holdings_table.currentRow()
+        if view_row < 0 or view_row >= len(self._holding_row_instruments):
+            return None
+        return self._holding_row_instruments[view_row]
+
+    def _open_trades_for_instrument(self, instrument: str) -> List[tuple[int, Trade]]:
+        symbol = (instrument or "").strip().upper()
+        out: List[tuple[int, Trade]] = []
+        for idx, trade in enumerate(self._trades):
+            if not trade.is_closed and trade.normalized_instrument() == symbol:
+                out.append((idx, trade))
+        return out
+
+    def _combined_open_trade(self, instrument: str) -> Optional[Trade]:
+        matching = self._open_trades_for_instrument(instrument)
+        if not matching:
+            return None
+        trades = [trade for _, trade in matching]
+        total_qty = sum(int(t.share_count) for t in trades)
+        total_cost = sum(float(t.buy_price) * int(t.share_count) for t in trades)
+        oldest_open_date = min((t.open_date for t in trades if t.open_date is not None), default=date.today())
+        combined_notes = " | ".join([t.notes for t in trades if t.notes])
+        avg_cost = (total_cost / total_qty) if total_qty > 0 else 0.0
+        return Trade(
+            instrument=instrument,
+            share_count=total_qty,
+            buy_price=avg_cost,
+            sell_price=None,
+            open_date=oldest_open_date,
+            close_date=None,
+            notes=combined_notes,
+        )
+
     def _add_trade(self):
-        dlg = TradeEditDialog(watchlist_symbols=self._watchlist_symbols(), parent=self)
+        dlg = TradeEditDialog(
+            watchlist_symbols=self._watchlist_symbols(),
+            default_quantity=self._trade_default_quantity(),
+            quantity_increment=self._trade_quantity_increment(),
+            parent=self,
+        )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._trades.append(dlg.to_trade())
@@ -479,7 +537,13 @@ class PortfolioTab(QWidget):
         if source_index is None:
             QMessageBox.information(self, "Select trade", "Choose a trade row to edit.")
             return
-        dlg = TradeEditDialog(self._trades[source_index], watchlist_symbols=self._watchlist_symbols(), parent=self)
+        dlg = TradeEditDialog(
+            self._trades[source_index],
+            watchlist_symbols=self._watchlist_symbols(),
+            default_quantity=self._trade_default_quantity(),
+            quantity_increment=self._trade_quantity_increment(),
+            parent=self,
+        )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._trades[source_index] = dlg.to_trade()
@@ -501,6 +565,61 @@ class PortfolioTab(QWidget):
         self._trades.pop(source_index)
         self._save_trades()
         self.refresh_view()
+
+    def _open_holdings_context_menu(self, pos: QPoint):
+        row = self.holdings_table.rowAt(pos.y())
+        if row < 0:
+            return
+        self.holdings_table.selectRow(row)
+        instrument = self._selected_holding_instrument()
+        if not instrument:
+            return
+
+        menu = QMenu(self)
+        act_close = menu.addAction("Close Holdings")
+        act_avg_down = menu.addAction("Avg Down - TODO")
+        chosen = menu.exec(self.holdings_table.viewport().mapToGlobal(pos))
+        if chosen == act_close:
+            self._close_selected_holding()
+        elif chosen == act_avg_down:
+            QMessageBox.information(self, "Avg Down", "Avg Down is not implemented yet.")
+
+    def _close_selected_holding(self):
+        instrument = self._selected_holding_instrument()
+        if not instrument:
+            QMessageBox.information(self, "Select holding", "Choose an open holding first.")
+            return
+        combined_trade = self._combined_open_trade(instrument)
+        matching = self._open_trades_for_instrument(instrument)
+        if combined_trade is None or not matching:
+            QMessageBox.information(self, "No open trades", "There are no open trades for that holding.")
+            return
+
+        dlg = TradeEditDialog(
+            trade=combined_trade,
+            watchlist_symbols=self._watchlist_symbols(),
+            default_quantity=self._trade_default_quantity(),
+            quantity_increment=self._trade_quantity_increment(),
+            close_holdings_mode=True,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        closing_trade = dlg.to_trade()
+        if closing_trade.sell_price is None or closing_trade.close_date is None:
+            QMessageBox.warning(self, "Missing close info", "Enter a sell price and close date.")
+            return
+
+        updated_indices: List[int] = []
+        for idx, trade in matching:
+            trade.sell_price = float(closing_trade.sell_price)
+            trade.close_date = closing_trade.close_date
+            updated_indices.append(idx)
+
+        self._save_trades()
+        selection_index = updated_indices[-1] if updated_indices else None
+        self.refresh_view(selected_trade_source_index=selection_index)
 
     def _goal_preset_values(self) -> List[float]:
         return [
@@ -555,8 +674,6 @@ class PortfolioTab(QWidget):
         self._settings.sync()
         self.refresh_view()
 
-    # ---------- Rendering ----------
-
     def refresh_view(self, selected_trade_source_index: Optional[int] = None):
         self._holdings = compute_holdings_from_trades(self._trades)
         realized_by_symbol = compute_realized_pl_by_symbol(self._trades)
@@ -592,15 +709,9 @@ class PortfolioTab(QWidget):
     def _render_analytics(self, analytics):
         self.analytics_labels["open_trades"].setText(f"{analytics.open_trades:,d}")
         self.analytics_labels["closed_trades"].setText(f"{analytics.closed_trades:,d}")
-        self.analytics_labels["avg_profit_per_trade"].setText(
-            self._money_or_dash(analytics.avg_profit_per_trade)
-        )
-        self.analytics_labels["best_trade"].setText(
-            self._money_or_dash(analytics.best_trade)
-        )
-        self.analytics_labels["avg_daily_closed_profit"].setText(
-            self._money_or_dash(analytics.avg_daily_closed_profit)
-        )
+        self.analytics_labels["avg_profit_per_trade"].setText(self._money_or_dash(analytics.avg_profit_per_trade))
+        self.analytics_labels["best_trade"].setText(self._money_or_dash(analytics.best_trade))
+        self.analytics_labels["avg_daily_closed_profit"].setText(self._money_or_dash(analytics.avg_daily_closed_profit))
 
     def _render_trade_table(self, rows, selected_trade_source_index: Optional[int]):
         self.trade_table.setRowCount(len(rows))
@@ -644,6 +755,7 @@ class PortfolioTab(QWidget):
 
     def _render_holdings_table(self, rows):
         self.holdings_table.setRowCount(len(rows))
+        self._holding_row_instruments = [row.instrument for row in rows]
         for r, row in enumerate(rows):
             values = [
                 row.instrument,
@@ -662,8 +774,6 @@ class PortfolioTab(QWidget):
                     font.setBold(True)
                     item.setFont(font)
                 self.holdings_table.setItem(r, c, item)
-
-    # ---------- Formatting ----------
 
     @staticmethod
     def _money(value: float) -> str:

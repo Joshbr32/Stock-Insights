@@ -243,10 +243,6 @@ def trades_from_json(raw) -> List[Trade]:
 
 
 def sort_trades(trades: Iterable[Trade]) -> List[Trade]:
-    """
-    Closed trades first, sorted by Close Date -> Ticker -> Open Date.
-    Open trades are always pushed to the bottom, then sorted by Ticker -> Open Date.
-    """
     def sort_key(item: tuple[int, Trade]):
         original_index, trade = item
         is_open = not trade.is_closed
@@ -388,17 +384,16 @@ def compute_portfolio(
     return rows, summary
 
 
-def compute_trade_analytics(trades: Iterable[Trade], today: Optional[date] = None) -> TradeAnalytics:
+def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
     closed = [t for t in trades if t.is_closed and t.trade_profit is not None]
-    open_count = sum(1 for t in trades if not t.is_closed)
     profits = [float(t.trade_profit or 0.0) for t in closed]
     realized_profit = sum(profits)
-    elapsed = business_days_elapsed_in_year(today)
+    elapsed = business_days_elapsed_in_year()
 
     return TradeAnalytics(
         realized_profit=realized_profit,
         closed_trades=len(closed),
-        open_trades=open_count,
+        open_trades=sum(1 for t in trades if not t.is_closed),
         avg_profit_per_trade=(realized_profit / len(closed)) if closed else None,
         best_trade=max(profits) if profits else None,
         avg_daily_closed_profit=(realized_profit / elapsed) if elapsed > 0 else None,
