@@ -241,6 +241,18 @@ def trades_from_json(raw) -> List[Trade]:
     return out
 
 
+
+def solve_buy_mark_for_target_avg(current_qty: int, current_avg_cost: float, buy_qty: int, target_mark: float) -> float:
+    """Return the buy price required to bring the blended average cost down to target_mark."""
+    if current_qty <= 0:
+        raise ValueError("Buy (Mark Down) requires an existing holding.")
+    if buy_qty <= 0:
+        raise ValueError("Qty must be greater than zero.")
+    if target_mark <= 0:
+        raise ValueError("Target Mark must be greater than zero.")
+    total_qty = current_qty + buy_qty
+    return ((target_mark * total_qty) - (current_avg_cost * current_qty)) / buy_qty
+
 # ---------- Calculations ----------
 
 

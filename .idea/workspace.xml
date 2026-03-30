@@ -4,8 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="+Trade History: Allow user to adjust which columns to show/ hide on trade history&#10;&#10;~Open Holdings: move Unrealized P/L between Mark and Market Value&#10;&#10;Performance Analytics:&#10;+Avg Trade Value: Avg market value of trades&#10;+Avg ROI %: Avg Profit / Avg Market Value of trades">
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="UI updates for portfolio and settings">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -180,7 +182,15 @@
       <option name="project" value="LOCAL" />
       <updated>1774903657173</updated>
     </task>
-    <option name="localTasksCounter" value="7" />
+    <task id="LOCAL-00007" summary="UI updates for portfolio and settings">
+      <option name="closed" value="true" />
+      <created>1774905277433</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1774905277433</updated>
+    </task>
+    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -204,7 +214,8 @@
     <MESSAGE value="UI Changes to Trade Defaults" />
     <MESSAGE value="Revamped Open Holdings" />
     <MESSAGE value="+Trade History: Allow user to adjust which columns to show/ hide on trade history&#10;&#10;~Open Holdings: move Unrealized P/L between Mark and Market Value&#10;&#10;Performance Analytics:&#10;+Avg Trade Value: Avg market value of trades&#10;+Avg ROI %: Avg Profit / Avg Market Value of trades" />
-    <option name="LAST_COMMIT_MESSAGE" value="+Trade History: Allow user to adjust which columns to show/ hide on trade history&#10;&#10;~Open Holdings: move Unrealized P/L between Mark and Market Value&#10;&#10;Performance Analytics:&#10;+Avg Trade Value: Avg market value of trades&#10;+Avg ROI %: Avg Profit / Avg Market Value of trades" />
+    <MESSAGE value="UI updates for portfolio and settings" />
+    <option name="LAST_COMMIT_MESSAGE" value="UI updates for portfolio and settings" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/StockInsights$main.coverage" NAME="main Coverage Results" MODIFIED="1761477027747" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
