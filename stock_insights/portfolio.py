@@ -6,6 +6,40 @@ import json
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
+# ---------- NYSE trading-calendar support ----------
+# Uses pandas_market_calendars when available; falls back to weekday counting.
+
+try:
+    import pandas_market_calendars as _mcal  # type: ignore
+    _nyse_cal = _mcal.get_calendar("NYSE")
+    _TRADING_CAL_OK = True
+except Exception:
+    _nyse_cal = None
+    _TRADING_CAL_OK = False
+
+
+def _nyse_day_count(start: date, end: date) -> int:
+    """Count NYSE trading days between start and end (inclusive)."""
+    if end < start:
+        return 0
+    if _TRADING_CAL_OK and _nyse_cal is not None:
+        try:
+            sched = _nyse_cal.schedule(
+                start_date=start.isoformat(),
+                end_date=end.isoformat(),
+            )
+            return len(sched)
+        except Exception:
+            pass
+    # Weekday fallback if library unavailable or call fails
+    count, cur = 0, start
+    while cur <= end:
+        if cur.weekday() < 5:
+            count += 1
+        cur += timedelta(days=1)
+    return count
+
+
 # ---------- Core models ----------
 
 
@@ -155,23 +189,17 @@ def business_days_between(start: Optional[date], end: Optional[date]) -> Optiona
         return None
     if end < start:
         return 0
-    days = 0
-    cur = start
-    while cur <= end:
-        if cur.weekday() < 5:
-            days += 1
-        cur += timedelta(days=1)
-    return days
+    return _nyse_day_count(start, end)
 
 
 def business_days_elapsed_in_year(today: Optional[date] = None) -> int:
     today = today or date.today()
-    return business_days_between(date(today.year, 1, 1), today) or 0
+    return _nyse_day_count(date(today.year, 1, 1), today)
 
 
 def business_days_remaining_in_year(today: Optional[date] = None) -> int:
     today = today or date.today()
-    return business_days_between(today, date(today.year, 12, 31)) or 0
+    return _nyse_day_count(today, date(today.year, 12, 31))
 
 
 def _current_months_remaining(today: date) -> int:
@@ -233,7 +261,7 @@ def trades_from_json(raw) -> List[Trade]:
         try:
             raw = json.loads(raw)
         except Exception:
-            raw = []
+            return []
     out: List[Trade] = []
     if not isinstance(raw, list):
         return out
@@ -244,8 +272,12 @@ def trades_from_json(raw) -> List[Trade]:
     return out
 
 
-
-def solve_buy_mark_for_target_avg(current_qty: int, current_avg_cost: float, buy_qty: int, target_mark: float) -> float:
+def solve_buy_mark_for_target_avg(
+    current_qty: int,
+    current_avg_cost: float,
+    buy_qty: int,
+    target_mark: float,
+) -> float:
     """Return the buy price required to bring the blended average cost down to target_mark."""
     if current_qty <= 0:
         raise ValueError("Buy (Mark Down) requires an existing holding.")
@@ -255,6 +287,7 @@ def solve_buy_mark_for_target_avg(current_qty: int, current_avg_cost: float, buy
         raise ValueError("Target Mark must be greater than zero.")
     total_qty = current_qty + buy_qty
     return ((target_mark * total_qty) - (current_avg_cost * current_qty)) / buy_qty
+
 
 # ---------- Calculations ----------
 
@@ -353,7 +386,14 @@ def compute_portfolio(
         qty = int(holding.qty)
         if not instrument or qty <= 0:
             continue
-        cleaned.append(Holding(instrument=instrument, qty=qty, avg_cost=float(holding.avg_cost), notes=holding.notes or ""))
+        cleaned.append(
+            Holding(
+                instrument=instrument,
+                qty=qty,
+                avg_cost=float(holding.avg_cost),
+                notes=holding.notes or "",
+            )
+        )
 
     total_market_value = 0.0
     total_cost_basis = 0.0
@@ -402,7 +442,8 @@ def compute_portfolio(
 
 
 def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
-    closed = [t for t in trades if t.is_closed and t.trade_profit is not None]
+    trades_list = list(trades)
+    closed = [t for t in trades_list if t.is_closed and t.trade_profit is not None]
     profits = [float(t.trade_profit or 0.0) for t in closed]
     trade_values = [float(t.buy_price) * int(t.share_count) for t in closed]
     realized_profit = sum(profits)
@@ -410,9 +451,11 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
 
     avg_profit_per_trade = (realized_profit / len(closed)) if closed else None
     avg_trade_value = (sum(trade_values) / len(trade_values)) if trade_values else None
-    avg_roi_pct = ((avg_profit_per_trade / avg_trade_value) * 100.0) if (
-        avg_profit_per_trade is not None and avg_trade_value not in (None, 0)
-    ) else None
+    avg_roi_pct = (
+        (avg_profit_per_trade / avg_trade_value) * 100.0
+        if (avg_profit_per_trade is not None and avg_trade_value not in (None, 0))
+        else None
+    )
 
     total_trade_value = sum(trade_values) if trade_values else 0.0
     total_roi_pct = ((realized_profit / total_trade_value) * 100.0) if total_trade_value > 0 else None
@@ -420,7 +463,7 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
     return TradeAnalytics(
         realized_profit=realized_profit,
         closed_trades=len(closed),
-        open_trades=sum(1 for t in trades if not t.is_closed),
+        open_trades=sum(1 for t in trades_list if not t.is_closed),
         avg_profit_per_trade=avg_profit_per_trade,
         avg_trade_value=avg_trade_value,
         avg_roi_pct=avg_roi_pct,
@@ -443,8 +486,14 @@ def compute_goal_progress(
     elapsed = business_days_elapsed_in_year(today)
     remaining_days = business_days_remaining_in_year(today)
 
-    monthly_target = (remaining_profit / _current_months_remaining(today)) if _current_months_remaining(today) > 0 else None
-    weekly_target = (remaining_profit / _weeks_remaining(today)) if _weeks_remaining(today) > 0 else None
+    monthly_target = (
+        (remaining_profit / _current_months_remaining(today))
+        if _current_months_remaining(today) > 0
+        else None
+    )
+    weekly_target = (
+        (remaining_profit / _weeks_remaining(today)) if _weeks_remaining(today) > 0 else None
+    )
     daily_target = (remaining_profit / remaining_days) if remaining_days > 0 else None
     avg_daily_profit = (realized_profit / elapsed) if elapsed > 0 else None
 
