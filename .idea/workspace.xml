@@ -4,11 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="Trimmed everything unrelated to portfolio">
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="Updated to fix goals, updated packages.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/settings_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/settings_dialog.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -53,32 +53,32 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.main.executor": "Run",
-    "Python.main_window.executor": "Run",
-    "Python.stock_insights.executor": "Run",
-    "Python.stock_insights_alpha.executor": "Run",
-    "Python.stock_insights_beta.executor": "Run",
-    "Python.stock_insights_c.executor": "Run",
-    "Python.stock_insights_gui.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "Portfolio",
-    "last_opened_file_path": "C:/Users/Joshb/OneDrive/Documents/Code/PycharmProjects/StockInsights/stock_insights",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "run.code.analysis.last.selected.profile": "aDefault",
-    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main_window.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights_alpha.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights_beta.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights_c.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights_gui.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;Portfolio&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/Joshb/OneDrive/Documents/Code/PycharmProjects/StockInsights/stock_insights&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;run.code.analysis.last.selected.profile&quot;: &quot;aDefault&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\stock_insights" />
@@ -213,7 +213,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775494305691</updated>
     </task>
-    <option name="localTasksCounter" value="10" />
+    <task id="LOCAL-00010" summary="Updated to fix goals, updated packages.">
+      <option name="closed" value="true" />
+      <created>1775499249304</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1775499249304</updated>
+    </task>
+    <option name="localTasksCounter" value="11" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -240,7 +248,8 @@
     <MESSAGE value="UI updates for portfolio and settings" />
     <MESSAGE value="New branch, focus only on portfolio" />
     <MESSAGE value="Trimmed everything unrelated to portfolio" />
-    <option name="LAST_COMMIT_MESSAGE" value="Trimmed everything unrelated to portfolio" />
+    <MESSAGE value="Updated to fix goals, updated packages." />
+    <option name="LAST_COMMIT_MESSAGE" value="Updated to fix goals, updated packages." />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/StockInsights$main.coverage" NAME="main Coverage Results" MODIFIED="1761477027747" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />

@@ -93,18 +93,15 @@ class UserAccountDialog(QDialog):
             password = str(s.value("user_account/password", "") or "")
             raw = s.value("user_account/accounts", ["Default"])
             if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw)
-                except Exception:
-                    raw = [x.strip() for x in raw.split(",") if x.strip()]
+                try: raw = json.loads(raw)
+                except Exception: raw = [x.strip() for x in raw.split(",") if x.strip()]
             if isinstance(raw, list):
                 cleaned, seen = [], set()
                 for item in raw:
                     t = str(item or "").strip()
                     if t and t not in seen:
                         seen.add(t); cleaned.append(t)
-                if cleaned:
-                    accounts = cleaned
+                if cleaned: accounts = cleaned
             active_account = str(s.value("user_account/active_account", accounts[0]) or accounts[0])
         self.username_edit.setText(username)
         self.password_edit.setText(password)
@@ -116,8 +113,7 @@ class UserAccountDialog(QDialog):
             t = str(a or "").strip()
             if t and t not in seen:
                 seen.add(t); cleaned.append(t)
-        if not cleaned:
-            cleaned = ["Default"]
+        if not cleaned: cleaned = ["Default"]
         self.accounts_table.setRowCount(0)
         for a in cleaned:
             r = self.accounts_table.rowCount()
@@ -136,8 +132,7 @@ class UserAccountDialog(QDialog):
         for r in range(self.accounts_table.rowCount()):
             item = self.accounts_table.item(r, 0)
             t = item.text().strip() if item else ""
-            if t:
-                out.append(t)
+            if t: out.append(t)
         return out
 
     def _select_account_in_table(self, name: str):
@@ -189,14 +184,14 @@ class UserAccountDialog(QDialog):
             self._settings.setValue("user_account/password", self.password_edit.text())
             self._settings.setValue("user_account/accounts", json.dumps(accounts))
             self._settings.setValue("user_account/active_account", active)
+            # Prune goal dashboard accounts (keep empty = all independent; valid)
             raw = self._settings.value("portfolio/goal_dashboard_accounts", [])
             if isinstance(raw, str):
                 try: raw = json.loads(raw)
                 except Exception: raw = [x.strip() for x in raw.split(",") if x.strip()]
             if not isinstance(raw, list): raw = []
-            sel = {str(n).strip() for n in raw if str(n).strip()} or set(accounts)
-            sel.update(accounts)
-            self._settings.setValue("portfolio/goal_dashboard_accounts", json.dumps([n for n in accounts if n in sel]))
+            pruned = [str(n).strip() for n in raw if str(n).strip() in accounts]
+            self._settings.setValue("portfolio/goal_dashboard_accounts", json.dumps(pruned))
             self._settings.sync()
         self.accept()
 
@@ -245,8 +240,7 @@ class MainWindow(QMainWindow):
         if isinstance(raw, str):
             try: raw = json.loads(raw)
             except Exception: raw = [x.strip() for x in raw.split(",") if x.strip()]
-        if not isinstance(raw, list) or not raw:
-            return ["Default"]
+        if not isinstance(raw, list) or not raw: return ["Default"]
         cleaned, seen = [], set()
         for item in raw:
             name = str(item or "").strip()
@@ -265,8 +259,7 @@ class MainWindow(QMainWindow):
     def _reload_custom_order(self):
         items = self._get_saved_watch_items() or ["NVDA", "SRPT", "RDDT", "FIG", "NCLH", "CCL"]
         self.watch.setRowCount(0)
-        for sym in items:
-            self._add_watch_row(sym)
+        for sym in items: self._add_watch_row(sym)
 
     def _load_settings(self):
         s = self._settings()
@@ -286,8 +279,7 @@ class MainWindow(QMainWindow):
                 sizes = [int(sizes[0]), int(sizes[1])]
                 self.splitter.setSizes(sizes)
                 self._last_sidebar_size = max(200, sizes[0])
-            except Exception:
-                pass
+            except Exception: pass
         self._set_sidebar_visible(sidebar_visible, apply_sizes=False)
 
     def _save_settings(self):
@@ -308,17 +300,16 @@ class MainWindow(QMainWindow):
             "L1_INTERVAL": self.L1_INTERVAL,
             "NET_INTERVAL": self.NET_INTERVAL,
             "L1_ENABLED": self.L1_ENABLED,
-            "THEME_OVERRIDE": self._settings().value("ui/THEME_OVERRIDE", getattr(self.theme, "override_mode", "System")),
-            "MATCH_SYSTEM_ACCENT": self._settings().value("ui/MATCH_SYSTEM_ACCENT", getattr(self.theme, "match_system_accent", True), type=bool),
-            "GOAL_PRESET_1": float(self._settings().value("goals/preset_1", 250000.0) or 250000.0),
-            "GOAL_PRESET_2": float(self._settings().value("goals/preset_2", 500000.0) or 500000.0),
-            "GOAL_PRESET_3": float(self._settings().value("goals/preset_3", 1000000.0) or 1000000.0),
+            "THEME_OVERRIDE": self._settings().value("ui/THEME_OVERRIDE",
+                                                      getattr(self.theme, "override_mode", "System")),
+            "MATCH_SYSTEM_ACCENT": self._settings().value("ui/MATCH_SYSTEM_ACCENT",
+                                                           getattr(self.theme, "match_system_accent", True),
+                                                           type=bool),
             "TRADE_DEFAULT_QUANTITY": int(self._settings().value("trade_defaults/default_quantity", 1) or 1),
             "TRADE_QUANTITY_INCREMENT": int(self._settings().value("trade_defaults/quantity_increment", 1) or 1),
         }
         dlg = SettingsDialog(self, self._settings(), cv)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
         vals = dlg.get_values()
         self.L1_INTERVAL = int(vals["L1_INTERVAL"])
         self.NET_INTERVAL = int(vals["NET_INTERVAL"])
@@ -328,9 +319,6 @@ class MainWindow(QMainWindow):
         s = self._settings()
         s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
         s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
-        s.setValue("goals/preset_1", float(vals["GOAL_PRESET_1"]))
-        s.setValue("goals/preset_2", float(vals["GOAL_PRESET_2"]))
-        s.setValue("goals/preset_3", float(vals["GOAL_PRESET_3"]))
         s.setValue("trade_defaults/default_quantity", int(vals["TRADE_DEFAULT_QUANTITY"]))
         s.setValue("trade_defaults/quantity_increment", int(vals["TRADE_QUANTITY_INCREMENT"]))
         s.sync()
@@ -338,38 +326,28 @@ class MainWindow(QMainWindow):
         self.timer_net.setInterval(self.NET_INTERVAL)
         self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
         self._save_settings()
-        # Goal preset values are global; push to all tabs.
-        for tab in self._portfolio_tabs.values():
-            tab.reload_goal_presets()
 
     def _open_user_account_dialog(self):
         dlg = UserAccountDialog(self, self._settings())
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._rebuild_portfolio_tabs()
 
-    # ---- Portfolio tab management (Fix #3) ----
+    # ---- Portfolio tab management ----
 
     def _build_portfolio_tabs(self):
-        """Create one PortfolioTab per account."""
         for account in self._get_account_names():
             tab = PortfolioTab(account, self._settings(), self)
             self.tabs.addTab(tab, account)
             self._portfolio_tabs[account] = tab
-        # Connect after all tabs exist so init-time migration saves don't
-        # trigger cross-tab reloads before siblings are constructed.
         for tab in self._portfolio_tabs.values():
             tab.tradesChanged.connect(self._on_portfolio_data_changed)
 
     def _rebuild_portfolio_tabs(self):
-        """Tear down and recreate tabs after account list changes."""
         for tab in list(self._portfolio_tabs.values()):
-            try:
-                tab.tradesChanged.disconnect(self._on_portfolio_data_changed)
-            except Exception:
-                pass
+            try: tab.tradesChanged.disconnect(self._on_portfolio_data_changed)
+            except Exception: pass
             idx = self.tabs.indexOf(tab)
-            if idx >= 0:
-                self.tabs.removeTab(idx)
+            if idx >= 0: self.tabs.removeTab(idx)
         self._portfolio_tabs.clear()
         self._build_portfolio_tabs()
         for tab in self._portfolio_tabs.values():
@@ -380,7 +358,6 @@ class MainWindow(QMainWindow):
         return w if isinstance(w, PortfolioTab) else None
 
     def _on_portfolio_data_changed(self):
-        """Refresh all sibling tabs when one tab's trades or goal settings change."""
         sender = self.sender()
         for tab in self._portfolio_tabs.values():
             if tab is not sender:
@@ -414,41 +391,31 @@ class MainWindow(QMainWindow):
         self.act_toggle_sidebar.setCheckable(True)
         self.act_toggle_sidebar.setShortcut(QKeySequence("Ctrl+B"))
         self.act_toggle_sidebar.triggered.connect(self._toggle_sidebar)
-        view_menu.addAction("Trade History Columns").triggered.connect(
-            lambda: (tab := self._current_portfolio_tab()) and tab.open_trade_history_view_settings()
-        )
-        view_menu.addAction("Goal Dashboard Accounts").triggered.connect(
-            lambda: (tab := self._current_portfolio_tab()) and tab.open_goal_dashboard_accounts_dialog()
-        )
+        view_menu.addAction("Trade History Columns").triggered.connect(self._open_trade_history_columns)
+        # Item #2: renamed to "Goal Dashboard Options"
+        view_menu.addAction("Goal Dashboard Options").triggered.connect(self._open_goal_dashboard_options)
 
         status_corner = QWidget(self)
         sr = QHBoxLayout(status_corner)
-        sr.setContentsMargins(8, 0, 8, 0)
-        sr.setSpacing(8)
-        sr.addWidget(self.spinner)
-        sr.addWidget(self.lbl_updating)
-        sr.addWidget(self.lbl_status)
-        sr.addWidget(self.progress)
+        sr.setContentsMargins(8, 0, 8, 0); sr.setSpacing(8)
+        sr.addWidget(self.spinner); sr.addWidget(self.lbl_updating)
+        sr.addWidget(self.lbl_status); sr.addWidget(self.progress)
         self.menuBar().setCornerWidget(status_corner, Qt.Corner.TopRightCorner)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(self.splitter)
 
-        # Left: watchlist
         left_wrap = QFrame()
         left_wrap.setObjectName("leftPane")
         left_layout = QVBoxLayout(left_wrap)
         title_row = QHBoxLayout()
-        lbl = QLabel("Watchlist")
-        lbl.setObjectName("leftTitle")
+        lbl = QLabel("Watchlist"); lbl.setObjectName("leftTitle")
         self.sort_mode = QComboBox()
         self.sort_mode.addItems([self.SORT_DEFAULT, self.SORT_ALPHA, self.SORT_INDUSTRY, self.SORT_PRICE])
         self.sort_mode.currentTextChanged.connect(self._on_sort_mode_changed)
         self.sort_mode.setFixedWidth(170)
-        title_row.addWidget(lbl)
-        title_row.addStretch(1)
-        title_row.addWidget(QLabel("Sort:"))
-        title_row.addWidget(self.sort_mode)
+        title_row.addWidget(lbl); title_row.addStretch(1)
+        title_row.addWidget(QLabel("Sort:")); title_row.addWidget(self.sort_mode)
         left_layout.addLayout(title_row)
 
         self.watch = WatchTable(self)
@@ -457,17 +424,13 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.watch, stretch=1)
 
         wl_btns = QHBoxLayout()
-        self.add_btn = QPushButton("+ Add")
-        self.add_btn.clicked.connect(self._on_add_ticker)
-        self.remove_btn = QPushButton("- Remove")
-        self.remove_btn.clicked.connect(self._on_remove_ticker)
-        wl_btns.addWidget(self.add_btn)
-        wl_btns.addWidget(self.remove_btn)
+        self.add_btn = QPushButton("+ Add"); self.add_btn.clicked.connect(self._on_add_ticker)
+        self.remove_btn = QPushButton("- Remove"); self.remove_btn.clicked.connect(self._on_remove_ticker)
+        wl_btns.addWidget(self.add_btn); wl_btns.addWidget(self.remove_btn)
         left_layout.addLayout(wl_btns)
         self.splitter.addWidget(left_wrap)
         self.splitter.setStretchFactor(0, 0)
 
-        # Right: one tab per account
         right_wrap = QWidget()
         right_layout = QVBoxLayout(right_wrap)
         self.tabs = QTabWidget()
@@ -477,6 +440,16 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(1, 1)
 
         self.statusBar().showMessage("Ready")
+
+    # ---- View menu actions ----
+
+    def _open_trade_history_columns(self):
+        tab = self._current_portfolio_tab()
+        if tab: tab.open_trade_history_view_settings()
+
+    def _open_goal_dashboard_options(self):
+        tab = self._current_portfolio_tab()
+        if tab: tab.open_goal_dashboard_options_dialog()
 
     # ---- Timers ----
 
@@ -503,36 +476,28 @@ class MainWindow(QMainWindow):
 
     def _on_net_status(self, ok: bool, thread: QThread, worker):
         self._online = ok
-        dot = "●"
         if ok:
-            self.lbl_status.setText(f"{dot} Online")
-            self.lbl_status.setStyleSheet("color: #22c55e;")
+            self.lbl_status.setText("● Online"); self.lbl_status.setStyleSheet("color: #22c55e;")
         else:
-            self.lbl_status.setText(f"{dot} Offline")
-            self.lbl_status.setStyleSheet("color: #ef4444;")
+            self.lbl_status.setText("● Offline"); self.lbl_status.setStyleSheet("color: #ef4444;")
         thread.quit()
 
     def _busy_enter(self):
         self._busy_ops += 1
         if self._busy_ops == 1:
-            self.spinner.start(90)
-            self.lbl_updating.setText("Updating...")
+            self.spinner.start(90); self.lbl_updating.setText("Updating...")
 
     def _busy_leave(self):
         self._busy_ops = max(0, self._busy_ops - 1)
         if self._busy_ops == 0:
-            self.spinner.stop()
-            self.lbl_updating.setText("")
-
-    # ---- Marks refresh ----
+            self.spinner.stop(); self.lbl_updating.setText("")
 
     def _level1_tick(self):
         tickers = [self.watch.item(r, 0).text() for r in range(self.watch.rowCount())]
         for tab in self._portfolio_tabs.values():
             tickers.extend(tab.holdings_symbols())
         tickers = list(dict.fromkeys([t for t in tickers if t]))
-        if not tickers:
-            return
+        if not tickers: return
         self._busy_enter()
         w = MarksWorker(tickers)
         th = QThread(self)
@@ -544,7 +509,6 @@ class MainWindow(QMainWindow):
         th.start()
 
     def _on_marks(self, data: Dict[str, Dict], thread: QThread, worker):
-        # All tabs get the full data dict so cross-account goal calc works.
         for tab in self._portfolio_tabs.values():
             tab.update_marks(data)
         for r in range(self.watch.rowCount()):
@@ -552,16 +516,14 @@ class MainWindow(QMainWindow):
             row = data.get(sym, {})
             cell = self.watch.item(r, 1)
             if cell is None:
-                cell = QTableWidgetItem("--")
-                self.watch.setItem(r, 1, cell)
+                cell = QTableWidgetItem("--"); self.watch.setItem(r, 1, cell)
             if row.get("price") is not None:
                 cell.setText(f"{row['price']:.2f}")
         thread.quit()
         self._busy_leave()
 
     def _on_marks_error(self, msg: str, thread: QThread, worker):
-        self.lbl_status.setText("● Offline")
-        self.lbl_status.setStyleSheet("color: #ef4444;")
+        self.lbl_status.setText("● Offline"); self.lbl_status.setStyleSheet("color: #ef4444;")
         thread.quit()
         self._busy_leave()
 
@@ -573,26 +535,21 @@ class MainWindow(QMainWindow):
 
     # ---- Sidebar ----
 
-    def _is_sidebar_visible(self):
-        return self.splitter.sizes()[0] > 0
+    def _is_sidebar_visible(self): return self.splitter.sizes()[0] > 0
 
     def _set_sidebar_visible(self, visible: bool, apply_sizes: bool = True):
         sizes = self.splitter.sizes()
         total = sum(sizes) if sizes else 1000
         if visible:
             left = getattr(self, "_last_sidebar_size", 240) or 240
-            if apply_sizes:
-                self.splitter.setSizes([left, max(1, total - left)])
+            if apply_sizes: self.splitter.setSizes([left, max(1, total - left)])
             self.act_toggle_sidebar.setChecked(True)
         else:
-            if sizes and sizes[0] > 0:
-                self._last_sidebar_size = sizes[0]
-            if apply_sizes:
-                self.splitter.setSizes([0, total])
+            if sizes and sizes[0] > 0: self._last_sidebar_size = sizes[0]
+            if apply_sizes: self.splitter.setSizes([0, total])
             self.act_toggle_sidebar.setChecked(False)
 
-    def _toggle_sidebar(self):
-        self._set_sidebar_visible(not self._is_sidebar_visible())
+    def _toggle_sidebar(self): self._set_sidebar_visible(not self._is_sidebar_visible())
 
     # ---- Watchlist ----
 
@@ -602,16 +559,11 @@ class MainWindow(QMainWindow):
         it0 = QTableWidgetItem(sym.upper())
         f = it0.font(); f.setBold(True); it0.setFont(f)
         it0.setFlags(it0.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        it1 = QTableWidgetItem(mark)
-        it1.setFlags(it1.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        it2 = QTableWidgetItem(industry)
-        it2.setFlags(it2.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.watch.setItem(r, 0, it0)
-        self.watch.setItem(r, 1, it1)
-        self.watch.setItem(r, 2, it2)
+        it1 = QTableWidgetItem(mark); it1.setFlags(it1.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        it2 = QTableWidgetItem(industry); it2.setFlags(it2.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.watch.setItem(r, 0, it0); self.watch.setItem(r, 1, it1); self.watch.setItem(r, 2, it2)
 
-    def _watch_current_row(self) -> int:
-        return self.watch.currentRow()
+    def _watch_current_row(self) -> int: return self.watch.currentRow()
 
     def _watch_current_symbol(self) -> Optional[str]:
         r = self._watch_current_row()
@@ -622,15 +574,13 @@ class MainWindow(QMainWindow):
         if not ok or not text.strip(): return
         sym = text.strip().upper()
         if not all(ch.isalnum() or ch in ".-" for ch in sym):
-            QMessageBox.warning(self, "Invalid symbol", "Use letters, numbers, dot or dash only.")
-            return
+            QMessageBox.warning(self, "Invalid symbol", "Use letters, numbers, dot or dash only."); return
         for r in range(self.watch.rowCount()):
             if self.watch.item(r, 0).text() == sym:
                 self.watch.selectRow(r); return
         self._add_watch_row(sym)
         self.watch.selectRow(self.watch.rowCount() - 1)
-        if self.sort_mode.currentText() == self.SORT_DEFAULT:
-            self._save_settings()
+        if self.sort_mode.currentText() == self.SORT_DEFAULT: self._save_settings()
 
     def _on_remove_ticker(self):
         r = self._watch_current_row()
@@ -640,8 +590,7 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Remove", f"Remove {sym} from watchlist?") != QMessageBox.StandardButton.Yes:
             return
         self.watch.removeRow(r)
-        if self.sort_mode.currentText() == self.SORT_DEFAULT:
-            self._save_settings()
+        if self.sort_mode.currentText() == self.SORT_DEFAULT: self._save_settings()
 
     def _ctx_rename_selected(self):
         r = self._watch_current_row()
@@ -682,12 +631,9 @@ class MainWindow(QMainWindow):
             self.watch.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
             self.watch.setSortingEnabled(False)
             self._reload_custom_order()
-        elif mode == self.SORT_ALPHA:
-            self._apply_sort_by_column(0, True, False)
-        elif mode == self.SORT_INDUSTRY:
-            self._apply_sort_by_column(2, True, False)
-        elif mode == self.SORT_PRICE:
-            self._apply_sort_by_column(1, False, True)
+        elif mode == self.SORT_ALPHA: self._apply_sort_by_column(0, True, False)
+        elif mode == self.SORT_INDUSTRY: self._apply_sort_by_column(2, True, False)
+        elif mode == self.SORT_PRICE: self._apply_sort_by_column(1, False, True)
 
     def _apply_sort_by_column(self, col: int, case_insensitive: bool, numeric: bool):
         self.watch.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
@@ -707,5 +653,4 @@ class MainWindow(QMainWindow):
         self.watch.setRowCount(0)
         for sym, mark, ind in rows:
             self._add_watch_row(sym, mark, ind)
-        if self.watch.rowCount() > 0:
-            self.watch.selectRow(0)
+        if self.watch.rowCount() > 0: self.watch.selectRow(0)

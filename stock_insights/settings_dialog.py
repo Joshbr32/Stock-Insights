@@ -3,7 +3,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -58,11 +57,16 @@ class CollapsibleGroup(QWidget):
 
 
 class SettingsDialog(QDialog):
+    """Application settings — Data Refresh, Trade Defaults, Appearance.
+
+    Goal targets have been moved to View > Goal Dashboard Accounts.
+    """
+
     def __init__(self, parent=None, settings=None, current_values=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.resize(520, 400)
+        self.resize(480, 320)
 
         self.settings = settings
         cv = current_values or {}
@@ -70,7 +74,7 @@ class SettingsDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
-        # --- Data Refresh ---
+        # ---- Data Refresh ----
         grp_refresh = CollapsibleGroup("Data Refresh", collapsed=False)
         refresh_form = QFormLayout()
         refresh_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -85,7 +89,7 @@ class SettingsDialog(QDialog):
         self.sb_net.setSuffix(" s")
         self.sb_net.setValue(int(cv.get("NET_INTERVAL", 10000) / 1000))
 
-        self.cb_l1 = QCheckBox("Enable marks auto refresh")
+        self.cb_l1 = QCheckBox("Enable marks auto-refresh")
         self.cb_l1.setChecked(bool(cv.get("L1_ENABLED", True)))
 
         refresh_form.addRow(QLabel("Marks refresh interval:"), self.sb_l1)
@@ -94,42 +98,10 @@ class SettingsDialog(QDialog):
         grp_refresh.setContentLayout(refresh_form)
         root.addWidget(grp_refresh)
 
-        # --- Goals ---
-        grp_goals = CollapsibleGroup("Goals", collapsed=False)
-        goals_form = QFormLayout()
-        goals_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-
-        self.goal_preset_1 = QDoubleSpinBox()
-        self.goal_preset_1.setRange(0, 100_000_000)
-        self.goal_preset_1.setDecimals(2)
-        self.goal_preset_1.setPrefix("$ ")
-        self.goal_preset_1.setSingleStep(10_000)
-        self.goal_preset_1.setValue(float(cv.get("GOAL_PRESET_1", 250_000.0)))
-
-        self.goal_preset_2 = QDoubleSpinBox()
-        self.goal_preset_2.setRange(0, 100_000_000)
-        self.goal_preset_2.setDecimals(2)
-        self.goal_preset_2.setPrefix("$ ")
-        self.goal_preset_2.setSingleStep(10_000)
-        self.goal_preset_2.setValue(float(cv.get("GOAL_PRESET_2", 500_000.0)))
-
-        self.goal_preset_3 = QDoubleSpinBox()
-        self.goal_preset_3.setRange(0, 100_000_000)
-        self.goal_preset_3.setDecimals(2)
-        self.goal_preset_3.setPrefix("$ ")
-        self.goal_preset_3.setSingleStep(10_000)
-        self.goal_preset_3.setValue(float(cv.get("GOAL_PRESET_3", 1_000_000.0)))
-
-        goals_form.addRow(QLabel("Preset 1:"), self.goal_preset_1)
-        goals_form.addRow(QLabel("Preset 2:"), self.goal_preset_2)
-        goals_form.addRow(QLabel("Preset 3:"), self.goal_preset_3)
-        grp_goals.setContentLayout(goals_form)
-        root.addWidget(grp_goals)
-
-        # --- Trade Defaults ---
-        grp_trade_defaults = CollapsibleGroup("Trade Defaults", collapsed=False)
-        trade_defaults_form = QFormLayout()
-        trade_defaults_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        # ---- Trade Defaults ----
+        grp_trade = CollapsibleGroup("Trade Defaults", collapsed=False)
+        trade_form = QFormLayout()
+        trade_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self.trade_default_quantity = QSpinBox()
         self.trade_default_quantity.setRange(1, 1_000_000_000)
@@ -139,12 +111,12 @@ class SettingsDialog(QDialog):
         self.trade_quantity_increment.setRange(1, 1_000_000_000)
         self.trade_quantity_increment.setValue(int(cv.get("TRADE_QUANTITY_INCREMENT", 1)))
 
-        trade_defaults_form.addRow(QLabel("Default Quantity:"), self.trade_default_quantity)
-        trade_defaults_form.addRow(QLabel("Quantity Increment:"), self.trade_quantity_increment)
-        grp_trade_defaults.setContentLayout(trade_defaults_form)
-        root.addWidget(grp_trade_defaults)
+        trade_form.addRow(QLabel("Default Quantity:"), self.trade_default_quantity)
+        trade_form.addRow(QLabel("Quantity Increment:"), self.trade_quantity_increment)
+        grp_trade.setContentLayout(trade_form)
+        root.addWidget(grp_trade)
 
-        # --- Appearance ---
+        # ---- Appearance ----
         grp_appearance = CollapsibleGroup("Appearance", collapsed=False)
         app_form = QFormLayout()
         app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -161,6 +133,8 @@ class SettingsDialog(QDialog):
         grp_appearance.setContentLayout(app_form)
         root.addWidget(grp_appearance)
 
+        root.addStretch(1)
+
         btns = QHBoxLayout()
         btn_ok = QPushButton("OK")
         btn_cancel = QPushButton("Cancel")
@@ -171,14 +145,11 @@ class SettingsDialog(QDialog):
         btns.addWidget(btn_cancel)
         root.addLayout(btns)
 
-    def get_values(self):
+    def get_values(self) -> dict:
         return {
             "L1_INTERVAL": self.sb_l1.value() * 1000,
             "NET_INTERVAL": self.sb_net.value() * 1000,
             "L1_ENABLED": self.cb_l1.isChecked(),
-            "GOAL_PRESET_1": float(self.goal_preset_1.value()),
-            "GOAL_PRESET_2": float(self.goal_preset_2.value()),
-            "GOAL_PRESET_3": float(self.goal_preset_3.value()),
             "TRADE_DEFAULT_QUANTITY": int(self.trade_default_quantity.value()),
             "TRADE_QUANTITY_INCREMENT": int(self.trade_quantity_increment.value()),
             "THEME_OVERRIDE": self.cmb_theme.currentText(),
