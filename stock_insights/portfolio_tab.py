@@ -539,6 +539,7 @@ class PortfolioTab(QWidget):
     GOAL_KEY = "portfolio/goal_target"
     TRADE_HISTORY_VISIBLE_COLUMNS_KEY = "portfolio/trade_history_visible_columns"
     GOAL_DASHBOARD_ACCOUNTS_KEY = "portfolio/goal_dashboard_accounts"
+    ACTIVE_ACCOUNT_KEY = "user_account/active_account"
 
     TRADE_HISTORY_COLUMNS = [
         ("instrument", "Instrument"),
@@ -639,6 +640,28 @@ class PortfolioTab(QWidget):
                 out.append(name)
         return out or ["Default"]
 
+    def _active_account(self) -> str:
+        accounts = self._account_names()
+        saved = str(self._settings.value(self.ACTIVE_ACCOUNT_KEY, "") or "").strip()
+        if saved in accounts:
+            return saved
+        if "Josh" in accounts:
+            return "Josh"
+        return accounts[0]
+
+    def _migration_account(self) -> str:
+        accounts = self._account_names()
+        active = self._active_account()
+        if active in accounts:
+            return active
+        if "Josh" in accounts:
+            return "Josh"
+        return accounts[0]
+
+    def _visible_trades(self) -> List[Trade]:
+        active = self._active_account()
+        return [t for t in self._trades if (t.account or "").strip() == active]
+
     def _goal_dashboard_accounts(self) -> List[str]:
         accounts = self._account_names()
         raw = self._settings.value(self.GOAL_DASHBOARD_ACCOUNTS_KEY, [])
@@ -666,6 +689,10 @@ class PortfolioTab(QWidget):
         if set(selected) != set(existing) or len(selected) != len(existing):
             self._settings.setValue(self.GOAL_DASHBOARD_ACCOUNTS_KEY, json.dumps(selected))
             self._settings.sync()
+
+    def refresh_for_active_account_change(self):
+        self.sync_goal_dashboard_accounts()
+        self.refresh_view()
 
     def open_goal_dashboard_accounts_dialog(self):
         accounts = self._account_names()
@@ -740,7 +767,7 @@ class PortfolioTab(QWidget):
             ("avg_profit_per_trade", "Avg Profit / Trade"),
             ("avg_trade_value", "Avg Trade Value"),
             ("avg_roi_pct", "Avg ROI %"),
-            ("best_trade", "Best Trade"),
+            ("total_roi_pct", "Total ROI %"),
             ("avg_daily_closed_profit", "Avg Daily Return"),
         ]
         for idx, (key, label) in enumerate(analytics_fields):
@@ -817,6 +844,16 @@ class PortfolioTab(QWidget):
     def _load_state(self):
         self._trades = trades_from_json(self._settings.value(self.SETTINGS_KEY, []))
 
+        migrated = False
+        default_account = self._migration_account()
+        for trade in self._trades:
+            if not (trade.account or "").strip():
+                trade.account = default_account
+                migrated = True
+
+        if migrated:
+            self._save_trades()
+
         if not self._trades:
             legacy = self._settings.value(self.LEGACY_HOLDINGS_KEY, [])
             legacy_rows = []
@@ -845,6 +882,7 @@ class PortfolioTab(QWidget):
                             open_date=date.today(),
                             close_date=None,
                             notes=notes,
+                            account=default_account,
                         )
                     )
             if self._trades:
@@ -893,7 +931,10 @@ class PortfolioTab(QWidget):
     def _open_trades_for_instrument(self, instrument: str) -> List[tuple[int, Trade]]:
         symbol = (instrument or "").strip().upper()
         out: List[tuple[int, Trade]] = []
+        active = self._active_account()
         for idx, trade in enumerate(self._trades):
+            if (trade.account or "").strip() != active:
+                continue
             if not trade.is_closed and trade.normalized_instrument() == symbol:
                 out.append((idx, trade))
         return out
@@ -927,7 +968,9 @@ class PortfolioTab(QWidget):
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self._trades.append(dlg.to_trade())
+        trade = dlg.to_trade()
+        trade.account = self._active_account()
+        self._trades.append(trade)
         new_index = len(self._trades) - 1
         self._save_trades()
         self.refresh_view(selected_trade_source_index=new_index)
@@ -946,7 +989,9 @@ class PortfolioTab(QWidget):
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self._trades[source_index] = dlg.to_trade()
+        updated_trade = dlg.to_trade()
+        updated_trade.account = (self._trades[source_index].account or self._active_account()).strip() or self._active_account()
+        self._trades[source_index] = updated_trade
         self._save_trades()
         self.refresh_view(selected_trade_source_index=source_index)
 
@@ -1067,7 +1112,9 @@ class PortfolioTab(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        self._trades.append(dlg.to_trade())
+        trade = dlg.to_trade()
+        trade.account = self._active_account()
+        self._trades.append(trade)
         new_index = len(self._trades) - 1
         self._save_trades()
         self.refresh_view(selected_trade_source_index=new_index)
@@ -1098,7 +1145,9 @@ class PortfolioTab(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        self._trades.append(dlg.to_trade())
+        trade = dlg.to_trade()
+        trade.account = self._active_account()
+        self._trades.append(trade)
         new_index = len(self._trades) - 1
         self._save_trades()
         self.refresh_view(selected_trade_source_index=new_index)
@@ -1157,16 +1206,18 @@ class PortfolioTab(QWidget):
         self.refresh_view()
 
     def refresh_view(self, selected_trade_source_index: Optional[int] = None):
-        self._holdings = compute_holdings_from_trades(self._trades)
-        realized_by_symbol = compute_realized_pl_by_symbol(self._trades)
+        visible_trades = self._visible_trades()
+        self._holdings = compute_holdings_from_trades(visible_trades)
+        realized_by_symbol = compute_realized_pl_by_symbol(visible_trades)
         holding_rows, summary = compute_portfolio(self._holdings, self._marks, realized_by_symbol)
-        analytics = compute_trade_analytics(self._trades)
-        goal = compute_goal_progress(self._trades, self._current_goal_target(), unrealized_profit=summary.unrealized_pl)
-        trade_rows = compute_trade_rows(self._trades)
+        analytics = compute_trade_analytics(visible_trades)
+        goal = compute_goal_progress(visible_trades, self._current_goal_target(), unrealized_profit=summary.unrealized_pl)
+        visible_source_indices = [idx for idx, trade in enumerate(self._trades) if (trade.account or "").strip() == self._active_account()]
+        trade_rows = compute_trade_rows(visible_trades)
 
         self._render_goal(goal)
         self._render_analytics(analytics)
-        self._render_trade_table(trade_rows, selected_trade_source_index)
+        self._render_trade_table(trade_rows, visible_source_indices, selected_trade_source_index)
         self._render_holdings_table(holding_rows)
         self.holdings_summary.setText(
             f"Market Value: {self._money(summary.market_value)}    "
@@ -1193,14 +1244,14 @@ class PortfolioTab(QWidget):
         self.analytics_labels["avg_profit_per_trade"].setText(self._money_or_dash(analytics.avg_profit_per_trade))
         self.analytics_labels["avg_trade_value"].setText(self._money_or_dash(analytics.avg_trade_value))
         self.analytics_labels["avg_roi_pct"].setText(self._pct(analytics.avg_roi_pct))
-        self.analytics_labels["best_trade"].setText(self._money_or_dash(analytics.best_trade))
+        self.analytics_labels["total_roi_pct"].setText(self._pct(analytics.total_roi_pct))
         self.analytics_labels["avg_daily_closed_profit"].setText(self._money_or_dash(analytics.avg_daily_closed_profit))
 
-    def _render_trade_table(self, rows, selected_trade_source_index: Optional[int]):
+    def _render_trade_table(self, rows, visible_source_indices: List[int], selected_trade_source_index: Optional[int]):
         self.trade_table.setColumnCount(len(self.TRADE_HISTORY_COLUMNS))
         self.trade_table.setHorizontalHeaderLabels([label for _, label in self.TRADE_HISTORY_COLUMNS])
         self.trade_table.setRowCount(len(rows))
-        self._trade_row_indices = [row.index for row in rows]
+        self._trade_row_indices = [visible_source_indices[row.index] for row in rows if 0 <= row.index < len(visible_source_indices)]
 
         visible_keys = set(self._trade_history_visible_keys())
         for col, (key, _) in enumerate(self.TRADE_HISTORY_COLUMNS):

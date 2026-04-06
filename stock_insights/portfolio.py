@@ -18,6 +18,7 @@ class Trade:
     open_date: Optional[date] = None
     close_date: Optional[date] = None
     notes: str = ""
+    account: str = ""
 
     def normalized_instrument(self) -> str:
         return (self.instrument or "").strip().upper()
@@ -104,7 +105,7 @@ class TradeAnalytics:
     avg_profit_per_trade: Optional[float] = None
     avg_trade_value: Optional[float] = None
     avg_roi_pct: Optional[float] = None
-    best_trade: Optional[float] = None
+    total_roi_pct: Optional[float] = None
     avg_daily_closed_profit: Optional[float] = None
 
 
@@ -194,6 +195,7 @@ def trade_to_dict(trade: Trade) -> dict:
         "open_date": date_to_str(trade.open_date),
         "close_date": date_to_str(trade.close_date),
         "notes": trade.notes or "",
+        "account": (trade.account or "").strip(),
     }
 
 
@@ -216,6 +218,7 @@ def trade_from_dict(data: dict) -> Optional[Trade]:
             open_date=parse_date(data.get("open_date")),
             close_date=parse_date(data.get("close_date")),
             notes=str(data.get("notes", "") or ""),
+            account=str(data.get("account", "") or "").strip(),
         )
     except Exception:
         return None
@@ -411,6 +414,9 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
         avg_profit_per_trade is not None and avg_trade_value not in (None, 0)
     ) else None
 
+    total_trade_value = sum(trade_values) if trade_values else 0.0
+    total_roi_pct = ((realized_profit / total_trade_value) * 100.0) if total_trade_value > 0 else None
+
     return TradeAnalytics(
         realized_profit=realized_profit,
         closed_trades=len(closed),
@@ -418,7 +424,7 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
         avg_profit_per_trade=avg_profit_per_trade,
         avg_trade_value=avg_trade_value,
         avg_roi_pct=avg_roi_pct,
-        best_trade=max(profits) if profits else None,
+        total_roi_pct=total_roi_pct,
         avg_daily_closed_profit=(realized_profit / elapsed) if elapsed > 0 else None,
     )
 
