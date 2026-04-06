@@ -1,5 +1,5 @@
-import json, math
-from typing import Any, Dict, Optional, List
+import json
+from typing import Dict, Optional, List
 from PySide6.QtCore import Qt, QSettings, QTimer, QThread
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
@@ -7,22 +7,18 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTableWidgetItem,
     QFrame, QMessageBox, QProgressBar, QTabWidget, QGroupBox, QSplitter,
     QInputDialog, QAbstractItemView, QComboBox, QDialog, QTableWidget,
-    QDialogButtonBox, QHeaderView
+    QDialogButtonBox, QHeaderView,
 )
 
-import pandas as pd
-
 from .theme import ThemeManager
-from .widgets import MplCanvas, SpinnerLabel, WatchTable
-from .workers import MarksWorker, SnapshotWorker, NetCheckWorker
-from .data import human_money
-from .cache import save_snapshot, get_cached_snapshot
+from .widgets import SpinnerLabel, WatchTable
+from .workers import MarksWorker, NetCheckWorker
 from .logging_utils import setup_logging, serial_debug
 from .portfolio_tab import PortfolioTab
 
 
 class UserAccountDialog(QDialog):
-    """Simple user-account editor for future SQL/auth + multi-account support."""
+    """Simple user-account editor for multi-account portfolio support."""
 
     def __init__(self, parent=None, settings: Optional[QSettings] = None):
         super().__init__(parent)
@@ -252,26 +248,19 @@ class MainWindow(QMainWindow):
 
     # Defaults (ms)
     L1_INTERVAL = 20_000
-    L2_INTERVAL = 5 * 60_000
     NET_INTERVAL = 10_000
-
     L1_ENABLED = True
-    L2_ENABLED = True
-
-    SIM_COMM_BUY_DEFAULT = 9.99
-    SIM_COMM_SELL_DEFAULT = 9.99
 
     def __init__(self):
         super().__init__()
         setup_logging()
         serial_debug("MainWindow init start")
 
-        self.setWindowTitle("Stock Insights — Modular")
-        self.resize(1320, 840)
+        self.setWindowTitle("Stock Insights — Portfolio")
+        self.resize(1200, 800)
         self._last_sidebar_size = 240
         self._busy_ops = 0
         self._online = True
-        self.snapshot: Optional[Dict[str, Any]] = None
 
         self._build_ui()
         self.theme = ThemeManager(self)
@@ -307,10 +296,8 @@ class MainWindow(QMainWindow):
         self._reload_custom_order()
 
         self.L1_INTERVAL = int(s.value("intervals/L1_INTERVAL", self.L1_INTERVAL))
-        self.L2_INTERVAL = int(s.value("intervals/L2_INTERVAL", self.L2_INTERVAL))
         self.NET_INTERVAL = int(s.value("intervals/NET_INTERVAL", self.NET_INTERVAL))
         self.L1_ENABLED = bool(s.value("intervals/L1_ENABLED", True, type=bool))
-        self.L2_ENABLED = bool(s.value("intervals/L2_ENABLED", True, type=bool))
 
         theme_override = s.value("ui/THEME_OVERRIDE", "System")
         self.theme.set_override_mode(theme_override)
@@ -340,10 +327,8 @@ class MainWindow(QMainWindow):
         s.setValue("ui/splitter_sizes", sizes)
         s.setValue("ui/sidebar_visible", self._is_sidebar_visible())
         s.setValue("intervals/L1_INTERVAL", self.L1_INTERVAL)
-        s.setValue("intervals/L2_INTERVAL", self.L2_INTERVAL)
         s.setValue("intervals/NET_INTERVAL", self.NET_INTERVAL)
         s.setValue("intervals/L1_ENABLED", self.L1_ENABLED)
-        s.setValue("intervals/L2_ENABLED", self.L2_ENABLED)
         s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
         s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
         s.sync()
@@ -353,10 +338,8 @@ class MainWindow(QMainWindow):
 
         cv = {
             "L1_INTERVAL": self.L1_INTERVAL,
-            "L2_INTERVAL": self.L2_INTERVAL,
             "NET_INTERVAL": self.NET_INTERVAL,
             "L1_ENABLED": self.L1_ENABLED,
-            "L2_ENABLED": self.L2_ENABLED,
             "THEME_OVERRIDE": self._settings().value(
                 "ui/THEME_OVERRIDE", getattr(self.theme, "override_mode", "System")
             ),
@@ -374,10 +357,8 @@ class MainWindow(QMainWindow):
         if result == QDialog.DialogCode.Accepted:
             vals = dlg.get_values()
             self.L1_INTERVAL = int(vals["L1_INTERVAL"])
-            self.L2_INTERVAL = int(vals["L2_INTERVAL"])
             self.NET_INTERVAL = int(vals["NET_INTERVAL"])
             self.L1_ENABLED = bool(vals["L1_ENABLED"])
-            self.L2_ENABLED = bool(vals["L2_ENABLED"])
 
             self.theme.set_override_mode(vals["THEME_OVERRIDE"])
             self.theme.set_match_system_accent(vals["MATCH_SYSTEM_ACCENT"])
@@ -392,10 +373,8 @@ class MainWindow(QMainWindow):
             s.sync()
 
             self.timer_l1.setInterval(self.L1_INTERVAL)
-            self.timer_l2.setInterval(self.L2_INTERVAL)
             self.timer_net.setInterval(self.NET_INTERVAL)
-            (self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop())
-            (self.timer_l2.start() if self.L2_ENABLED else self.timer_l2.stop())
+            self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
 
             self._save_settings()
             if hasattr(self, "portfolio_tab"):
@@ -484,7 +463,8 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(title_row)
 
         self.watch = WatchTable(self)
-        self.watch.itemDoubleClicked.connect(self._on_watch_double_clicked)
+        self.watch.renameRequested.connect(self._ctx_rename_selected)
+        self.watch.moveRequested.connect(self._ctx_move_row)
         left_layout.addWidget(self.watch, stretch=1)
 
         wl_btns = QHBoxLayout()
@@ -498,114 +478,30 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(left_wrap)
         self.splitter.setStretchFactor(0, 0)
 
-        # Right: Tabs
+        # Right: Portfolio tab
         right_wrap = QWidget()
         right_layout = QVBoxLayout(right_wrap)
         self.tabs = QTabWidget()
         right_layout.addWidget(self.tabs)
 
-        # Portfolio tab
         self.portfolio_tab = PortfolioTab(self._settings(), self)
         self.tabs.addTab(self.portfolio_tab, "Portfolio")
-
-        # Overview tab
-        self.overview_tab = QWidget()
-        ovl = QVBoxLayout(self.overview_tab)
-
-        ticker_row = QHBoxLayout()
-        self.ticker_edit = QLineEdit()
-        self.ticker_edit.setPlaceholderText("Enter ticker (e.g., NVDA)")
-        self.ticker_edit.setFixedWidth(220)
-        self.ticker_edit.returnPressed.connect(self.on_fetch)
-        self.fetch_btn = QPushButton("Fetch")
-        self.fetch_btn.clicked.connect(self.on_fetch)
-        ticker_row.addWidget(QLabel("Ticker:"))
-        ticker_row.addWidget(self.ticker_edit)
-        ticker_row.addWidget(self.fetch_btn)
-        ticker_row.addStretch(1)
-        ovl.addLayout(ticker_row)
-
-        self.canvas = MplCanvas()
-        chart_group = QGroupBox("Price — 1Y")
-        chart_v = QVBoxLayout(chart_group)
-        chart_v.addWidget(self.canvas)
-        ovl.addWidget(chart_group)
-
-        self.gen_group = QGroupBox("General")
-        self.gen_grid = QGridLayout(self.gen_group)
-        self._gen_labels: Dict[str, QLabel] = {}
-
-        def add_gen_row(row, label_key, label_text):
-            k = QLabel(label_text)
-            v = QLabel("—")
-            self._gen_labels[label_key] = v
-            self.gen_grid.addWidget(k, row, 0)
-            self.gen_grid.addWidget(v, row, 1)
-
-        add_gen_row(0, "previous_close", "Previous Close")
-        add_gen_row(1, "open", "Open")
-        add_gen_row(2, "bid", "Bid")
-        add_gen_row(3, "ask", "Ask")
-        add_gen_row(4, "day_range", "Day's Range")
-        add_gen_row(5, "fifty_two_week_range", "52 Week Range")
-        add_gen_row(6, "volume", "Volume")
-        add_gen_row(7, "avg_volume", "Avg. Volume")
-        add_gen_row(8, "market_cap", "Market Cap")
-
-        ovl.addWidget(self.gen_group)
-        self.tabs.addTab(self.overview_tab, "Overview")
-
-        # Statistics tab
-        self.stats_tab = QWidget()
-        stl = QVBoxLayout(self.stats_tab)
-        self.table = self._mk_table()
-        stl.addWidget(self.table)
-        self.tabs.addTab(self.stats_tab, "Statistics")
-
-        # Placeholder tabs
-        self.fin_tab = QWidget()
-        ft = QVBoxLayout(self.fin_tab)
-        ft.addWidget(QLabel("Financials — coming soon"))
-        self.tabs.addTab(self.fin_tab, "Financials")
-
-        self.analysis_tab = QWidget()
-        at = QVBoxLayout(self.analysis_tab)
-        at.addWidget(QLabel("Analysis — coming soon"))
-        self.tabs.addTab(self.analysis_tab, "Analysis")
-
-        self.news_tab = QWidget()
-        nt = QVBoxLayout(self.news_tab)
-        nt.addWidget(QLabel("News — coming soon"))
-        self.tabs.addTab(self.news_tab, "News")
 
         self.splitter.addWidget(right_wrap)
         self.splitter.setStretchFactor(1, 1)
 
         self.statusBar().showMessage("Ready")
 
-    def _mk_table(self):
-        t = QTableWidget(0, 2)
-        t.setHorizontalHeaderLabels(["Metric", "Value"])
-        t.horizontalHeader().setStretchLastSection(True)
-        t.verticalHeader().setVisible(False)
-        t.setAlternatingRowColors(True)
-        t.setEditTriggers(t.EditTrigger.NoEditTriggers)
-        return t
-
     # ------- Timers / connectivity -------
     def _init_timers(self):
-        serial_debug("Initializing timers (L1/L2/NET)")
+        serial_debug("Initializing timers (L1/NET)")
         self.timer_l1 = QTimer(self)
         self.timer_l1.setInterval(self.L1_INTERVAL)
         self.timer_l1.timeout.connect(self._level1_tick)
-        self.timer_l2 = QTimer(self)
-        self.timer_l2.setInterval(self.L2_INTERVAL)
-        self.timer_l2.timeout.connect(self._level2_tick)
         self.timer_net = QTimer(self)
         self.timer_net.setInterval(self.NET_INTERVAL)
         self.timer_net.timeout.connect(self._kick_netcheck)
-        (self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop())
-        (self.timer_l2.start() if self.L2_ENABLED else self.timer_l2.stop())
+        self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
         self.timer_net.start()
         self._kick_netcheck()
         self._level1_tick()
@@ -675,13 +571,6 @@ class MainWindow(QMainWindow):
                 self.watch.setItem(r, 1, cell)
             if "price" in row and row["price"] is not None:
                 cell.setText(f"{row['price']:.2f}")
-        if self.snapshot:
-            sym = self.snapshot.get("ticker")
-            row = data.get(sym, {})
-            if row.get("bid") is not None:
-                self._gen_labels["bid"].setText(f"{row['bid']:.2f}")
-            if row.get("ask") is not None:
-                self._gen_labels["ask"].setText(f"{row['ask']:.2f}")
         thread.quit()
         self._busy_leave()
 
@@ -691,64 +580,12 @@ class MainWindow(QMainWindow):
         thread.quit()
         self._busy_leave()
 
-    # ------- Level 2: snapshot -------
-    def _level2_tick(self):
-        sym = self.ticker_edit.text().strip() or self._watch_current_symbol() or (
-            self.watch.item(0, 0).text() if self.watch.rowCount() > 0 else None
-        )
-        if not sym:
-            return
-        self._fetch_snapshot_async(sym, level2=True)
-
-    def _fetch_snapshot_async(self, ticker: str, level2: bool = False):
-        serial_debug(f"_fetch_snapshot_async: {ticker}, level2={level2}")
-        self._busy_enter()
-        self.statusBar().showMessage(f"Refreshing {ticker}…")
-        w = SnapshotWorker(ticker)
-        th = QThread(self)
-        w.moveToThread(th)
-        th.started.connect(w.run)
-        w.finished.connect(lambda snap: self._on_snapshot(snap, ticker, level2, th, w))
-        w.error.connect(lambda e: self._on_snapshot_error(e, ticker, th, w))
-        th.finished.connect(th.deleteLater)
-        th.start()
-
-    def _on_snapshot(self, snapshot: dict, ticker: str, level2: bool, thread: QThread, worker):
-        serial_debug(f"_on_snapshot: {ticker}, level2={level2}")
-        self.snapshot = snapshot
-        save_snapshot(self.APP, ticker, snapshot)
-        self._plot_chart(snapshot)
-        self._populate_overview(snapshot)
-        self._populate_table(snapshot)
-        self.statusBar().showMessage(f"Done — {ticker}")
-        thread.quit()
-        self._busy_leave()
-
-    def _on_snapshot_error(self, message: str, ticker: str, thread: QThread, worker):
-        serial_debug(f"_on_snapshot_error: {ticker}, {message[:120]!r}")
-        cached = get_cached_snapshot(self.APP, ticker)
-        if cached:
-            self.snapshot = cached
-            self._plot_chart(self.snapshot)
-            self._populate_overview(self.snapshot)
-            self._populate_table(self.snapshot)
-            self.statusBar().showMessage(f"Offline — showing cached {ticker}")
-        else:
-            self.statusBar().showMessage("Error")
-            QMessageBox.critical(self, "Fetch error", f"Failed to fetch data:\n{message}")
-        thread.quit()
-        self._busy_leave()
-
     # ------- Actions / sorting -------
     def _bind_shortcuts(self):
-        act_refresh = QAction("Refresh Now (F5)", self)
+        act_refresh = QAction("Refresh Marks (F5)", self)
         act_refresh.setShortcut(QKeySequence("F5"))
-        act_refresh.triggered.connect(self._refresh_now)
+        act_refresh.triggered.connect(self._level1_tick)
         self.addAction(act_refresh)
-
-    def _refresh_now(self):
-        self._level1_tick()
-        self._level2_tick()
 
     def _is_sidebar_visible(self):
         return self.splitter.sizes()[0] > 0
@@ -806,11 +643,9 @@ class MainWindow(QMainWindow):
         for r in range(self.watch.rowCount()):
             if self.watch.item(r, 0).text() == sym:
                 self.watch.selectRow(r)
-                self.ticker_edit.setText(sym)
                 return
         self._add_watch_row(sym)
         self.watch.selectRow(self.watch.rowCount() - 1)
-        self.ticker_edit.setText(sym)
         if self.sort_mode.currentText() == self.SORT_DEFAULT:
             self._save_settings()
 
@@ -823,29 +658,8 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Remove", f"Remove {sym} from watchlist?") != QMessageBox.StandardButton.Yes:
             return
         self.watch.removeRow(r)
-        if self.ticker_edit.text().strip().upper() == sym:
-            self.ticker_edit.clear()
         if self.sort_mode.currentText() == self.SORT_DEFAULT:
             self._save_settings()
-
-    def _on_watch_double_clicked(self, item):
-        try:
-            row = item.row()
-            sym_item = self.watch.item(row, 0)
-            if sym_item:
-                sym = sym_item.text()
-                self.ticker_edit.setText(sym)
-                serial_debug(f"Double-click on {sym} -> on_fetch()")
-                self.on_fetch()
-        except Exception:
-            pass
-
-    def _ctx_fetch_selected(self):
-        sym = self._watch_current_symbol()
-        if not sym:
-            return
-        self.ticker_edit.setText(sym)
-        self.on_fetch()
 
     def _ctx_rename_selected(self):
         r = self._watch_current_row()
@@ -864,8 +678,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Duplicate", f"{sym} is already in the list.")
                 return
         self.watch.item(r, 0).setText(sym)
-        if self.ticker_edit.text().strip().upper() == old:
-            self.ticker_edit.setText(sym)
 
     def _ctx_move_row(self, delta: int):
         if self.sort_mode.currentText() != self.SORT_DEFAULT:
@@ -926,114 +738,3 @@ class MainWindow(QMainWindow):
             self._add_watch_row(sym, mark, ind)
         if self.watch.rowCount() > 0:
             self.watch.selectRow(0)
-
-    # ------- Public actions -------
-    def on_fetch(self):
-        ticker = self.ticker_edit.text().strip() or self._watch_current_symbol()
-        if not ticker:
-            QMessageBox.warning(self, "Input required", "Please enter or select a ticker (e.g., NVDA)")
-            return
-        self._fetch_snapshot_async(ticker, level2=False)
-
-    # ------- UI population -------
-    def _populate_overview(self, snap: Dict[str, Any]):
-        o = snap.get("overview", {})
-        t = snap["technicals"]
-
-        def fnum(x, nd=2):
-            return f"{x:.{nd}f}" if isinstance(x, (int, float)) and not math.isnan(x) else "—"
-
-        def num(x):
-            return human_money(x) if isinstance(x, (int, float)) else "—"
-
-        day_rng = f"{fnum(o.get('day_low'))} – {fnum(o.get('day_high'))}" if (o.get("day_low") is not None or o.get("day_high") is not None) else "—"
-        wk52_rng = f"{fnum(t.get('fifty_two_week_low'))} – {fnum(t.get('fifty_two_week_high'))}" if (t.get("fifty_two_week_low") is not None or t.get("fifty_two_week_high") is not None) else "—"
-        setv = self._gen_labels
-        setv["previous_close"].setText(fnum(o.get("previous_close")))
-        setv["open"].setText(fnum(o.get("open")))
-        setv["bid"].setText(fnum(o.get("bid")))
-        setv["ask"].setText(fnum(o.get("ask")))
-        setv["day_range"].setText(day_rng)
-        setv["fifty_two_week_range"].setText(wk52_rng)
-        setv["volume"].setText(num(o.get("volume")))
-        setv["avg_volume"].setText(num(o.get("avg_volume")))
-        setv["market_cap"].setText(num(o.get("market_cap")))
-
-    def _populate_table(self, snap: Dict[str, Any]):
-        rows = []
-        c = snap["company"]
-        q = snap["quote"]
-        f = snap["financials"]
-        t = snap["technicals"]
-
-        def pct(x):
-            return f"{x:.2f}%" if isinstance(x, (int, float)) and not math.isnan(x) else "—"
-
-        def num(x):
-            return human_money(x) if isinstance(x, (int, float)) else "—"
-
-        def fnum(x, nd=2):
-            return f"{x:.{nd}f}" if isinstance(x, (int, float)) and not math.isnan(x) else "—"
-
-        rows.extend([
-            ("Name", c.get("name", "—")),
-            ("Exchange", c.get("exchange", "—")),
-            ("Currency", c.get("currency", "—")),
-            ("Sector", c.get("sector", "—")),
-            ("Industry", c.get("industry", "—")),
-            ("Country", c.get("country", "—")),
-            ("Website", c.get("website", "—")),
-            ("—", "—"),
-            ("Market Cap", num(q.get("market_cap"))),
-            ("Enterprise Value", num(q.get("enterprise_value"))),
-            ("Shares Outstanding", num(q.get("shares_outstanding"))),
-            ("PE (TTM)", fnum(q.get("trailing_pe"))),
-            ("Forward PE", fnum(q.get("forward_pe"))),
-            ("P/B", fnum(q.get("price_to_book"))),
-            ("P/S (TTM)", fnum(q.get("price_to_sales_ttm"))),
-            ("Dividend Yield", pct((q.get("dividend_yield") or 0) * 100)),
-            ("Payout Ratio", pct((q.get("payout_ratio") or 0) * 100)),
-            ("Beta", fnum(q.get("beta"))),
-            ("—", "—"),
-            ("Revenue (TTM)", num(f.get("revenue_ttm"))),
-            ("EBITDA", num(f.get("ebitda"))),
-            ("Net Income", num(f.get("net_income"))),
-            ("—", "—"),
-            ("52w High", fnum(t.get("fifty_two_week_high"))),
-            ("52w Low", fnum(t.get("fifty_two_week_low"))),
-            ("SMA 50", fnum(t.get("sma_50"))),
-            ("SMA 200", fnum(t.get("sma_200"))),
-            ("Price vs SMA50", pct(t.get("price_vs_sma50_pct")) if t.get("price_vs_sma50_pct") is not None else "—"),
-            ("Price vs SMA200", pct(t.get("price_vs_sma200_pct")) if t.get("price_vs_sma200_pct") is not None else "—"),
-            ("RSI(14)", fnum(t.get("rsi_14"))),
-            ("As of (UTC)", snap.get("as_of", "—")),
-        ])
-        self.table.setRowCount(len(rows))
-        for i, (k, v) in enumerate(rows):
-            self.table.setItem(i, 0, QTableWidgetItem(k))
-            it = QTableWidgetItem(v)
-            if k == "Website" and v not in ("—", None):
-                it.setToolTip(v)
-            self.table.setItem(i, 1, it)
-        self.table.resizeColumnsToContents()
-
-    def _plot_chart(self, snap: Dict[str, Any]):
-        closes = snap.get("_history_close", [])
-        self.canvas.ax.clear()
-        if not closes or len(closes) < 10:
-            self.canvas.ax.text(0.5, 0.5, "Not enough data to plot", ha="center", va="center", transform=self.canvas.ax.transAxes)
-            self.canvas.draw()
-            return
-        series = pd.Series(closes)
-        sma50 = series.rolling(50).mean() if len(series) >= 50 else None
-        sma200 = series.rolling(200).mean() if len(series) >= 200 else None
-        self.canvas.ax.plot(series.index, series.values, label="Price")
-        if sma50 is not None and not sma50.isna().all():
-            self.canvas.ax.plot(sma50.index, sma50.values, label="SMA 50")
-        if sma200 is not None and not sma200.isna().all():
-            self.canvas.ax.plot(sma200.index, sma200.values, label="SMA 200")
-        self.canvas.ax.set_title(f"{snap['ticker']} — 1Y Price")
-        self.canvas.ax.set_xlabel("Days")
-        self.canvas.ax.set_ylabel("Price")
-        self.canvas.ax.legend()
-        self.canvas.draw()

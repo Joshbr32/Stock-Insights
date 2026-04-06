@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-"""Shared Qt widgets used across the application.
-
-This module intentionally keeps small reusable widgets isolated from the main
-window so they can be reasoned about and tested independently.
-"""
+"""Shared Qt widgets used across the application."""
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
@@ -14,17 +10,6 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QHeaderView,
 )
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-
-
-class MplCanvas(FigureCanvas):
-    """Small matplotlib canvas wrapper used for the price chart."""
-
-    def __init__(self) -> None:
-        self.fig = Figure(figsize=(6, 3), tight_layout=True)
-        super().__init__(self.fig)
-        self.ax = self.fig.add_subplot(111)
 
 
 class SpinnerLabel(QLabel):
@@ -52,12 +37,7 @@ class SpinnerLabel(QLabel):
 
 
 class WatchTable(QTableWidget):
-    """Watchlist table with drag-reorder support and a context menu.
-
-    Signals are emitted for actions instead of directly reaching back into the
-    main window by method name. This reduces coupling and keeps the widget more
-    reusable.
-    """
+    """Watchlist table with drag-reorder support and a context menu."""
 
     fetchRequested = Signal()
     renameRequested = Signal()
@@ -94,7 +74,6 @@ class WatchTable(QTableWidget):
             return
 
         menu = QMenu(self)
-        menu.addAction("Fetch", self.fetchRequested.emit)
         menu.addAction("Rename…", self.renameRequested.emit)
         menu.addSeparator()
         menu.addAction("Move Up", lambda: self.moveRequested.emit(-1))

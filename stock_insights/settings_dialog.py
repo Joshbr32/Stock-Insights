@@ -62,7 +62,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.resize(520, 460)
+        self.resize(520, 400)
 
         self.settings = settings
         cv = current_values or {}
@@ -70,6 +70,7 @@ class SettingsDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
+        # --- Data Refresh ---
         grp_refresh = CollapsibleGroup("Data Refresh", collapsed=False)
         refresh_form = QFormLayout()
         refresh_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -79,29 +80,21 @@ class SettingsDialog(QDialog):
         self.sb_l1.setSuffix(" s")
         self.sb_l1.setValue(int(cv.get("L1_INTERVAL", 20000) / 1000))
 
-        self.sb_l2 = QSpinBox()
-        self.sb_l2.setRange(1, 120)
-        self.sb_l2.setSuffix(" min")
-        self.sb_l2.setValue(int(cv.get("L2_INTERVAL", 300000) / 60000))
-
         self.sb_net = QSpinBox()
         self.sb_net.setRange(5, 600)
         self.sb_net.setSuffix(" s")
         self.sb_net.setValue(int(cv.get("NET_INTERVAL", 10000) / 1000))
 
-        self.cb_l1 = QCheckBox("Enable Level 1 auto refresh")
-        self.cb_l2 = QCheckBox("Enable Level 2 auto refresh")
+        self.cb_l1 = QCheckBox("Enable marks auto refresh")
         self.cb_l1.setChecked(bool(cv.get("L1_ENABLED", True)))
-        self.cb_l2.setChecked(bool(cv.get("L2_ENABLED", True)))
 
-        refresh_form.addRow(QLabel("Level 1 refresh:"), self.sb_l1)
-        refresh_form.addRow(QLabel("Level 2 refresh:"), self.sb_l2)
+        refresh_form.addRow(QLabel("Marks refresh interval:"), self.sb_l1)
         refresh_form.addRow(QLabel("Connectivity check:"), self.sb_net)
         refresh_form.addRow(self.cb_l1)
-        refresh_form.addRow(self.cb_l2)
         grp_refresh.setContentLayout(refresh_form)
         root.addWidget(grp_refresh)
 
+        # --- Goals ---
         grp_goals = CollapsibleGroup("Goals", collapsed=False)
         goals_form = QFormLayout()
         goals_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -133,6 +126,7 @@ class SettingsDialog(QDialog):
         grp_goals.setContentLayout(goals_form)
         root.addWidget(grp_goals)
 
+        # --- Trade Defaults ---
         grp_trade_defaults = CollapsibleGroup("Trade Defaults", collapsed=False)
         trade_defaults_form = QFormLayout()
         trade_defaults_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -150,6 +144,7 @@ class SettingsDialog(QDialog):
         grp_trade_defaults.setContentLayout(trade_defaults_form)
         root.addWidget(grp_trade_defaults)
 
+        # --- Appearance ---
         grp_appearance = CollapsibleGroup("Appearance", collapsed=False)
         app_form = QFormLayout()
         app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -179,10 +174,8 @@ class SettingsDialog(QDialog):
     def get_values(self):
         return {
             "L1_INTERVAL": self.sb_l1.value() * 1000,
-            "L2_INTERVAL": self.sb_l2.value() * 60 * 1000,
             "NET_INTERVAL": self.sb_net.value() * 1000,
             "L1_ENABLED": self.cb_l1.isChecked(),
-            "L2_ENABLED": self.cb_l2.isChecked(),
             "GOAL_PRESET_1": float(self.goal_preset_1.value()),
             "GOAL_PRESET_2": float(self.goal_preset_2.value()),
             "GOAL_PRESET_3": float(self.goal_preset_3.value()),

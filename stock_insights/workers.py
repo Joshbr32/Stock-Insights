@@ -7,7 +7,7 @@ from typing import List
 
 from PySide6.QtCore import QObject, Signal
 
-from .data import fetch_marks, get_stock_snapshot
+from .data import fetch_marks
 from .logging_utils import get_logger
 
 
@@ -30,25 +30,6 @@ class MarksWorker(QObject):
             self.done.emit(data)
         except Exception as exc:  # pragma: no cover - Qt worker boundary
             logger.exception("Marks worker failed")
-            self.error.emit(str(exc))
-
-
-class SnapshotWorker(QObject):
-    finished = Signal(dict)
-    error = Signal(str)
-
-    def __init__(self, ticker: str):
-        super().__init__()
-        self.ticker = ticker
-
-    def run(self) -> None:
-        try:
-            logger.info("Snapshot refresh started for %s", self.ticker)
-            snapshot = get_stock_snapshot(self.ticker)
-            logger.info("Snapshot refresh completed for %s", self.ticker)
-            self.finished.emit(snapshot)
-        except Exception as exc:  # pragma: no cover - Qt worker boundary
-            logger.exception("Snapshot worker failed for %s", self.ticker)
             self.error.emit(str(exc))
 
 
