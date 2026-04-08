@@ -47,12 +47,14 @@ def _nyse_day_count(start: date, end: date) -> int:
 class Trade:
     instrument: str
     share_count: int
-    buy_price: float
-    sell_price: Optional[float] = None
+    buy_price: float          # long: buy price;  short: entry (short) price
+    sell_price: Optional[float] = None  # long: sell price; short: cover price
     open_date: Optional[date] = None
     close_date: Optional[date] = None
     notes: str = ""
     account: str = ""
+    is_pending: bool = False  # True = unconfirmed/waiting order (excluded from calcs)
+    is_short: bool = False    # True = short position (sell first, buy to cover)
 
     def normalized_instrument(self) -> str:
         return (self.instrument or "").strip().upper()
@@ -63,12 +65,19 @@ class Trade:
 
     @property
     def status(self) -> str:
+        if self.is_pending:
+            return "WAITING"
+        if self.is_short:
+            return "COVERED" if self.is_closed else "SHORT"
         return "CLOSED" if self.is_closed else "OPEN"
 
     @property
     def trade_profit(self) -> Optional[float]:
         if not self.is_closed or self.sell_price is None:
             return None
+        if self.is_short:
+            # Short profit: shorted high, covered low
+            return (float(self.buy_price) - float(self.sell_price)) * int(self.share_count)
         return (float(self.sell_price) - float(self.buy_price)) * int(self.share_count)
 
     @property
@@ -224,6 +233,8 @@ def trade_to_dict(trade: Trade) -> dict:
         "close_date": date_to_str(trade.close_date),
         "notes": trade.notes or "",
         "account": (trade.account or "").strip(),
+        "is_pending": bool(trade.is_pending),
+        "is_short": bool(trade.is_short),
     }
 
 
@@ -247,6 +258,8 @@ def trade_from_dict(data: dict) -> Optional[Trade]:
             close_date=parse_date(data.get("close_date")),
             notes=str(data.get("notes", "") or ""),
             account=str(data.get("account", "") or "").strip(),
+            is_pending=bool(data.get("is_pending", False)),
+            is_short=bool(data.get("is_short", False)),
         )
     except Exception:
         return None
@@ -311,11 +324,17 @@ def compute_trade_rows(trades: Iterable[Trade]) -> List[TradeRow]:
 
     def sort_key(item: tuple[int, Trade]):
         original_index, trade = item
-        is_open = not trade.is_closed
+        # Sort order: WAITING first (0), then OPEN/SHORT (1), then CLOSED/COVERED (2)
+        if trade.is_pending:
+            order = 0
+        elif not trade.is_closed:
+            order = 1
+        else:
+            order = 2
         close_key = trade.close_date if trade.close_date is not None else date.max
         open_key = trade.open_date if trade.open_date is not None else date.max
         symbol = trade.normalized_instrument()
-        return (is_open, close_key, symbol, open_key, original_index)
+        return (order, close_key, symbol, open_key, original_index)
 
     for idx, trade in sorted(indexed_trades, key=sort_key):
         profit = trade.trade_profit
@@ -340,34 +359,46 @@ def compute_trade_rows(trades: Iterable[Trade]) -> List[TradeRow]:
 
 
 def compute_holdings_from_trades(trades: Iterable[Trade]) -> List[Holding]:
+    # Separate buckets for long (positive qty) and short (negative qty)
     grouped: Dict[str, dict] = {}
     for trade in trades:
-        if trade.is_closed:
+        if trade.is_closed or trade.is_pending:
             continue
         instrument = trade.normalized_instrument()
         if not instrument or trade.share_count <= 0:
             continue
-        bucket = grouped.setdefault(instrument, {"qty": 0, "cost": 0.0, "notes": []})
+        key = f"{instrument}:SHORT" if trade.is_short else instrument
+        bucket = grouped.setdefault(key, {
+            "instrument": instrument, "qty": 0, "cost": 0.0,
+            "notes": [], "is_short": trade.is_short,
+        })
         bucket["qty"] += int(trade.share_count)
         bucket["cost"] += float(trade.buy_price) * int(trade.share_count)
         if trade.notes:
             bucket["notes"].append(trade.notes)
 
     holdings: List[Holding] = []
-    for instrument, payload in grouped.items():
+    for payload in grouped.values():
         qty = int(payload["qty"])
         if qty <= 0:
             continue
         avg_cost = payload["cost"] / qty
         notes = " | ".join([n for n in payload["notes"] if n])
-        holdings.append(Holding(instrument=instrument, qty=qty, avg_cost=avg_cost, notes=notes))
-    return sorted(holdings, key=lambda h: h.normalized_instrument())
+        # Short holdings stored with negative qty so the UI can distinguish them
+        display_qty = -qty if payload["is_short"] else qty
+        holdings.append(Holding(
+            instrument=payload["instrument"],
+            qty=display_qty,
+            avg_cost=avg_cost,
+            notes=notes,
+        ))
+    return sorted(holdings, key=lambda h: (h.qty >= 0, h.normalized_instrument()))
 
 
 def compute_realized_pl_by_symbol(trades: Iterable[Trade]) -> Dict[str, float]:
     out: Dict[str, float] = {}
     for trade in trades:
-        if not trade.is_closed:
+        if not trade.is_closed or trade.is_pending:
             continue
         symbol = trade.normalized_instrument()
         out[symbol] = out.get(symbol, 0.0) + float(trade.trade_profit or 0.0)
@@ -443,7 +474,7 @@ def compute_portfolio(
 
 def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
     trades_list = list(trades)
-    closed = [t for t in trades_list if t.is_closed and t.trade_profit is not None]
+    closed = [t for t in trades_list if t.is_closed and t.trade_profit is not None and not t.is_pending]
     profits = [float(t.trade_profit or 0.0) for t in closed]
     trade_values = [float(t.buy_price) * int(t.share_count) for t in closed]
     realized_profit = sum(profits)
@@ -479,7 +510,7 @@ def compute_goal_progress(
     today: Optional[date] = None,
 ) -> GoalProgress:
     today = today or date.today()
-    realized_profit = sum(float(t.trade_profit or 0.0) for t in trades if t.is_closed)
+    realized_profit = sum(float(t.trade_profit or 0.0) for t in trades if t.is_closed and not t.is_pending)
     total_profit = realized_profit + float(unrealized_profit)
     remaining_profit = float(goal_target) - realized_profit
 

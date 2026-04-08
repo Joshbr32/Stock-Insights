@@ -342,13 +342,16 @@ class GoalDashboardOptionsDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 class TradeEditDialog(QDialog):
+    """Trade add/edit dialog supporting Long, Short, and Pending (waiting) orders."""
+
     def __init__(
         self,
         trade: Optional[Trade] = None,
         watchlist_symbols: Optional[List[str]] = None,
         default_quantity: int = 1,
         quantity_increment: int = 1,
-        close_holdings_mode: bool = False,
+        close_holdings_mode: bool = False,   # "Close Holdings" — always CLOSED, long only
+        cover_mode: bool = False,             # "Buy to Cover" — always COVERED, short only
         parent=None,
     ):
         super().__init__(parent)
@@ -357,9 +360,16 @@ class TradeEditDialog(QDialog):
         self._default_quantity = max(1, int(default_quantity or 1))
         self._quantity_increment = max(1, int(quantity_increment or 1))
         self._close_holdings_mode = bool(close_holdings_mode)
+        self._cover_mode = bool(cover_mode)
 
-        self.setWindowTitle("Close Holdings" if self._close_holdings_mode else "Trade")
-        self.resize(440, 360)
+        if close_holdings_mode:
+            title = "Close Holdings"
+        elif cover_mode:
+            title = "Buy to Cover"
+        else:
+            title = "Trade"
+        self.setWindowTitle(title)
+        self.resize(460, 420)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -367,6 +377,18 @@ class TradeEditDialog(QDialog):
 
         form = QFormLayout()
         form.setSpacing(10)
+
+        # ---- Trade Type: Long / Short ----
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["Long (Buy)", "Short (Sell Short)"])
+        self.type_lbl = QLabel("Trade Type")
+        form.addRow(self.type_lbl, self.type_combo)
+
+        # ---- Order Status: Confirmed / Pending ----
+        self.pending_combo = QComboBox()
+        self.pending_combo.addItems(["Confirmed", "Pending (Waiting)"])
+        self.pending_lbl = QLabel("Order Status")
+        form.addRow(self.pending_lbl, self.pending_combo)
 
         self.instrument_edit = QComboBox()
         self.instrument_edit.setEditable(True)
@@ -387,6 +409,7 @@ class TradeEditDialog(QDialog):
         self.share_count_spin.setRange(1, 1_000_000_000)
         self.share_count_spin.setSingleStep(self._quantity_increment)
 
+        # buy_price = Long buy price OR Short entry price
         self.buy_price_spin = QDoubleSpinBox()
         self.buy_price_spin.setRange(0.0, 1_000_000_000.0)
         self.buy_price_spin.setDecimals(2)
@@ -394,6 +417,7 @@ class TradeEditDialog(QDialog):
         self.buy_price_spin.setSpecialValueText("")
         self.buy_price_spin.setValue(self.buy_price_spin.minimum())
 
+        # sell_price = Long sell price OR Short cover price
         self.sell_price_spin = QDoubleSpinBox()
         self.sell_price_spin.setRange(0.0, 1_000_000_000.0)
         self.sell_price_spin.setDecimals(2)
@@ -417,9 +441,11 @@ class TradeEditDialog(QDialog):
 
         form.addRow("Instrument", self.instrument_edit)
         form.addRow("Share count", self.share_count_spin)
-        form.addRow("Buy price", self.buy_price_spin)
+        self.buy_price_lbl = QLabel("Buy Price")
+        form.addRow(self.buy_price_lbl, self.buy_price_spin)
         form.addRow("Status", self.status_combo)
-        form.addRow("Sell price", self.sell_price_spin)
+        self.sell_price_lbl = QLabel("Sell Price")
+        form.addRow(self.sell_price_lbl, self.sell_price_spin)
         form.addRow("Open date", self.open_date_edit)
         form.addRow("Close date", self.close_date_edit)
         form.addRow("Notes", self.notes_edit)
@@ -429,12 +455,20 @@ class TradeEditDialog(QDialog):
         root.addWidget(self.preview_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.btn_save = QPushButton("Close" if self._close_holdings_mode else "Save")
+        if close_holdings_mode:
+            btn_label = "Close Holdings"
+        elif cover_mode:
+            btn_label = "Buy to Cover"
+        else:
+            btn_label = "Save"
+        self.btn_save = QPushButton(btn_label)
         buttons.addButton(self.btn_save, QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.rejected.connect(self.reject)
         self.btn_save.clicked.connect(self._accept_if_valid)
         root.addWidget(buttons)
 
+        self.type_combo.currentTextChanged.connect(self._sync_type)
+        self.pending_combo.currentTextChanged.connect(self._sync_pending)
         self.status_combo.currentTextChanged.connect(self._sync_status)
         self.share_count_spin.valueChanged.connect(self._update_preview)
         self.buy_price_spin.valueChanged.connect(self._update_preview)
@@ -442,6 +476,8 @@ class TradeEditDialog(QDialog):
 
         self._apply_trade(trade)
         self._apply_mode_constraints()
+        self._sync_type(self.type_combo.currentText())
+        self._sync_pending(self.pending_combo.currentText())
         self._sync_status(self.status_combo.currentText())
         self._update_preview()
 
@@ -453,10 +489,24 @@ class TradeEditDialog(QDialog):
         self.sell_price_spin.setValue(
             float(trade.sell_price) if trade and trade.sell_price is not None else self.sell_price_spin.minimum()
         )
-        if self._close_holdings_mode:
+        # Trade type
+        if trade and trade.is_short:
+            self.type_combo.setCurrentText("Short (Sell Short)")
+        else:
+            self.type_combo.setCurrentText("Long (Buy)")
+        # Pending status
+        if trade and trade.is_pending:
+            self.pending_combo.setCurrentText("Pending (Waiting)")
+        else:
+            self.pending_combo.setCurrentText("Confirmed")
+        # Closed status
+        if self._close_holdings_mode or self._cover_mode:
+            self.status_combo.setCurrentText("CLOSED")
+        elif trade and trade.is_closed:
             self.status_combo.setCurrentText("CLOSED")
         else:
-            self.status_combo.setCurrentText(trade.status if trade else "OPEN")
+            self.status_combo.setCurrentText("OPEN")
+
         open_date = trade.open_date if trade and trade.open_date else today
         close_date = trade.close_date if trade and trade.close_date else today
         self.open_date_edit.setDate(QDate(open_date.year, open_date.month, open_date.day))
@@ -464,15 +514,44 @@ class TradeEditDialog(QDialog):
         self.notes_edit.setText(trade.notes if trade else "")
 
     def _apply_mode_constraints(self):
-        if not self._close_holdings_mode:
-            return
-        self.status_combo.setCurrentText("CLOSED")
-        self.status_combo.setEnabled(False)
-        self.instrument_edit.setEnabled(False)
-        self.share_count_spin.setEnabled(False)
-        self.buy_price_spin.setEnabled(False)
-        self.open_date_edit.setEnabled(False)
-        self.notes_edit.setEnabled(False)
+        if self._close_holdings_mode or self._cover_mode:
+            self.status_combo.setCurrentText("CLOSED")
+            self.status_combo.setEnabled(False)
+            self.instrument_edit.setEnabled(False)
+            self.share_count_spin.setEnabled(False)
+            self.buy_price_spin.setEnabled(False)
+            self.open_date_edit.setEnabled(False)
+            self.notes_edit.setEnabled(False)
+            self.type_combo.setEnabled(False)
+            self.pending_combo.setEnabled(False)
+            # Lock type to match the mode
+            if self._cover_mode:
+                self.type_combo.setCurrentText("Short (Sell Short)")
+            else:
+                self.type_combo.setCurrentText("Long (Buy)")
+
+    def _sync_type(self, text: str):
+        is_short = "Short" in text
+        if is_short:
+            self.buy_price_lbl.setText("Short Price (entry)")
+            self.sell_price_lbl.setText("Cover Price (exit)")
+        else:
+            self.buy_price_lbl.setText("Buy Price")
+            self.sell_price_lbl.setText("Sell Price")
+        self._update_preview()
+
+    def _sync_pending(self, text: str):
+        is_pending = "Pending" in text
+        # Pending orders have no open date yet; grey it out
+        self.open_date_edit.setEnabled(not is_pending and not self._close_holdings_mode and not self._cover_mode)
+        # Pending orders can't be closed
+        if is_pending:
+            self.status_combo.setCurrentText("OPEN")
+            self.status_combo.setEnabled(False)
+        else:
+            if not self._close_holdings_mode and not self._cover_mode:
+                self.status_combo.setEnabled(True)
+        self._update_preview()
 
     def _sync_status(self, status: str):
         closed = status == "CLOSED"
@@ -484,8 +563,11 @@ class TradeEditDialog(QDialog):
         if self.status_combo.currentText() != "CLOSED":
             self.preview_label.setText("Trade Profit: —")
             return
+        is_short = "Short" in self.type_combo.currentText()
         qty = int(self.share_count_spin.value())
-        profit = (float(self.sell_price_spin.value()) - float(self.buy_price_spin.value())) * qty
+        buy = float(self.buy_price_spin.value())
+        sell = float(self.sell_price_spin.value())
+        profit = (buy - sell) * qty if is_short else (sell - buy) * qty
         self.preview_label.setText(f"Trade Profit: $ {profit:,.2f}")
 
     def _accept_if_valid(self):
@@ -494,23 +576,101 @@ class TradeEditDialog(QDialog):
             QMessageBox.warning(self, "Missing instrument", "Enter an instrument symbol.")
             return
         if self.status_combo.currentText() == "CLOSED":
-            if self.close_date_edit.date().toPython() < self.open_date_edit.date().toPython():
-                QMessageBox.warning(self, "Invalid dates", "Close date cannot be before open date.")
-                return
+            if not self._is_pending():
+                if self.close_date_edit.date().toPython() < self.open_date_edit.date().toPython():
+                    QMessageBox.warning(self, "Invalid dates", "Close date cannot be before open date.")
+                    return
         self.accept()
+
+    def _is_pending(self) -> bool:
+        return "Pending" in self.pending_combo.currentText()
+
+    def _is_short(self) -> bool:
+        return "Short" in self.type_combo.currentText()
 
     def to_trade(self) -> Trade:
         closed = self.status_combo.currentText() == "CLOSED"
+        pending = self._is_pending()
+        is_short = self._is_short()
         return Trade(
             instrument=self.instrument_edit.currentText().strip().upper(),
             share_count=int(self.share_count_spin.value()),
             buy_price=float(self.buy_price_spin.value()),
             sell_price=(float(self.sell_price_spin.value()) if closed else None),
-            open_date=self.open_date_edit.date().toPython(),
+            open_date=(None if pending else self.open_date_edit.date().toPython()),
             close_date=(self.close_date_edit.date().toPython() if closed else None),
             notes=self.notes_edit.text().strip(),
+            is_pending=pending,
+            is_short=is_short,
         )
 
+
+
+
+# ---------------------------------------------------------------------------
+# Fulfill pending order dialog
+# ---------------------------------------------------------------------------
+
+class FulfillOrderDialog(QDialog):
+    """Confirm a pending (WAITING) trade order — set the actual open date and
+    optionally adjust the fill price if it differs from the order price."""
+
+    def __init__(self, trade: Trade, parent=None):
+        super().__init__(parent)
+        self._trade = trade
+        self.setWindowTitle("Mark Order as Fulfilled")
+        self.resize(380, 240)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        info = QLabel(
+            f"<b>{trade.normalized_instrument()}</b> — "
+            f"{'Short' if trade.is_short else 'Long'}  {trade.share_count:,d} shares<br>"
+            f"Order price: $ {trade.buy_price:,.2f}"
+        )
+        info.setWordWrap(True)
+        root.addWidget(info)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+
+        self.open_date_edit = QDateEdit()
+        self.open_date_edit.setCalendarPopup(True)
+        self.open_date_edit.setDisplayFormat("yyyy-MM-dd")
+        today = date.today()
+        self.open_date_edit.setDate(QDate(today.year, today.month, today.day))
+
+        self.fill_price_spin = QDoubleSpinBox()
+        self.fill_price_spin.setRange(0.01, 1_000_000_000.0)
+        self.fill_price_spin.setDecimals(2)
+        self.fill_price_spin.setPrefix("$ ")
+        self.fill_price_spin.setValue(float(trade.buy_price))
+
+        form.addRow("Fill Date:", self.open_date_edit)
+        form.addRow("Fill Price:", self.fill_price_spin)
+        root.addLayout(form)
+
+        note = QLabel("Fill price defaults to the order price. Adjust if your broker filled at a different price.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray; font-size: 11px;")
+        root.addWidget(note)
+
+        root.addStretch(1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def get_fill_date(self):
+        return self.open_date_edit.date().toPython()
+
+    def get_fill_price(self) -> float:
+        return float(self.fill_price_spin.value())
 
 # ---------------------------------------------------------------------------
 # Mark Down dialog
@@ -1108,6 +1268,8 @@ class PortfolioTab(QWidget):
         self.trade_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.trade_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.trade_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.trade_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.trade_table.customContextMenuRequested.connect(self._open_trade_context_menu)
         trade_layout.addWidget(self.trade_table)
 
         if not self._read_only:
@@ -1254,17 +1416,19 @@ class PortfolioTab(QWidget):
     # Trade CRUD
     # ------------------------------------------------------------------
 
-    def _open_trades_for_instrument(self, instrument: str) -> List[tuple]:
+    def _open_trades_for_instrument(self, instrument: str, short: bool = False) -> List[tuple]:
         symbol = (instrument or "").strip().upper()
         return [
             (idx, trade) for idx, trade in enumerate(self._trades)
             if (trade.account or "").strip() == self._account_name
             and not trade.is_closed
+            and not trade.is_pending
+            and trade.is_short == short
             and trade.normalized_instrument() == symbol
         ]
 
-    def _combined_open_trade(self, instrument: str) -> Optional[Trade]:
-        matching = self._open_trades_for_instrument(instrument)
+    def _combined_open_trade(self, instrument: str, short: bool = False) -> Optional[Trade]:
+        matching = self._open_trades_for_instrument(instrument, short=short)
         if not matching: return None
         trades = [t for _, t in matching]
         total_qty = sum(int(t.share_count) for t in trades)
@@ -1273,7 +1437,8 @@ class PortfolioTab(QWidget):
         notes = " | ".join(t.notes for t in trades if t.notes)
         avg_cost = (total_cost / total_qty) if total_qty > 0 else 0.0
         return Trade(instrument=instrument, share_count=total_qty, buy_price=avg_cost,
-                     sell_price=None, open_date=oldest, close_date=None, notes=notes)
+                     sell_price=None, open_date=oldest, close_date=None, notes=notes,
+                     is_short=short)
 
     def _add_trade(self):
         if self._read_only: return
@@ -1336,26 +1501,63 @@ class PortfolioTab(QWidget):
         self.holdings_table.selectRow(row)
         instrument = self._selected_holding_instrument()
         if not instrument: return
+
+        # Determine if the selected holding is a short (negative qty)
+        is_short_holding = (row < len(self._holding_row_instruments) and
+                            row < self.holdings_table.rowCount() and
+                            self._holding_is_short(row))
+
         menu = QMenu(self)
-        act_close = menu.addAction("Close Holdings")
-        act_mark_down = menu.addAction("Mark Down")
-        act_double_down = menu.addAction("Double Down")
-        chosen = menu.exec(self.holdings_table.viewport().mapToGlobal(pos))
-        if chosen == act_close: self._close_selected_holding()
-        elif chosen == act_mark_down: self._mark_down_selected_holding()
-        elif chosen == act_double_down: self._double_down_selected_holding()
+        if is_short_holding:
+            act_close = menu.addAction("Buy to Cover")
+        else:
+            act_close = menu.addAction("Close Holdings")
+            menu.addAction("Mark Down").triggered.connect(self._mark_down_selected_holding)
+            menu.addAction("Double Down").triggered.connect(self._double_down_selected_holding)
+        act_close.triggered.connect(self._close_selected_holding)
+        menu.exec(self.holdings_table.viewport().mapToGlobal(pos))
+
+    def _holding_is_short(self, view_row: int) -> bool:
+        """Return True if the holding at this view row is a short position (negative qty)."""
+        item = self.holdings_table.item(view_row, 1)  # Qty column
+        if item is None: return False
+        try:
+            return int(item.text().replace(",", "").replace(" ", "")) < 0
+        except Exception:
+            return False
+
+
+    def _fulfill_pending_order(self):
+        """Mark a WAITING trade as fulfilled — sets open date and confirms fill price."""
+        source_index = self._selected_trade_source_index()
+        if source_index is None: return
+        trade = self._trades[source_index]
+        if not trade.is_pending:
+            QMessageBox.information(self, "Not pending", "This trade is not a pending order.")
+            return
+        dlg = FulfillOrderDialog(trade, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
+        trade.is_pending = False
+        trade.open_date = dlg.get_fill_date()
+        trade.buy_price = dlg.get_fill_price()
+        self._save_trades()
+        self.refresh_view(selected_trade_source_index=source_index)
 
     def _close_selected_holding(self):
         instrument = self._selected_holding_instrument()
         if not instrument: return
-        combined_trade = self._combined_open_trade(instrument)
-        matching = self._open_trades_for_instrument(instrument)
+        view_row = self.holdings_table.currentRow()
+        is_short = self._holding_is_short(view_row)
+        combined_trade = self._combined_open_trade(instrument, short=is_short)
+        matching = self._open_trades_for_instrument(instrument, short=is_short)
         if not combined_trade or not matching: return
         dlg = TradeEditDialog(
             trade=combined_trade, watchlist_symbols=self._watchlist_symbols(),
             default_quantity=self._trade_default_quantity(),
             quantity_increment=self._trade_quantity_increment(),
-            close_holdings_mode=True, parent=self,
+            close_holdings_mode=not is_short,
+            cover_mode=is_short,
+            parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted: return
         closing_trade = dlg.to_trade()
@@ -1397,6 +1599,24 @@ class PortfolioTab(QWidget):
         self._trades.append(trade)
         self._save_trades()
         self.refresh_view(selected_trade_source_index=len(self._trades) - 1)
+
+    def _open_trade_context_menu(self, pos: QPoint):
+        """Right-click menu on trade history rows."""
+        if self._read_only: return
+        row = self.trade_table.rowAt(pos.y())
+        if row < 0: return
+        self.trade_table.selectRow(row)
+        source_index = self._selected_trade_source_index()
+        if source_index is None: return
+        trade = self._trades[source_index]
+
+        menu = QMenu(self)
+        if trade.is_pending:
+            menu.addAction("Mark as Fulfilled").triggered.connect(self._fulfill_pending_order)
+            menu.addSeparator()
+        menu.addAction("Edit Trade").triggered.connect(self._edit_trade)
+        menu.addAction("Delete Trade").triggered.connect(self._delete_trade)
+        menu.exec(self.trade_table.viewport().mapToGlobal(pos))
 
     # ------------------------------------------------------------------
     # Core view refresh
@@ -1484,6 +1704,15 @@ class PortfolioTab(QWidget):
                 "days_to_close": self._int_or_dash(row.days_to_close),
                 "avg_daily_return": self._money_or_dash(row.avg_daily_return),
             }
+            # Row background based on status
+            from PySide6.QtGui import QColor, QBrush
+            if row.status == "WAITING":
+                row_bg = QBrush(QColor(120, 90, 0, 80))    # amber tint
+            elif row.status in ("SHORT", "COVERED"):
+                row_bg = QBrush(QColor(30, 80, 140, 70))   # blue-grey tint
+            else:
+                row_bg = None
+
             for c, (key, _) in enumerate(self.TRADE_HISTORY_COLUMNS):
                 item = QTableWidgetItem(value_map[key])
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1491,6 +1720,8 @@ class PortfolioTab(QWidget):
                     f = item.font(); f.setBold(True); item.setFont(f)
                 if key == "trade_profit" and row.trade_profit is not None:
                     item.setForeground(Qt.GlobalColor.darkGreen if row.trade_profit > 0 else Qt.GlobalColor.red)
+                if row_bg is not None:
+                    item.setBackground(row_bg)
                 self.trade_table.setItem(r, c, item)
         if rows:
             row_to_select = 0
@@ -1502,9 +1733,13 @@ class PortfolioTab(QWidget):
     def _render_holdings_table(self, rows):
         self.holdings_table.setRowCount(len(rows))
         self._holding_row_instruments = [row.instrument for row in rows]
+        from PySide6.QtGui import QColor, QBrush
         for r, row in enumerate(rows):
+            is_short = row.qty < 0
+            # Show absolute qty with a SHORT label for short positions
+            qty_display = f"{abs(row.qty):,d} (SHORT)" if is_short else f"{row.qty:,d}"
             values = [
-                row.instrument, f"{row.qty:,d}", _fmt_money(row.avg_cost),
+                row.instrument, qty_display, _fmt_money(row.avg_cost),
                 self._money_or_dash(row.mark), _fmt_money(row.unrealized_pl),
                 _fmt_money(row.market_value), self._pct(row.weight_pct),
             ]
@@ -1513,6 +1748,8 @@ class PortfolioTab(QWidget):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if c == 0:
                     f = item.font(); f.setBold(True); item.setFont(f)
+                if is_short:
+                    item.setBackground(QBrush(QColor(30, 80, 140, 70)))
                 self.holdings_table.setItem(r, c, item)
 
     @staticmethod

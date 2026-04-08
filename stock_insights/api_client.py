@@ -205,6 +205,8 @@ class RemoteDataStore(DataStore):
                         close_date=_parse_date_str(r.get("close_date")),
                         notes=str(r.get("notes") or ""),
                         account=str(r.get("account") or ""),
+                        is_pending=bool(r.get("is_pending", False)),
+                        is_short=bool(r.get("is_short", False)),
                     ))
                 self._trade_cache = trades
             return list(self._trade_cache)
@@ -221,6 +223,8 @@ class RemoteDataStore(DataStore):
                     "open_date": t.open_date.isoformat() if t.open_date else None,
                     "close_date": t.close_date.isoformat() if t.close_date else None,
                     "notes": t.notes or "",
+                    "is_pending": bool(t.is_pending),
+                    "is_short": bool(t.is_short),
                 }
                 for t in trades
             ]
