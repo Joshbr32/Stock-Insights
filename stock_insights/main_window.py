@@ -400,6 +400,8 @@ class MainWindow(QMainWindow):
         self.L1_ENABLED = bool(s.value("intervals/L1_ENABLED", True, type=bool))
         self.theme.set_override_mode(s.value("ui/THEME_OVERRIDE", "System"))
         self.theme.set_match_system_accent(s.value("ui/MATCH_SYSTEM_ACCENT", True, type=bool))
+        self.theme.set_theme(s.value("ui/THEME_NAME", "Default"))
+        self.theme.set_font_size(s.value("ui/FONT_SIZE", "Normal"))
         sidebar_visible = s.value("ui/sidebar_visible", True, type=bool)
         sizes = s.value("ui/splitter_sizes", [])
         if isinstance(sizes, str):
@@ -429,6 +431,8 @@ class MainWindow(QMainWindow):
         s.setValue("intervals/L1_ENABLED", self.L1_ENABLED)
         s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
         s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
+        s.setValue("ui/THEME_NAME", self.theme.theme_name)
+        s.setValue("ui/FONT_SIZE", self.theme.font_size_label)
         s.sync()
 
     def _open_settings_dialog(self):
@@ -440,6 +444,8 @@ class MainWindow(QMainWindow):
             "THEME_OVERRIDE": s.value("ui/THEME_OVERRIDE", getattr(self.theme, "override_mode", "System")),
             "MATCH_SYSTEM_ACCENT": s.value("ui/MATCH_SYSTEM_ACCENT",
                                             getattr(self.theme, "match_system_accent", True), type=bool),
+            "THEME_NAME": s.value("ui/THEME_NAME", getattr(self.theme, "theme_name", "Default")),
+            "FONT_SIZE": s.value("ui/FONT_SIZE", getattr(self.theme, "font_size_label", "Normal")),
             "TRADE_DEFAULT_QUANTITY": int(s.value("trade_defaults/default_quantity", 1) or 1),
             "TRADE_QUANTITY_INCREMENT": int(s.value("trade_defaults/quantity_increment", 1) or 1),
         }
@@ -451,9 +457,13 @@ class MainWindow(QMainWindow):
         self.L1_ENABLED = bool(vals["L1_ENABLED"])
         self.theme.set_override_mode(vals["THEME_OVERRIDE"])
         self.theme.set_match_system_accent(vals["MATCH_SYSTEM_ACCENT"])
+        self.theme.set_theme(vals.get("THEME_NAME", "Default"))
+        self.theme.set_font_size(vals.get("FONT_SIZE", "Normal"))
         s = self._qsettings()
         s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
         s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
+        s.setValue("ui/THEME_NAME", self.theme.theme_name)
+        s.setValue("ui/FONT_SIZE", self.theme.font_size_label)
         s.setValue("trade_defaults/default_quantity", int(vals["TRADE_DEFAULT_QUANTITY"]))
         s.setValue("trade_defaults/quantity_increment", int(vals["TRADE_QUANTITY_INCREMENT"]))
         s.sync()

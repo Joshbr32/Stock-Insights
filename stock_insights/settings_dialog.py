@@ -1,4 +1,5 @@
 from PySide6.QtCore import Qt
+from .theme import FONT_SIZE_LABELS, THEME_NAMES
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -121,14 +122,24 @@ class SettingsDialog(QDialog):
         app_form = QFormLayout()
         app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        self.cmb_theme = QComboBox()
-        self.cmb_theme.addItems(["System", "Light", "Dark"])
-        self.cmb_theme.setCurrentText(cv.get("THEME_OVERRIDE", "System"))
+        self.cmb_colour_mode = QComboBox()
+        self.cmb_colour_mode.addItems(["System", "Light", "Dark"])
+        self.cmb_colour_mode.setCurrentText(cv.get("THEME_OVERRIDE", "System"))
+
+        self.cmb_theme_name = QComboBox()
+        self.cmb_theme_name.addItems(THEME_NAMES)
+        self.cmb_theme_name.setCurrentText(cv.get("THEME_NAME", "Default"))
 
         self.cb_match_system_accent = QCheckBox("Match System Accent Colour")
         self.cb_match_system_accent.setChecked(bool(cv.get("MATCH_SYSTEM_ACCENT", True)))
 
-        app_form.addRow(QLabel("Theme:"), self.cmb_theme)
+        self.cmb_font_size = QComboBox()
+        self.cmb_font_size.addItems(FONT_SIZE_LABELS)
+        self.cmb_font_size.setCurrentText(cv.get("FONT_SIZE", "Normal"))
+
+        app_form.addRow(QLabel("Colour Mode:"), self.cmb_colour_mode)
+        app_form.addRow(QLabel("Theme:"), self.cmb_theme_name)
+        app_form.addRow(QLabel("Font Size:"), self.cmb_font_size)
         app_form.addRow(self.cb_match_system_accent)
         grp_appearance.setContentLayout(app_form)
         root.addWidget(grp_appearance)
@@ -152,6 +163,8 @@ class SettingsDialog(QDialog):
             "L1_ENABLED": self.cb_l1.isChecked(),
             "TRADE_DEFAULT_QUANTITY": int(self.trade_default_quantity.value()),
             "TRADE_QUANTITY_INCREMENT": int(self.trade_quantity_increment.value()),
-            "THEME_OVERRIDE": self.cmb_theme.currentText(),
+            "THEME_OVERRIDE": self.cmb_colour_mode.currentText(),
+            "THEME_NAME": self.cmb_theme_name.currentText(),
+            "FONT_SIZE": self.cmb_font_size.currentText(),
             "MATCH_SYSTEM_ACCENT": self.cb_match_system_accent.isChecked(),
         }

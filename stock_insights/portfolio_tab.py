@@ -1173,7 +1173,7 @@ class PortfolioTab(QWidget):
         if self._read_only:
             banner = QLabel(f"  👁  Viewing read-only — {self._account_name}")
             banner.setStyleSheet(
-                "background: #f59e0b; color: #1c1917; padding: 4px 10px; "
+                "background: #c47c00; color: #ffffff; padding: 4px 10px; "
                 "border-radius: 4px; font-weight: bold;"
             )
             root.addWidget(banner)
@@ -1725,12 +1725,15 @@ class PortfolioTab(QWidget):
                 "days_to_close": self._int_or_dash(row.days_to_close),
                 "avg_daily_return": self._money_or_dash(row.avg_daily_return),
             }
-            # Row background based on status
+            # Row background based on status — uses theme tint colors
             from PySide6.QtGui import QColor, QBrush
+            _theme = getattr(self.window(), "theme", None)
             if row.status == "WAITING":
-                row_bg = QBrush(QColor(120, 90, 0, 80))    # amber tint
+                _r,_g,_b,_a = _theme.waiting_row_tint() if _theme else (120, 90, 0, 80)
+                row_bg = QBrush(QColor(_r, _g, _b, _a))
             elif row.status in ("SHORT", "COVERED"):
-                row_bg = QBrush(QColor(30, 80, 140, 70))   # blue-grey tint
+                _r,_g,_b,_a = _theme.short_row_tint() if _theme else (30, 80, 140, 70)
+                row_bg = QBrush(QColor(_r, _g, _b, _a))
             else:
                 row_bg = None
 
@@ -1740,7 +1743,14 @@ class PortfolioTab(QWidget):
                 if key == "instrument":
                     f = item.font(); f.setBold(True); item.setFont(f)
                 if key == "trade_profit" and row.trade_profit is not None:
-                    item.setForeground(Qt.GlobalColor.darkGreen if row.trade_profit > 0 else Qt.GlobalColor.red)
+                    _theme = getattr(self.window(), "theme", None)
+                    if _theme is not None:
+                        from PySide6.QtGui import QColor
+                        item.setForeground(QColor(_theme.profit_color() if row.trade_profit > 0
+                                                  else _theme.loss_color()))
+                    else:
+                        item.setForeground(Qt.GlobalColor.darkGreen if row.trade_profit > 0
+                                           else Qt.GlobalColor.red)
                 if row_bg is not None:
                     item.setBackground(row_bg)
                 self.trade_table.setItem(r, c, item)
@@ -1770,7 +1780,9 @@ class PortfolioTab(QWidget):
                 if c == 0:
                     f = item.font(); f.setBold(True); item.setFont(f)
                 if is_short:
-                    item.setBackground(QBrush(QColor(30, 80, 140, 70)))
+                    _theme = getattr(self.window(), "theme", None)
+                    _r,_g,_b,_a = _theme.short_row_tint() if _theme else (30, 80, 140, 70)
+                    item.setBackground(QBrush(QColor(_r, _g, _b, _a)))
                 self.holdings_table.setItem(r, c, item)
 
     @staticmethod
