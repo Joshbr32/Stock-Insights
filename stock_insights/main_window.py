@@ -363,6 +363,13 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self.theme = ThemeManager(self)
+        # Pre-load saved theme/font settings so the very first apply() uses
+        # them — eliminates the Default-theme flash before _load_settings runs.
+        _s = self._qsettings()
+        self.theme.override_mode     = _s.value("ui/THEME_OVERRIDE", "System")
+        self.theme.match_system_accent = _s.value("ui/MATCH_SYSTEM_ACCENT", True, type=bool)
+        self.theme.theme_name        = _s.value("ui/THEME_NAME",   "Default")
+        self.theme.font_size_label   = _s.value("ui/FONT_SIZE",    "Normal")
         self.theme.apply()
         self.theme.start_watching()
         self._load_settings()
@@ -526,8 +533,17 @@ class MainWindow(QMainWindow):
         if not self._store.is_admin:
             QMessageBox.information(self, "Admin Only", "Only admin accounts can view other users' portfolios.")
             return
-        if not isinstance(self._store, RemoteDataStore):
-            QMessageBox.information(self, "Server Required", "Viewing other users requires a server connection.")
+        # Accept FallbackDataStore when it's currently connected to the server
+        _remote_ok = (
+            isinstance(self._store, RemoteDataStore) or
+            (isinstance(self._store, FallbackDataStore) and self._store._is_online)
+        )
+        if not _remote_ok:
+            QMessageBox.information(
+                self, "Server Required",
+                "Viewing other users requires a server connection."
+                "The app is currently in offline mode — reconnect to the server first."
+            )
             return
         try:
             users = self._store.list_users()
@@ -677,10 +693,24 @@ class MainWindow(QMainWindow):
 
     def _on_net_status(self, ok: bool, thread: QThread, worker):
         self._online = ok
-        if ok:
-            self.lbl_status.setText("● Online"); self.lbl_status.setStyleSheet("color: #22c55e;")
+        if not ok:
+            # No network at all → red
+            self.lbl_status.setText("● Offline")
+            self.lbl_status.setStyleSheet("color: #ef4444;")
+        elif isinstance(self._store, FallbackDataStore) and not self._store._is_online:
+            # Internet up but server unreachable → yellow
+            n = self._store.pending_sync_count
+            suffix = f" — {n} change{'s' if n != 1 else ''} queued" if n else " — server unreachable"
+            self.lbl_status.setText(f"● Online{suffix}")
+            self.lbl_status.setStyleSheet("color: #f59e0b;")
+        elif not isinstance(self._store, (RemoteDataStore, FallbackDataStore)):
+            # Working offline (LocalDataStore) but internet available → yellow
+            self.lbl_status.setText("● Online — working offline")
+            self.lbl_status.setStyleSheet("color: #f59e0b;")
         else:
-            self.lbl_status.setText("● Offline"); self.lbl_status.setStyleSheet("color: #ef4444;")
+            # Server reachable → green
+            self.lbl_status.setText("● Online")
+            self.lbl_status.setStyleSheet("color: #22c55e;")
         thread.quit()
 
     def _init_reconnect_timer(self):
