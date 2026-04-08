@@ -767,19 +767,27 @@ class TradeHistoryColumnsDialog(QDialog):
         return [key for key, cb in self._checks.items() if cb.isChecked()]
 
 
+
 # ---------------------------------------------------------------------------
 # PortfolioTab
 # ---------------------------------------------------------------------------
 
 class PortfolioTab(QWidget):
-    """Portfolio tab bound to a single named account."""
+    """Portfolio tab bound to a single named account.
+
+    Parameters
+    ----------
+    account_name : the account this tab represents
+    store        : DataStore (RemoteDataStore or LocalDataStore)
+    settings     : QSettings for device-local UI prefs only
+    read_only    : if True, hides all trade/goal edit controls
+                   (used by admin when viewing another user's portfolio)
+    owner_label  : optional string shown in goal group to identify owner
+    """
 
     tradesChanged = Signal()
 
-    SETTINGS_KEY = "portfolio/trades"
-    LEGACY_HOLDINGS_KEY = "portfolio/holdings"
     TRADE_HISTORY_VISIBLE_COLUMNS_KEY = "portfolio/trade_history_visible_columns"
-    GOAL_DASHBOARD_ACCOUNTS_KEY = "portfolio/goal_dashboard_accounts"
 
     TRADE_HISTORY_COLUMNS = [
         ("instrument", "Instrument"),
@@ -794,13 +802,21 @@ class PortfolioTab(QWidget):
         ("avg_daily_return", "Avg Daily Return"),
     ]
 
-    def __init__(self, account_name: str, settings: QSettings, parent=None):
+    def __init__(
+        self,
+        account_name: str,
+        store,           # DataStore
+        settings,        # QSettings (UI prefs only)
+        read_only: bool = False,
+        parent=None,
+    ):
         super().__init__(parent)
         self._account_name: str = account_name
-        self.GOAL_KEY = f"portfolio/goal_target/{account_name}"
+        self._store = store
         self._settings = settings
+        self._read_only = read_only
         self._marks: Dict[str, Optional[float]] = {}
-        self._trades: List[Trade] = []
+        self._trades: List[Trade] = []   # all trades for all accounts (filtered per view)
         self._holdings: List[Holding] = []
         self._trade_row_indices: List[int] = []
         self._holding_row_instruments: List[str] = []
@@ -827,11 +843,15 @@ class PortfolioTab(QWidget):
                 self._marks[symbol] = float(price)
         self.refresh_view()
 
-    def reload_from_settings(self):
+    def reload_from_store(self):
+        """Re-read all data from the store and refresh. Called when siblings change."""
         self._load_state()
 
+    # Keep old name as alias for backward compat with MainWindow signal wiring
+    reload_from_settings = reload_from_store
+
     # ------------------------------------------------------------------
-    # Settings helpers
+    # UI helpers (device-local settings)
     # ------------------------------------------------------------------
 
     def _trade_default_quantity(self) -> int:
@@ -866,26 +886,14 @@ class PortfolioTab(QWidget):
         self._settings.sync()
 
     # ------------------------------------------------------------------
-    # Account & preset helpers
+    # Store-backed data helpers
     # ------------------------------------------------------------------
 
     def _account_names(self) -> List[str]:
-        raw = self._settings.value("user_account/accounts", ["Default"])
-        if isinstance(raw, str):
-            try: raw = json.loads(raw)
-            except Exception: raw = [x.strip() for x in raw.split(",") if x.strip()]
-        if not isinstance(raw, list): raw = ["Default"]
-        out: List[str] = []
-        seen: set = set()
-        for item in raw:
-            name = str(item or "").strip()
-            if name and name not in seen:
-                seen.add(name); out.append(name)
-        return out or ["Default"]
-
-    def _migration_account(self) -> str:
-        accounts = self._account_names()
-        return accounts[0] if accounts else "Default"
+        try:
+            return self._store.get_account_names()
+        except Exception:
+            return [self._account_name]
 
     def _visible_trades(self) -> List[Trade]:
         return [t for t in self._trades if (t.account or "").strip() == self._account_name]
@@ -897,75 +905,78 @@ class PortfolioTab(QWidget):
         return [t for t in self._trades if (t.account or "").strip() == self._account_name]
 
     def _my_presets(self) -> List[float]:
-        return _load_account_presets(self._settings, self._account_name)
+        try:
+            return self._store.get_goal_presets(self._account_name)
+        except Exception:
+            return [250_000.0, 500_000.0, 1_000_000.0]
 
     # ------------------------------------------------------------------
-    # Goal Dashboard Accounts
+    # Goal Group (via store)
     # ------------------------------------------------------------------
 
     def _goal_dashboard_accounts(self) -> List[str]:
-        """Return the list of accounts in the shared group (may be empty)."""
-        accounts = self._account_names()
-        raw = self._settings.value(self.GOAL_DASHBOARD_ACCOUNTS_KEY, [])
-        if isinstance(raw, str):
-            try: raw = json.loads(raw)
-            except Exception: raw = [x.strip() for x in raw.split(",") if x.strip()]
-        if not isinstance(raw, list): raw = []
-        # Empty list = no accounts shared (fully independent — allowed).
-        return [name for name in raw if name in accounts]
+        try:
+            accounts = set(self._account_names())
+            shared, _ = self._store.get_goal_group()
+            return [name for name in shared if name in accounts]
+        except Exception:
+            return []
 
     def sync_goal_dashboard_accounts(self):
-        """Prune removed accounts; do NOT re-add them (empty = all independent is valid)."""
-        accounts = self._account_names()
-        existing = self._goal_dashboard_accounts()
-        pruned = [name for name in existing if name in accounts]
-        self._settings.setValue(self.GOAL_DASHBOARD_ACCOUNTS_KEY, json.dumps(pruned))
-        self._settings.sync()
+        """Prune removed accounts from the goal group (server call)."""
+        try:
+            accounts = set(self._account_names())
+            shared, shared_goal = self._store.get_goal_group()
+            pruned = [name for name in shared if name in accounts]
+            if pruned != shared:
+                self._store.set_goal_group(pruned, shared_goal, {}, {})
+        except Exception:
+            pass
 
     def _current_goal_target(self) -> float:
         try:
-            return float(self._settings.value(self.GOAL_KEY, 500_000.0) or 500_000.0)
+            return self._store.get_goal_target(self._account_name)
         except Exception:
             return 500_000.0
 
     def open_goal_dashboard_options_dialog(self):
-        """Open the Goal Dashboard Options dialog (accounts, targets, presets)."""
+        if self._read_only:
+            return
         accounts = self._account_names()
-        selected = self._goal_dashboard_accounts()
+        try:
+            shared_names, shared_goal = self._store.get_goal_group()
+        except Exception:
+            shared_names, shared_goal = [], 500_000.0
 
         goal_targets: Dict[str, float] = {}
+        preset_values: Dict[str, List[float]] = {}
         for account in accounts:
-            key = f"portfolio/goal_target/{account}"
             try:
-                goal_targets[account] = float(self._settings.value(key, 500_000.0) or 500_000.0)
+                goal_targets[account] = self._store.get_goal_target(account)
+                preset_values[account] = self._store.get_goal_presets(account)
             except Exception:
                 goal_targets[account] = 500_000.0
+                preset_values[account] = [250_000.0, 500_000.0, 1_000_000.0]
 
-        preset_values: Dict[str, List[float]] = {
-            account: _load_account_presets(self._settings, account)
-            for account in accounts
-        }
-
-        dlg = GoalDashboardOptionsDialog(accounts, selected, goal_targets, preset_values, self)
+        dlg = GoalDashboardOptionsDialog(accounts, shared_names, goal_targets, preset_values, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        # --- Save account grouping (empty list = all independent; that's fine) ---
         chosen = dlg.selected_accounts()
-        self._settings.setValue(self.GOAL_DASHBOARD_ACCOUNTS_KEY, json.dumps(chosen))
+        shared_goal_new = dlg.shared_goal()
+        individual_goals = dlg.individual_goals()
+        all_presets = dlg.all_preset_values()
 
-        # --- Save goal targets ---
-        shared_goal = dlg.shared_goal()
-        for account in chosen:
-            self._settings.setValue(f"portfolio/goal_target/{account}", shared_goal)
-        for account, goal in dlg.individual_goals().items():
-            self._settings.setValue(f"portfolio/goal_target/{account}", goal)
+        try:
+            self._store.set_goal_group(chosen, shared_goal_new, individual_goals, all_presets)
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Save Failed", str(exc))
+            return
 
-        # --- Save per-account presets ---
-        for account, presets in dlg.all_preset_values().items():
-            _save_account_presets(self._settings, account, presets)
-
-        self._settings.sync()
+        # Rebuild preset buttons immediately on this tab (siblings rebuild
+        # via reload_from_store -> _load_state -> _rebuild_preset_buttons).
+        self._rebuild_preset_buttons()
         self.tradesChanged.emit()
 
     # ------------------------------------------------------------------
@@ -977,6 +988,15 @@ class PortfolioTab(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
+        # Read-only banner
+        if self._read_only:
+            banner = QLabel(f"  👁  Viewing read-only — {self._account_name}")
+            banner.setStyleSheet(
+                "background: #f59e0b; color: #1c1917; padding: 4px 10px; "
+                "border-radius: 4px; font-weight: bold;"
+            )
+            root.addWidget(banner)
+
         top_row = QHBoxLayout()
 
         # ---- Goal Dashboard ----
@@ -986,7 +1006,6 @@ class PortfolioTab(QWidget):
         goal_layout.setContentsMargins(14, 18, 14, 14)
         goal_layout.setSpacing(10)
 
-        # Header: "Annual Target: $ 500,000   [250K] [500K] [1M]"
         goal_header = QHBoxLayout()
         goal_header.setSpacing(8)
         goal_header.addWidget(QLabel("Annual Target:"))
@@ -997,17 +1016,14 @@ class PortfolioTab(QWidget):
         goal_header.addWidget(self.goal_target_label)
         goal_header.addSpacing(6)
 
-        # Preset buttons — built from account's own presets, replaced on reload
         self._preset_btn_container = QWidget()
         self._preset_btn_layout = QHBoxLayout(self._preset_btn_container)
         self._preset_btn_layout.setContentsMargins(0, 0, 0, 0)
         self._preset_btn_layout.setSpacing(4)
         goal_header.addWidget(self._preset_btn_container)
-
         goal_header.addStretch(1)
         goal_layout.addLayout(goal_header)
 
-        # Stats grid
         goal_grid = QGridLayout()
         goal_grid.setHorizontalSpacing(18)
         goal_grid.setVerticalSpacing(8)
@@ -1041,16 +1057,12 @@ class PortfolioTab(QWidget):
         analytics_grid.setHorizontalSpacing(18)
         analytics_grid.setVerticalSpacing(8)
         self.analytics_labels: Dict[str, QLabel] = {}
-        analytics_fields = [
-            ("open_trades", "Open Trades"),
-            ("closed_trades", "Closed Trades"),
-            ("avg_profit_per_trade", "Avg Profit / Trade"),
-            ("avg_trade_value", "Avg Trade Value"),
+        for idx, (key, label) in enumerate([
+            ("open_trades", "Open Trades"), ("closed_trades", "Closed Trades"),
+            ("avg_profit_per_trade", "Avg Profit / Trade"), ("avg_trade_value", "Avg Trade Value"),
             ("avg_roi_pct", "Avg ROI %"),
-            ("total_roi_pct", "Total ROI %"),
             ("avg_daily_closed_profit", "Avg Daily Return"),
-        ]
-        for idx, (key, label) in enumerate(analytics_fields):
+        ]):
             value = QLabel("—")
             self.analytics_labels[key] = value
             analytics_grid.addWidget(QLabel(label), idx, 0)
@@ -1064,7 +1076,6 @@ class PortfolioTab(QWidget):
         holdings_layout = QVBoxLayout(self.holdings_group)
         holdings_layout.setContentsMargins(14, 18, 14, 14)
         holdings_layout.setSpacing(10)
-
         self.holdings_table = QTableWidget(0, 7)
         self.holdings_table.setHorizontalHeaderLabels([
             "Instrument", "Qty", "Avg Cost", "Mark", "Unrealized P/L", "Market Value", "Weight %",
@@ -1075,10 +1086,10 @@ class PortfolioTab(QWidget):
         self.holdings_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.holdings_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.holdings_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.holdings_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.holdings_table.customContextMenuRequested.connect(self._open_holdings_context_menu)
+        if not self._read_only:
+            self.holdings_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.holdings_table.customContextMenuRequested.connect(self._open_holdings_context_menu)
         holdings_layout.addWidget(self.holdings_table)
-
         self.holdings_summary = QLabel("—")
         holdings_layout.addWidget(self.holdings_summary)
         root.addWidget(self.holdings_group)
@@ -1089,7 +1100,6 @@ class PortfolioTab(QWidget):
         trade_layout = QVBoxLayout(self.trade_group)
         trade_layout.setContentsMargins(14, 18, 14, 14)
         trade_layout.setSpacing(10)
-
         self.trade_table = QTableWidget(0, len(self.TRADE_HISTORY_COLUMNS))
         self.trade_table.setHorizontalHeaderLabels([label for _, label in self.TRADE_HISTORY_COLUMNS])
         self.trade_table.verticalHeader().setVisible(False)
@@ -1100,112 +1110,110 @@ class PortfolioTab(QWidget):
         self.trade_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         trade_layout.addWidget(self.trade_table)
 
-        trade_btns = QHBoxLayout()
-        self.btn_add_trade = QPushButton("+ Add Trade")
-        self.btn_edit_trade = QPushButton("Edit Selected")
-        self.btn_delete_trade = QPushButton("Delete Selected")
-        trade_btns.addWidget(self.btn_add_trade)
-        trade_btns.addWidget(self.btn_edit_trade)
-        trade_btns.addWidget(self.btn_delete_trade)
-        trade_btns.addStretch(1)
-        trade_layout.addLayout(trade_btns)
+        if not self._read_only:
+            trade_btns = QHBoxLayout()
+            self.btn_add_trade = QPushButton("+ Add Trade")
+            self.btn_edit_trade = QPushButton("Edit Selected")
+            self.btn_delete_trade = QPushButton("Delete Selected")
+            trade_btns.addWidget(self.btn_add_trade)
+            trade_btns.addWidget(self.btn_edit_trade)
+            trade_btns.addWidget(self.btn_delete_trade)
+            trade_btns.addStretch(1)
+            trade_layout.addLayout(trade_btns)
+            self.btn_add_trade.clicked.connect(self._add_trade)
+            self.btn_edit_trade.clicked.connect(self._edit_trade)
+            self.btn_delete_trade.clicked.connect(self._delete_trade)
+
         root.addWidget(self.trade_group, 1)
 
-        self.btn_add_trade.clicked.connect(self._add_trade)
-        self.btn_edit_trade.clicked.connect(self._edit_trade)
-        self.btn_delete_trade.clicked.connect(self._delete_trade)
-
     # ------------------------------------------------------------------
-    # Preset button management
+    # Preset buttons (hidden in read-only)
     # ------------------------------------------------------------------
 
     def _rebuild_preset_buttons(self):
-        """Rebuild the 3 preset quick-set buttons from this account's current presets."""
-        # Clear existing buttons
         while self._preset_btn_layout.count():
             item = self._preset_btn_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
+        if self._read_only:
+            return
+
         presets = self._my_presets()
         for preset_value in presets:
             label = _fmt_preset_label(preset_value)
             btn = QPushButton(label)
-            # Use CSS padding so the button sizes to its text content properly (fix #4)
             btn.setStyleSheet("padding-left: 8px; padding-right: 8px;")
             btn.setMinimumWidth(btn.fontMetrics().horizontalAdvance(label) + 24)
             btn.clicked.connect(lambda _checked, v=preset_value: self._set_goal_target(v))
             self._preset_btn_layout.addWidget(btn)
 
     def _set_goal_target(self, value: float):
-        """Set the goal target for this account (and shared group if applicable), then refresh."""
+        if self._read_only:
+            return
         goal_accounts = set(self._goal_dashboard_accounts())
-        if self._account_name in goal_accounts:
-            # Shared — update all accounts in the group
-            for account in goal_accounts:
-                self._settings.setValue(f"portfolio/goal_target/{account}", float(value))
-            self._settings.sync()
-            self.tradesChanged.emit()  # Refresh sibling tabs too
-        else:
-            # Independent
-            self._settings.setValue(self.GOAL_KEY, float(value))
-            self._settings.sync()
-            self.refresh_view()
+        try:
+            if self._account_name in goal_accounts:
+                # Shared — update all accounts in the group
+                for account in goal_accounts:
+                    self._store.set_goal_target(account, float(value))
+                self.tradesChanged.emit()
+            else:
+                self._store.set_goal_target(self._account_name, float(value))
+                self.refresh_view()
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Save Failed", str(exc))
 
     # ------------------------------------------------------------------
-    # State persistence
+    # State persistence (via DataStore)
     # ------------------------------------------------------------------
 
     def _load_state(self):
-        self._trades = trades_from_json(self._settings.value(self.SETTINGS_KEY, []))
+        try:
+            all_trades = self._store.get_all_trades()
+        except Exception:
+            all_trades = []
 
+        # Assign account field to any trade missing it (migration from pre-DB data)
+        default_account = self._account_names()[0] if self._account_names() else self._account_name
         migrated = False
-        default_account = self._migration_account()
-        for trade in self._trades:
+        for trade in all_trades:
             if not (trade.account or "").strip():
-                trade.account = default_account; migrated = True
-        if migrated:
+                trade.account = default_account
+                migrated = True
+        if migrated and not self._read_only:
             self._save_trades_silent()
 
-        if not self._trades:
-            legacy = self._settings.value(self.LEGACY_HOLDINGS_KEY, [])
-            legacy_rows: list = []
-            if isinstance(legacy, str):
-                try: legacy_rows = json.loads(legacy)
-                except Exception: legacy_rows = []
-            elif isinstance(legacy, list):
-                legacy_rows = legacy
-            for row in legacy_rows:
-                if not isinstance(row, dict): continue
-                instrument = str(row.get("instrument", "")).strip().upper()
-                qty = int(row.get("qty", 0) or 0)
-                avg_cost = float(row.get("avg_cost", 0.0) or 0.0)
-                notes = str(row.get("notes", "") or "")
-                if instrument and qty > 0:
-                    self._trades.append(Trade(
-                        instrument=instrument, share_count=qty, buy_price=avg_cost,
-                        sell_price=None, open_date=date.today(), close_date=None,
-                        notes=notes, account=default_account,
-                    ))
-            if self._trades:
-                self._save_trades_silent()
-
+        self._trades = all_trades
         self._holdings = compute_holdings_from_trades(self._visible_trades())
         self.sync_goal_dashboard_accounts()
         self._rebuild_preset_buttons()
         self.refresh_view()
 
     def _save_trades_silent(self):
-        self._settings.setValue(self.SETTINGS_KEY, trades_to_json(self._trades))
-        self._settings.sync()
+        """Persist current account's trades without emitting tradesChanged."""
+        visible = self._visible_trades()
+        try:
+            self._store.save_account_trades(self._account_name, visible)
+        except Exception:
+            pass
 
     def _save_trades(self):
-        self._settings.setValue(self.SETTINGS_KEY, trades_to_json(self._trades))
-        self._settings.sync()
+        """Persist and notify siblings."""
+        if self._read_only:
+            return
+        visible = self._visible_trades()
+        try:
+            self._store.save_account_trades(self._account_name, visible)
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Save Failed", str(exc))
+            return
         self.tradesChanged.emit()
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Watchlist / selection helpers
     # ------------------------------------------------------------------
 
     def _watchlist_symbols(self) -> List[str]:
@@ -1268,6 +1276,7 @@ class PortfolioTab(QWidget):
                      sell_price=None, open_date=oldest, close_date=None, notes=notes)
 
     def _add_trade(self):
+        if self._read_only: return
         dlg = TradeEditDialog(
             watchlist_symbols=self._watchlist_symbols(),
             default_quantity=self._trade_default_quantity(),
@@ -1283,6 +1292,7 @@ class PortfolioTab(QWidget):
         self.refresh_view(selected_trade_source_index=new_index)
 
     def _edit_trade(self):
+        if self._read_only: return
         source_index = self._selected_trade_source_index()
         if source_index is None:
             QMessageBox.information(self, "Select trade", "Choose a trade row to edit."); return
@@ -1301,6 +1311,7 @@ class PortfolioTab(QWidget):
         self.refresh_view(selected_trade_source_index=source_index)
 
     def _delete_trade(self):
+        if self._read_only: return
         source_index = self._selected_trade_source_index()
         if source_index is None:
             QMessageBox.information(self, "Select trade", "Choose a trade row to delete."); return
@@ -1319,6 +1330,7 @@ class PortfolioTab(QWidget):
     # ------------------------------------------------------------------
 
     def _open_holdings_context_menu(self, pos: QPoint):
+        if self._read_only: return
         row = self.holdings_table.rowAt(pos.y())
         if row < 0: return
         self.holdings_table.selectRow(row)
@@ -1329,33 +1341,25 @@ class PortfolioTab(QWidget):
         act_mark_down = menu.addAction("Mark Down")
         act_double_down = menu.addAction("Double Down")
         chosen = menu.exec(self.holdings_table.viewport().mapToGlobal(pos))
-        if chosen == act_close:
-            self._close_selected_holding()
-        elif chosen == act_mark_down:
-            self._mark_down_selected_holding()
-        elif chosen == act_double_down:
-            self._double_down_selected_holding()
+        if chosen == act_close: self._close_selected_holding()
+        elif chosen == act_mark_down: self._mark_down_selected_holding()
+        elif chosen == act_double_down: self._double_down_selected_holding()
 
     def _close_selected_holding(self):
         instrument = self._selected_holding_instrument()
-        if not instrument:
-            QMessageBox.information(self, "Select holding", "Choose an open holding first."); return
+        if not instrument: return
         combined_trade = self._combined_open_trade(instrument)
         matching = self._open_trades_for_instrument(instrument)
-        if combined_trade is None or not matching:
-            QMessageBox.information(self, "No open trades", "No open trades for that holding."); return
+        if not combined_trade or not matching: return
         dlg = TradeEditDialog(
-            trade=combined_trade,
-            watchlist_symbols=self._watchlist_symbols(),
+            trade=combined_trade, watchlist_symbols=self._watchlist_symbols(),
             default_quantity=self._trade_default_quantity(),
             quantity_increment=self._trade_quantity_increment(),
-            close_holdings_mode=True,
-            parent=self,
+            close_holdings_mode=True, parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted: return
         closing_trade = dlg.to_trade()
-        if closing_trade.sell_price is None or closing_trade.close_date is None:
-            QMessageBox.warning(self, "Missing close info", "Enter a sell price and close date."); return
+        if closing_trade.sell_price is None or closing_trade.close_date is None: return
         updated_indices: List[int] = []
         for idx, trade in matching:
             trade.sell_price = float(closing_trade.sell_price)
@@ -1366,52 +1370,30 @@ class PortfolioTab(QWidget):
 
     def _mark_down_selected_holding(self):
         instrument = self._selected_holding_instrument()
-        if not instrument:
-            QMessageBox.information(self, "Select holding", "Choose an open holding first."); return
-        combined_trade = self._combined_open_trade(instrument)
-        if combined_trade is None or combined_trade.share_count <= 0:
-            QMessageBox.information(self, "No open trades", "No open trades for that holding."); return
-        holding = Holding(
-            instrument=combined_trade.normalized_instrument(),
-            qty=int(combined_trade.share_count),
-            avg_cost=float(combined_trade.buy_price),
-            notes=combined_trade.notes or "",
-        )
-        dlg = MarkDownDialog(
-            holding=holding,
-            default_quantity=self._trade_default_quantity(),
-            quantity_increment=self._trade_quantity_increment(),
-            parent=self,
-        )
+        if not instrument: return
+        combined = self._combined_open_trade(instrument)
+        if not combined or combined.share_count <= 0: return
+        holding = Holding(instrument=combined.normalized_instrument(), qty=int(combined.share_count),
+                          avg_cost=float(combined.buy_price), notes=combined.notes or "")
+        dlg = MarkDownDialog(holding=holding, default_quantity=self._trade_default_quantity(),
+                              quantity_increment=self._trade_quantity_increment(), parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted: return
-        trade = dlg.to_trade()
-        trade.account = self._account_name
+        trade = dlg.to_trade(); trade.account = self._account_name
         self._trades.append(trade)
         self._save_trades()
         self.refresh_view(selected_trade_source_index=len(self._trades) - 1)
 
     def _double_down_selected_holding(self):
         instrument = self._selected_holding_instrument()
-        if not instrument:
-            QMessageBox.information(self, "Select holding", "Choose an open holding first."); return
-        combined_trade = self._combined_open_trade(instrument)
-        if combined_trade is None or combined_trade.share_count <= 0:
-            QMessageBox.information(self, "No open trades", "No open trades for that holding."); return
-        holding = Holding(
-            instrument=combined_trade.normalized_instrument(),
-            qty=int(combined_trade.share_count),
-            avg_cost=float(combined_trade.buy_price),
-            notes=combined_trade.notes or "",
-        )
-        dlg = DoubleDownDialog(
-            holding=holding,
-            current_mark=self._marks.get(holding.normalized_instrument()),
-            quantity_increment=self._trade_quantity_increment(),
-            parent=self,
-        )
+        if not instrument: return
+        combined = self._combined_open_trade(instrument)
+        if not combined or combined.share_count <= 0: return
+        holding = Holding(instrument=combined.normalized_instrument(), qty=int(combined.share_count),
+                          avg_cost=float(combined.buy_price), notes=combined.notes or "")
+        dlg = DoubleDownDialog(holding=holding, current_mark=self._marks.get(holding.normalized_instrument()),
+                               quantity_increment=self._trade_quantity_increment(), parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted: return
-        trade = dlg.to_trade()
-        trade.account = self._account_name
+        trade = dlg.to_trade(); trade.account = self._account_name
         self._trades.append(trade)
         self._save_trades()
         self.refresh_view(selected_trade_source_index=len(self._trades) - 1)
@@ -1435,9 +1417,7 @@ class PortfolioTab(QWidget):
         goal_realized_by_symbol = compute_realized_pl_by_symbol(goal_trades)
         _, goal_summary = compute_portfolio(goal_holdings, self._marks, goal_realized_by_symbol)
         goal = compute_goal_progress(
-            goal_trades,
-            self._current_goal_target(),
-            unrealized_profit=goal_summary.unrealized_pl,
+            goal_trades, self._current_goal_target(), unrealized_profit=goal_summary.unrealized_pl,
         )
 
         visible_source_indices = [
@@ -1461,7 +1441,7 @@ class PortfolioTab(QWidget):
     # Render helpers
     # ------------------------------------------------------------------
 
-    def _render_goal(self, goal: GoalProgress):
+    def _render_goal(self, goal):
         self.goal_target_label.setText(_fmt_goal(goal.goal_target))
         self.goal_labels["realized_profit"].setText(_fmt_money(goal.realized_profit))
         self.goal_labels["unrealized_profit"].setText(_fmt_money(goal.unrealized_profit))
@@ -1480,29 +1460,23 @@ class PortfolioTab(QWidget):
         self.analytics_labels["avg_profit_per_trade"].setText(self._money_or_dash(analytics.avg_profit_per_trade))
         self.analytics_labels["avg_trade_value"].setText(self._money_or_dash(analytics.avg_trade_value))
         self.analytics_labels["avg_roi_pct"].setText(self._pct(analytics.avg_roi_pct))
-        self.analytics_labels["total_roi_pct"].setText(self._pct(analytics.total_roi_pct))
         self.analytics_labels["avg_daily_closed_profit"].setText(self._money_or_dash(analytics.avg_daily_closed_profit))
 
-    def _render_trade_table(self, rows, visible_source_indices: List[int], selected_trade_source_index: Optional[int]):
+    def _render_trade_table(self, rows, visible_source_indices, selected_trade_source_index):
         self.trade_table.setColumnCount(len(self.TRADE_HISTORY_COLUMNS))
         self.trade_table.setHorizontalHeaderLabels([label for _, label in self.TRADE_HISTORY_COLUMNS])
         self.trade_table.setRowCount(len(rows))
         self._trade_row_indices = [
             visible_source_indices[row.index]
-            for row in rows
-            if 0 <= row.index < len(visible_source_indices)
+            for row in rows if 0 <= row.index < len(visible_source_indices)
         ]
-
         visible_keys = set(self._trade_history_visible_keys())
         for col, (key, _) in enumerate(self.TRADE_HISTORY_COLUMNS):
             self.trade_table.setColumnHidden(col, key not in visible_keys)
-
         for r, row in enumerate(rows):
             value_map = {
-                "instrument": row.instrument,
-                "share_count": f"{row.share_count:,d}",
-                "status": row.status,
-                "buy_price": _fmt_money(row.buy_price),
+                "instrument": row.instrument, "share_count": f"{row.share_count:,d}",
+                "status": row.status, "buy_price": _fmt_money(row.buy_price),
                 "sell_price": self._money_or_dash(row.sell_price),
                 "trade_profit": self._money_or_dash(row.trade_profit),
                 "open_date": self._date_or_dash(row.open_date),
@@ -1518,14 +1492,11 @@ class PortfolioTab(QWidget):
                 if key == "trade_profit" and row.trade_profit is not None:
                     item.setForeground(Qt.GlobalColor.darkGreen if row.trade_profit > 0 else Qt.GlobalColor.red)
                 self.trade_table.setItem(r, c, item)
-
         if rows:
             row_to_select = 0
             if selected_trade_source_index is not None:
-                try:
-                    row_to_select = self._trade_row_indices.index(selected_trade_source_index)
-                except ValueError:
-                    row_to_select = 0
+                try: row_to_select = self._trade_row_indices.index(selected_trade_source_index)
+                except ValueError: row_to_select = 0
             self.trade_table.selectRow(row_to_select)
 
     def _render_holdings_table(self, rows):
@@ -1544,10 +1515,6 @@ class PortfolioTab(QWidget):
                     f = item.font(); f.setBold(True); item.setFont(f)
                 self.holdings_table.setItem(r, c, item)
 
-    # ------------------------------------------------------------------
-    # Formatting
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _money_or_dash(value: Optional[float]) -> str:
         return "—" if value is None else _fmt_money(value)
@@ -1557,7 +1524,7 @@ class PortfolioTab(QWidget):
         return "—" if value is None else f"{float(value):,.2f}%"
 
     @staticmethod
-    def _date_or_dash(value: Optional[date]) -> str:
+    def _date_or_dash(value) -> str:
         return "—" if value is None else value.isoformat()
 
     @staticmethod

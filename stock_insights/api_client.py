@@ -1,0 +1,504 @@
+"""api_client.py — DataStore abstraction and remote HTTP client.
+
+DataStore
+─────────
+Abstract base class for all data access.  PortfolioTab and MainWindow
+use DataStore methods; they don't care whether data lives on the remote
+server or locally in QSettings.
+
+RemoteDataStore   — talks to the FastAPI server over HTTP.
+LocalDataStore    — falls back to QSettings (device-local, no sync).
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from abc import ABC, abstractmethod
+from typing import Dict, List, Optional, Tuple
+
+try:
+    import requests
+    _REQUESTS_OK = True
+except ImportError:
+    _REQUESTS_OK = False
+
+from PySide6.QtCore import QSettings
+
+from .portfolio import Trade, trades_from_json, trades_to_json
+
+
+# ---------------------------------------------------------------------------
+# DataStore ABC
+# ---------------------------------------------------------------------------
+
+class DataStore(ABC):
+    """Abstract interface for all user-data persistence."""
+
+    # ---- Trades ----
+    @abstractmethod
+    def get_all_trades(self) -> List[Trade]:
+        """Return all trades for all accounts belonging to this user."""
+
+    @abstractmethod
+    def save_account_trades(self, account_name: str, trades: List[Trade]) -> None:
+        """Replace all trades for a single account (other accounts unchanged)."""
+
+    # ---- Accounts ----
+    @abstractmethod
+    def get_account_names(self) -> List[str]:
+        ...
+
+    @abstractmethod
+    def save_accounts(self, accounts: List[str]) -> None:
+        """Save account list (names only; settings preserved where possible)."""
+
+    # ---- Goal targets & presets ----
+    @abstractmethod
+    def get_goal_target(self, account_name: str) -> float:
+        ...
+
+    @abstractmethod
+    def set_goal_target(self, account_name: str, value: float) -> None:
+        ...
+
+    @abstractmethod
+    def get_goal_presets(self, account_name: str) -> List[float]:
+        ...
+
+    @abstractmethod
+    def set_goal_presets(self, account_name: str, presets: List[float]) -> None:
+        ...
+
+    # ---- Goal group (shared tracking) ----
+    @abstractmethod
+    def get_goal_group(self) -> Tuple[List[str], float]:
+        """Return (shared_account_names, shared_goal_target)."""
+
+    @abstractmethod
+    def set_goal_group(
+        self,
+        shared_accounts: List[str],
+        shared_goal: float,
+        individual_goals: Dict[str, float],
+        individual_presets: Dict[str, List[float]],
+    ) -> None:
+        ...
+
+    # ---- Watchlist ----
+    @abstractmethod
+    def get_watchlist(self) -> List[str]:
+        ...
+
+    @abstractmethod
+    def save_watchlist(self, symbols: List[str]) -> None:
+        ...
+
+    # ---- Identity ----
+    @property
+    @abstractmethod
+    def user_info(self) -> dict:
+        """Return {user_id, username, is_admin}."""
+
+    @property
+    def is_admin(self) -> bool:
+        return bool(self.user_info.get("is_admin", False))
+
+    @property
+    def username(self) -> str:
+        return str(self.user_info.get("username", ""))
+
+
+# ---------------------------------------------------------------------------
+# RemoteDataStore — connects to server.py over HTTP
+# ---------------------------------------------------------------------------
+
+class APIError(Exception):
+    def __init__(self, message: str, status_code: int = 0):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class RemoteDataStore(DataStore):
+    """DataStore backed by the FastAPI server.
+
+    Parameters
+    ----------
+    base_url : e.g. 'http://192.168.1.10:8742'
+    token    : Bearer token obtained from /auth/login
+    user_info_dict : dict returned by /auth/login {user_id, username, is_admin}
+    for_user_id : if set (admin use), all requests proxy for this user_id
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        user_info_dict: dict,
+        for_user_id: Optional[int] = None,
+    ):
+        if not _REQUESTS_OK:
+            raise ImportError("Install 'requests':  pip install requests")
+        self._base = base_url.rstrip("/")
+        self._token = token
+        self._user_info = user_info_dict
+        self._for_user_id = for_user_id
+        self._lock = threading.Lock()
+
+        # Local cache to reduce round-trips
+        self._account_cache: Optional[List[dict]] = None  # [{name, goal_target, goal_presets}]
+        self._trade_cache: Optional[List[Trade]] = None
+        self._goal_group_cache: Optional[Tuple[List[str], float]] = None
+
+    # ---- internal ----
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self._token}"}
+
+    def _params(self) -> dict:
+        return {"for_user_id": self._for_user_id} if self._for_user_id else {}
+
+    def _get(self, path: str) -> any:
+        r = requests.get(f"{self._base}{path}", headers=self._headers(), params=self._params(), timeout=10)
+        if not r.ok:
+            raise APIError(r.text, r.status_code)
+        return r.json()
+
+    def _put(self, path: str, data: dict) -> any:
+        r = requests.put(
+            f"{self._base}{path}", json=data,
+            headers=self._headers(), params=self._params(), timeout=10
+        )
+        if not r.ok:
+            raise APIError(r.text, r.status_code)
+        return r.json()
+
+    def _invalidate_trades(self):
+        self._trade_cache = None
+
+    def _invalidate_accounts(self):
+        self._account_cache = None
+
+    def _get_account_data(self) -> List[dict]:
+        if self._account_cache is None:
+            self._account_cache = self._get("/accounts")
+        return self._account_cache
+
+    # ---- DataStore implementation ----
+
+    @property
+    def user_info(self) -> dict:
+        return self._user_info
+
+    def get_all_trades(self) -> List[Trade]:
+        with self._lock:
+            if self._trade_cache is None:
+                rows = self._get("/trades")
+                trades = []
+                for r in rows:
+                    trades.append(Trade(
+                        instrument=r["instrument"],
+                        share_count=int(r["share_count"]),
+                        buy_price=float(r["buy_price"]),
+                        sell_price=None if r["sell_price"] is None else float(r["sell_price"]),
+                        open_date=_parse_date_str(r.get("open_date")),
+                        close_date=_parse_date_str(r.get("close_date")),
+                        notes=str(r.get("notes") or ""),
+                        account=str(r.get("account") or ""),
+                    ))
+                self._trade_cache = trades
+            return list(self._trade_cache)
+
+    def save_account_trades(self, account_name: str, trades: List[Trade]) -> None:
+        payload = {
+            "account_name": account_name,
+            "trades": [
+                {
+                    "instrument": t.normalized_instrument(),
+                    "share_count": int(t.share_count),
+                    "buy_price": float(t.buy_price),
+                    "sell_price": None if t.sell_price is None else float(t.sell_price),
+                    "open_date": t.open_date.isoformat() if t.open_date else None,
+                    "close_date": t.close_date.isoformat() if t.close_date else None,
+                    "notes": t.notes or "",
+                }
+                for t in trades
+            ]
+        }
+        self._put(f"/trades/{account_name}", payload)
+        self._invalidate_trades()
+
+    def get_account_names(self) -> List[str]:
+        return [a["name"] for a in self._get_account_data()]
+
+    def save_accounts(self, accounts: List[str]) -> None:
+        existing = {a["name"]: a for a in self._get_account_data()}
+        payload_accounts = []
+        for pos, name in enumerate(accounts):
+            ex = existing.get(name, {})
+            payload_accounts.append({
+                "name": name,
+                "goal_target": float(ex.get("goal_target", 500_000.0)),
+                "goal_presets": _parse_presets(ex.get("goal_presets", None)),
+                "position": pos,
+            })
+        self._put("/accounts", {"accounts": payload_accounts})
+        self._invalidate_accounts()
+
+    def get_goal_target(self, account_name: str) -> float:
+        for a in self._get_account_data():
+            if a["name"] == account_name:
+                return float(a.get("goal_target", 500_000.0))
+        return 500_000.0
+
+    def set_goal_target(self, account_name: str, value: float) -> None:
+        presets = self.get_goal_presets(account_name)
+        self._put(f"/accounts/{account_name}/settings", {
+            "name": account_name, "goal_target": float(value),
+            "goal_presets": presets, "position": 0,
+        })
+        self._invalidate_accounts()
+
+    def get_goal_presets(self, account_name: str) -> List[float]:
+        for a in self._get_account_data():
+            if a["name"] == account_name:
+                return _parse_presets(a.get("goal_presets", None))
+        return [250_000.0, 500_000.0, 1_000_000.0]
+
+    def set_goal_presets(self, account_name: str, presets: List[float]) -> None:
+        target = self.get_goal_target(account_name)
+        self._put(f"/accounts/{account_name}/settings", {
+            "name": account_name, "goal_target": target,
+            "goal_presets": [float(p) for p in presets], "position": 0,
+        })
+        self._invalidate_accounts()
+
+    def get_goal_group(self) -> Tuple[List[str], float]:
+        if self._goal_group_cache is None:
+            data = self._get("/goal-group")
+            self._goal_group_cache = (data.get("account_names", []), float(data.get("shared_goal", 500_000.0)))
+        return self._goal_group_cache
+
+    def set_goal_group(
+        self,
+        shared_accounts: List[str],
+        shared_goal: float,
+        individual_goals: Dict[str, float],
+        individual_presets: Dict[str, List[float]],
+    ) -> None:
+        self._put("/goal-group", {"account_names": shared_accounts, "shared_goal": float(shared_goal)})
+        self._goal_group_cache = None
+        # Persist individual targets and presets
+        for account, goal in individual_goals.items():
+            presets = individual_presets.get(account, self.get_goal_presets(account))
+            self._put(f"/accounts/{account}/settings", {
+                "name": account, "goal_target": float(goal),
+                "goal_presets": presets, "position": 0,
+            })
+        # Persist shared goal for all shared accounts
+        for account in shared_accounts:
+            presets = individual_presets.get(account, self.get_goal_presets(account))
+            self._put(f"/accounts/{account}/settings", {
+                "name": account, "goal_target": float(shared_goal),
+                "goal_presets": presets, "position": 0,
+            })
+        self._invalidate_accounts()
+
+    def get_watchlist(self) -> List[str]:
+        return self._get("/watchlist")
+
+    def save_watchlist(self, symbols: List[str]) -> None:
+        self._put("/watchlist", {"symbols": symbols})
+
+    # ---- Admin-only: create a view-only store for another user ----
+
+    def store_for_user(self, user_id: int, username: str) -> "RemoteDataStore":
+        """Return a read-only-capable DataStore scoped to another user (admin use)."""
+        return RemoteDataStore(
+            base_url=self._base,
+            token=self._token,
+            user_info_dict={"user_id": user_id, "username": username, "is_admin": False},
+            for_user_id=user_id,
+        )
+
+    def list_users(self) -> List[dict]:
+        """Admin: list all users."""
+        r = requests.get(f"{self._base}/users", headers=self._headers(), timeout=10)
+        if not r.ok:
+            raise APIError(r.text, r.status_code)
+        return r.json()
+
+
+# ---------------------------------------------------------------------------
+# LocalDataStore — QSettings fallback (offline / no server)
+# ---------------------------------------------------------------------------
+
+class LocalDataStore(DataStore):
+    """DataStore backed by QSettings — matches the pre-server behaviour exactly."""
+
+    ORG = "StockInsights"
+    APP = "StocksGUI"
+
+    TRADES_KEY = "portfolio/trades"
+    GOAL_GROUP_KEY = "portfolio/goal_dashboard_accounts"
+    GOAL_GROUP_SHARED_KEY = "portfolio/goal_dashboard_shared_goal"
+    ACCOUNTS_KEY = "user_account/accounts"
+
+    def __init__(self, username: str = "local"):
+        self._settings = QSettings(self.ORG, self.APP)
+        self._username = username
+
+    @property
+    def user_info(self) -> dict:
+        return {"user_id": 0, "username": self._username, "is_admin": False}
+
+    def get_all_trades(self) -> List[Trade]:
+        return trades_from_json(self._settings.value(self.TRADES_KEY, []))
+
+    def save_account_trades(self, account_name: str, trades: List[Trade]) -> None:
+        # Read all trades, replace the slice for this account, write back
+        all_trades = self.get_all_trades()
+        kept = [t for t in all_trades if (t.account or "").strip() != account_name]
+        combined = kept + [t for t in trades]
+        self._settings.setValue(self.TRADES_KEY, trades_to_json(combined))
+        self._settings.sync()
+
+    def get_account_names(self) -> List[str]:
+        raw = self._settings.value(self.ACCOUNTS_KEY, ["Default"])
+        if isinstance(raw, str):
+            try: raw = json.loads(raw)
+            except Exception: raw = [x.strip() for x in raw.split(",") if x.strip()]
+        if not isinstance(raw, list): raw = ["Default"]
+        out, seen = [], set()
+        for item in raw:
+            name = str(item or "").strip()
+            if name and name not in seen:
+                seen.add(name); out.append(name)
+        return out or ["Default"]
+
+    def save_accounts(self, accounts: List[str]) -> None:
+        self._settings.setValue(self.ACCOUNTS_KEY, json.dumps(accounts))
+        self._settings.sync()
+
+    def get_goal_target(self, account_name: str) -> float:
+        try:
+            return float(self._settings.value(f"portfolio/goal_target/{account_name}", 500_000.0) or 500_000.0)
+        except Exception:
+            return 500_000.0
+
+    def set_goal_target(self, account_name: str, value: float) -> None:
+        self._settings.setValue(f"portfolio/goal_target/{account_name}", float(value))
+        self._settings.sync()
+
+    def get_goal_presets(self, account_name: str) -> List[float]:
+        raw = self._settings.value(f"goals/presets/{account_name}", None)
+        if raw is not None:
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(parsed, list) and len(parsed) == 3:
+                    return [max(1.0, float(x)) for x in parsed]
+            except Exception:
+                pass
+        return [250_000.0, 500_000.0, 1_000_000.0]
+
+    def set_goal_presets(self, account_name: str, presets: List[float]) -> None:
+        self._settings.setValue(f"goals/presets/{account_name}", json.dumps([float(p) for p in presets]))
+        self._settings.sync()
+
+    def get_goal_group(self) -> Tuple[List[str], float]:
+        raw = self._settings.value(self.GOAL_GROUP_KEY, [])
+        if isinstance(raw, str):
+            try: raw = json.loads(raw)
+            except Exception: raw = []
+        if not isinstance(raw, list): raw = []
+        shared_goal = float(self._settings.value(self.GOAL_GROUP_SHARED_KEY, 500_000.0) or 500_000.0)
+        return list(raw), shared_goal
+
+    def set_goal_group(
+        self,
+        shared_accounts: List[str],
+        shared_goal: float,
+        individual_goals: Dict[str, float],
+        individual_presets: Dict[str, List[float]],
+    ) -> None:
+        self._settings.setValue(self.GOAL_GROUP_KEY, json.dumps(shared_accounts))
+        self._settings.setValue(self.GOAL_GROUP_SHARED_KEY, float(shared_goal))
+        for account in shared_accounts:
+            self.set_goal_target(account, shared_goal)
+            if account in individual_presets:
+                self.set_goal_presets(account, individual_presets[account])
+        for account, goal in individual_goals.items():
+            self.set_goal_target(account, goal)
+            if account in individual_presets:
+                self.set_goal_presets(account, individual_presets[account])
+        self._settings.sync()
+
+    def get_watchlist(self) -> List[str]:
+        items = self._settings.value("watchlist/items", [])
+        if isinstance(items, str):
+            try: items = json.loads(items)
+            except Exception: items = [x.strip() for x in items.split(",") if x.strip()]
+        return [str(t).upper() for t in items] if items else []
+
+    def save_watchlist(self, symbols: List[str]) -> None:
+        self._settings.setValue("watchlist/items", symbols)
+        self._settings.sync()
+
+
+# ---------------------------------------------------------------------------
+# Login helper (used by ConnectionDialog)
+# ---------------------------------------------------------------------------
+
+def remote_login(base_url: str, username: str, password: str, timeout: int = 5) -> RemoteDataStore:
+    """Authenticate and return a ready RemoteDataStore. Raises APIError on failure."""
+    if not _REQUESTS_OK:
+        raise ImportError("Install 'requests':  pip install requests")
+    url = base_url.rstrip("/")
+    r = requests.post(f"{url}/auth/login", json={"username": username, "password": password}, timeout=(timeout, timeout))
+    if not r.ok:
+        raise APIError(f"Login failed ({r.status_code}): {r.text}", r.status_code)
+    data = r.json()
+    return RemoteDataStore(
+        base_url=url,
+        token=data["token"],
+        user_info_dict={
+            "user_id": data["user_id"],
+            "username": data["username"],
+            "is_admin": bool(data["is_admin"]),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _parse_date_str(value):
+    if not value:
+        return None
+    from datetime import date, datetime
+    text = str(value).strip()
+    if not text or text in ("None", "null"):
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_presets(raw) -> List[float]:
+    if raw is None:
+        return [250_000.0, 500_000.0, 1_000_000.0]
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return [250_000.0, 500_000.0, 1_000_000.0]
+    if isinstance(raw, list) and len(raw) == 3:
+        try:
+            return [float(x) for x in raw]
+        except Exception:
+            pass
+    return [250_000.0, 500_000.0, 1_000_000.0]

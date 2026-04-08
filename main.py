@@ -1,16 +1,20 @@
-
-from PySide6.QtWidgets import QApplication
 import sys
+from PySide6.QtWidgets import QApplication
+from stock_insights.connection_dialog import ConnectionDialog
 from stock_insights.main_window import MainWindow
-from stock_insights.logging_utils import serial_debug
 
 def main():
     app = QApplication(sys.argv)
-    app.setOrganizationName(MainWindow.ORG)
-    app.setApplicationName(MainWindow.APP)
-    serial_debug("QApplication created; constructing MainWindow")
-    win = MainWindow()
-    serial_debug("MainWindow constructed")
+    app.setApplicationName("Stock Insights")
+    app.setOrganizationName("StockInsights")
+
+    dlg = ConnectionDialog()
+    store = dlg.run()
+
+    if store is None:
+        sys.exit(0)
+
+    win = MainWindow(store)
     win.show()
     sys.exit(app.exec())
 

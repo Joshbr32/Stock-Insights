@@ -4,11 +4,17 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="Updated to fix goals, updated packages.">
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="Update to fix goals">
+      <change afterPath="$PROJECT_DIR$/misc_helpers/migrate_local_to_server.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/misc_helpers/migrate_raymond_account.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/misc_helpers/server.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/stock_insights/api_client.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/stock_insights/connection_dialog.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/cache.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/settings_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/settings_dialog.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -59,6 +65,8 @@
     &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
     &quot;Python.main.executor&quot;: &quot;Run&quot;,
     &quot;Python.main_window.executor&quot;: &quot;Run&quot;,
+    &quot;Python.migrate_local_to_server.executor&quot;: &quot;Run&quot;,
+    &quot;Python.migrate_raymond_account.executor&quot;: &quot;Run&quot;,
     &quot;Python.stock_insights.executor&quot;: &quot;Run&quot;,
     &quot;Python.stock_insights_alpha.executor&quot;: &quot;Run&quot;,
     &quot;Python.stock_insights_beta.executor&quot;: &quot;Run&quot;,
@@ -82,15 +90,18 @@
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\stock_insights" />
+      <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights" />
       <recent name="C:\Users\Joshb\PycharmProjects\PythonProject" />
       <recent name="C:\Users\Joshb\PycharmProjects\PythonProject\.venv" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\misc" />
+      <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights" />
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\stock_insights" />
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\StockInsights" />
     </key>
   </component>
-  <component name="RunManager">
+  <component name="RunManager" selected="Python.main">
     <configuration name="main" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="PythonProject" />
       <option name="ENV_FILES" value="" />
@@ -115,9 +126,57 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <configuration name="migrate_local_to_server" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="PythonProject" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\misc\migrate_local_to_server.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="migrate_raymond_account" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="PythonProject" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\misc\migrate_raymond_account.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <recent_temporary>
       <list>
         <item itemvalue="Python.main" />
+        <item itemvalue="Python.migrate_raymond_account" />
+        <item itemvalue="Python.migrate_local_to_server" />
       </list>
     </recent_temporary>
   </component>
@@ -221,7 +280,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775499249304</updated>
     </task>
-    <option name="localTasksCounter" value="11" />
+    <task id="LOCAL-00011" summary="Update to fix goals">
+      <option name="closed" value="true" />
+      <created>1775517451710</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1775517451710</updated>
+    </task>
+    <option name="localTasksCounter" value="12" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -249,7 +316,8 @@
     <MESSAGE value="New branch, focus only on portfolio" />
     <MESSAGE value="Trimmed everything unrelated to portfolio" />
     <MESSAGE value="Updated to fix goals, updated packages." />
-    <option name="LAST_COMMIT_MESSAGE" value="Updated to fix goals, updated packages." />
+    <MESSAGE value="Update to fix goals" />
+    <option name="LAST_COMMIT_MESSAGE" value="Update to fix goals" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/StockInsights$main.coverage" NAME="main Coverage Results" MODIFIED="1761477027747" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
