@@ -21,7 +21,6 @@ Recommended free hosting for version.json:
 
 APP_VERSION = "1.0.0"
 
-# Replace with the raw URL of your hosted version.json
 UPDATE_MANIFEST_URL = (
-    "https://gist.githubusercontent.com/Joshbr32/GIST_ID/raw/version.json"
+    "https://raw.githubusercontent.com/Joshbr32/Stock-Insights/Portfolio/version.json"
 )

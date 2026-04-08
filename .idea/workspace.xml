@@ -4,14 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="bug fixes + better offline sync">
-      <change afterPath="$PROJECT_DIR$/build.bat" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights.spec" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/update_checker.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stock_insights/version.py" afterDir="false" />
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="added auto-updates">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/misc_helpers/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/misc_helpers/server.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/version.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/version.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -326,7 +321,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775669146176</updated>
     </task>
-    <option name="localTasksCounter" value="17" />
+    <task id="LOCAL-00017" summary="added auto-updates">
+      <option name="closed" value="true" />
+      <created>1775675220372</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1775675220372</updated>
+    </task>
+    <option name="localTasksCounter" value="18" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -360,7 +363,8 @@
     <MESSAGE value="added connection drop support and offline sync" />
     <MESSAGE value="updated theme settings" />
     <MESSAGE value="bug fixes + better offline sync" />
-    <option name="LAST_COMMIT_MESSAGE" value="bug fixes + better offline sync" />
+    <MESSAGE value="added auto-updates" />
+    <option name="LAST_COMMIT_MESSAGE" value="added auto-updates" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/StockInsights$main.coverage" NAME="main Coverage Results" MODIFIED="1761477027747" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
