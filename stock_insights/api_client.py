@@ -506,3 +506,235 @@ def _parse_presets(raw) -> List[float]:
         except Exception:
             pass
     return [250_000.0, 500_000.0, 1_000_000.0]
+
+
+# ---------------------------------------------------------------------------
+# FallbackDataStore — wraps RemoteDataStore with automatic offline fallback
+# ---------------------------------------------------------------------------
+
+class FallbackDataStore(DataStore):
+    """Wraps RemoteDataStore with transparent offline fallback.
+
+    On any network or server error during a write:
+      1. The write is saved to LocalDataStore (QSettings) immediately so no
+         data is lost.
+      2. The operation is queued in sync_queue for replay on reconnect.
+      3. _on_offline_cb(n_pending) is called so MainWindow can update the
+         status bar.
+
+    On reconnect (call attempt_reconnect()):
+      1. Tries a lightweight ping to the server.
+      2. If successful, flushes the sync queue.
+      3. Calls _on_online_cb(synced_count) so MainWindow can show "Synced".
+
+    Reads always try the remote first, falling back to local cache on failure.
+    """
+
+    def __init__(
+        self,
+        remote: RemoteDataStore,
+        local: "LocalDataStore",
+        on_offline_cb=None,   # callable(n_pending: int)
+        on_online_cb=None,    # callable(synced_count: int)
+    ):
+        self._remote = remote
+        self._local = local
+        self._on_offline_cb = on_offline_cb
+        self._on_online_cb = on_online_cb
+        self._is_online = True
+
+    # ---- internal ----
+
+    def _is_network_error(self, exc: Exception) -> bool:
+        import requests
+        return isinstance(exc, (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        ))
+
+    def _handle_write_failure(self, exc: Exception, action: str, payload: dict) -> None:
+        """Called when a remote write fails. Save locally and queue for sync."""
+        from . import sync_queue
+        self._is_online = False
+        sync_queue.enqueue(self._remote.user_info.get("username", "unknown"), action, payload)
+        n = sync_queue.queue_length()
+        if self._on_offline_cb:
+            self._on_offline_cb(n)
+
+    def _safe_remote_get(self, fn, fallback_fn):
+        """Try remote read; fall back to local on any error."""
+        try:
+            result = fn()
+            self._is_online = True
+            return result
+        except Exception:
+            return fallback_fn()
+
+    # ---- identity ----
+
+    @property
+    def user_info(self) -> dict:
+        return self._remote.user_info
+
+    @property
+    def is_admin(self) -> bool:
+        return self._remote.is_admin
+
+    # ---- trades ----
+
+    def get_all_trades(self) -> List[Trade]:
+        return self._safe_remote_get(
+            self._remote.get_all_trades,
+            self._local.get_all_trades,
+        )
+
+    def save_account_trades(self, account_name: str, trades: List[Trade]) -> None:
+        # Always write locally first — instant, no data loss
+        self._local.save_account_trades(account_name, trades)
+        try:
+            self._remote.save_account_trades(account_name, trades)
+            self._is_online = True
+        except Exception as exc:
+            from .portfolio import trade_to_dict
+            payload = {
+                "account_name": account_name,
+                "trades": [trade_to_dict(t) for t in trades],
+            }
+            self._handle_write_failure(exc, "save_trades", payload)
+
+    # ---- accounts ----
+
+    def get_account_names(self) -> List[str]:
+        return self._safe_remote_get(
+            self._remote.get_account_names,
+            self._local.get_account_names,
+        )
+
+    def save_accounts(self, accounts: List[str]) -> None:
+        self._local.save_accounts(accounts)
+        try:
+            self._remote.save_accounts(accounts)
+            self._is_online = True
+        except Exception as exc:
+            self._handle_write_failure(exc, "save_accounts", {"accounts": accounts})
+
+    # ---- goal targets & presets ----
+
+    def get_goal_target(self, account_name: str) -> float:
+        return self._safe_remote_get(
+            lambda: self._remote.get_goal_target(account_name),
+            lambda: self._local.get_goal_target(account_name),
+        )
+
+    def set_goal_target(self, account_name: str, value: float) -> None:
+        self._local.set_goal_target(account_name, value)
+        try:
+            self._remote.set_goal_target(account_name, value)
+            self._is_online = True
+        except Exception as exc:
+            self._handle_write_failure(
+                exc, "set_goal_target",
+                {"account_name": account_name, "value": float(value)},
+            )
+
+    def get_goal_presets(self, account_name: str) -> List[float]:
+        return self._safe_remote_get(
+            lambda: self._remote.get_goal_presets(account_name),
+            lambda: self._local.get_goal_presets(account_name),
+        )
+
+    def set_goal_presets(self, account_name: str, presets: List[float]) -> None:
+        self._local.set_goal_presets(account_name, presets)
+        try:
+            self._remote.set_goal_presets(account_name, presets)
+            self._is_online = True
+        except Exception as exc:
+            self._handle_write_failure(
+                exc, "set_goal_presets",
+                {"account_name": account_name, "presets": [float(p) for p in presets]},
+            )
+
+    # ---- goal group ----
+
+    def get_goal_group(self) -> Tuple[List[str], float]:
+        return self._safe_remote_get(
+            self._remote.get_goal_group,
+            self._local.get_goal_group,
+        )
+
+    def set_goal_group(
+        self,
+        shared_accounts: List[str],
+        shared_goal: float,
+        individual_goals: Dict[str, float],
+        individual_presets: Dict[str, List[float]],
+    ) -> None:
+        self._local.set_goal_group(shared_accounts, shared_goal, individual_goals, individual_presets)
+        try:
+            self._remote.set_goal_group(shared_accounts, shared_goal, individual_goals, individual_presets)
+            self._is_online = True
+        except Exception as exc:
+            self._handle_write_failure(exc, "set_goal_group", {
+                "account_names": shared_accounts,
+                "shared_goal": float(shared_goal),
+                "individual_goals": {k: float(v) for k, v in individual_goals.items()},
+                "individual_presets": {k: [float(p) for p in v] for k, v in individual_presets.items()},
+            })
+
+    # ---- watchlist ----
+
+    def get_watchlist(self) -> List[str]:
+        return self._safe_remote_get(
+            self._remote.get_watchlist,
+            self._local.get_watchlist,
+        )
+
+    def save_watchlist(self, symbols: List[str]) -> None:
+        self._local.save_watchlist(symbols)
+        try:
+            self._remote.save_watchlist(symbols)
+            self._is_online = True
+        except Exception as exc:
+            self._handle_write_failure(exc, "save_watchlist", {"symbols": symbols})
+
+    # ---- admin passthrough ----
+
+    def store_for_user(self, user_id: int, username: str) -> RemoteDataStore:
+        return self._remote.store_for_user(user_id, username)
+
+    def list_users(self) -> List[dict]:
+        return self._remote.list_users()
+
+    # ---- reconnect ----
+
+    def attempt_reconnect(self) -> bool:
+        """Ping the server and flush the sync queue if reachable.
+
+        Returns True if the server is now reachable.
+        Called periodically by MainWindow's reconnect timer.
+        """
+        import requests
+        from . import sync_queue
+
+        try:
+            r = requests.get(
+                f"{self._remote._base}/auth/me",
+                headers=self._remote._headers(),
+                timeout=4,
+            )
+            if not r.ok:
+                return False
+        except Exception:
+            return False
+
+        # Server is back — flush queued writes
+        self._is_online = True
+        synced, failed = sync_queue.flush(self._remote)
+        if self._on_online_cb:
+            self._on_online_cb(synced)
+        return True
+
+    @property
+    def pending_sync_count(self) -> int:
+        from . import sync_queue
+        return sync_queue.queue_length()

@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .api_client import APIError, DataStore, LocalDataStore, RemoteDataStore, remote_login
+from .api_client import APIError, DataStore, FallbackDataStore, LocalDataStore, RemoteDataStore, remote_login
 
 _ORG = "StockInsights"
 _APP = "StocksGUI"
@@ -290,7 +290,9 @@ class ConnectionDialog(QDialog):
         s = QSettings(_ORG, _APP)
         s.setValue(_USER_KEY, username)
         s.sync()
-        self._store = store
+        # Wrap in FallbackDataStore — callbacks wired in MainWindow after it opens
+        local = LocalDataStore(username)
+        self._store = FallbackDataStore(remote=store, local=local)
         self.accept()
 
     def _on_login_error(self, msg: str, thread: _LoginThread):

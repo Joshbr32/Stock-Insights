@@ -342,7 +342,16 @@ class GoalDashboardOptionsDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 class TradeEditDialog(QDialog):
-    """Trade add/edit dialog supporting Long, Short, and Pending (waiting) orders."""
+    """Trade add/edit dialog supporting Long, Short, and Pending orders.
+
+    Close fields (sell price, close date, profit preview) live in a collapsible
+    QWidget so the dialog shrinks when status is OPEN and expands when CLOSED.
+    """
+
+    # Dialog heights for each state
+    _HEIGHT_PENDING = 255   # pending: core fields only
+    _HEIGHT_OPEN    = 330   # confirmed + open: adds open date + status
+    _HEIGHT_CLOSED  = 440   # confirmed + closed: adds close fields too
 
     def __init__(
         self,
@@ -350,8 +359,8 @@ class TradeEditDialog(QDialog):
         watchlist_symbols: Optional[List[str]] = None,
         default_quantity: int = 1,
         quantity_increment: int = 1,
-        close_holdings_mode: bool = False,   # "Close Holdings" — always CLOSED, long only
-        cover_mode: bool = False,             # "Buy to Cover" — always COVERED, short only
+        close_holdings_mode: bool = False,
+        cover_mode: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -369,24 +378,22 @@ class TradeEditDialog(QDialog):
         else:
             title = "Trade"
         self.setWindowTitle(title)
-        self.resize(460, 420)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        root.setSpacing(8)
 
+        # ---- Always-visible core fields ----
         form = QFormLayout()
-        form.setSpacing(10)
+        form.setSpacing(8)
 
-        # ---- Trade Type: Long / Short ----
         self.type_combo = QComboBox()
         self.type_combo.addItems(["Long (Buy)", "Short (Sell Short)"])
         self.type_lbl = QLabel("Trade Type")
         form.addRow(self.type_lbl, self.type_combo)
 
-        # ---- Order Status: Confirmed / Pending ----
         self.pending_combo = QComboBox()
-        self.pending_combo.addItems(["Confirmed", "Pending (Waiting)"])
+        self.pending_combo.addItems(["Confirmed", "Pending"])
         self.pending_lbl = QLabel("Order Status")
         form.addRow(self.pending_lbl, self.pending_combo)
 
@@ -409,32 +416,12 @@ class TradeEditDialog(QDialog):
         self.share_count_spin.setRange(1, 1_000_000_000)
         self.share_count_spin.setSingleStep(self._quantity_increment)
 
-        # buy_price = Long buy price OR Short entry price
         self.buy_price_spin = QDoubleSpinBox()
         self.buy_price_spin.setRange(0.0, 1_000_000_000.0)
         self.buy_price_spin.setDecimals(2)
         self.buy_price_spin.setPrefix("$ ")
         self.buy_price_spin.setSpecialValueText("")
         self.buy_price_spin.setValue(self.buy_price_spin.minimum())
-
-        # sell_price = Long sell price OR Short cover price
-        self.sell_price_spin = QDoubleSpinBox()
-        self.sell_price_spin.setRange(0.0, 1_000_000_000.0)
-        self.sell_price_spin.setDecimals(2)
-        self.sell_price_spin.setPrefix("$ ")
-        self.sell_price_spin.setSpecialValueText("")
-        self.sell_price_spin.setValue(self.sell_price_spin.minimum())
-
-        self.open_date_edit = QDateEdit()
-        self.open_date_edit.setCalendarPopup(True)
-        self.open_date_edit.setDisplayFormat("yyyy-MM-dd")
-
-        self.close_date_edit = QDateEdit()
-        self.close_date_edit.setCalendarPopup(True)
-        self.close_date_edit.setDisplayFormat("yyyy-MM-dd")
-
-        self.status_combo = QComboBox()
-        self.status_combo.addItems(["OPEN", "CLOSED"])
 
         self.notes_edit = QLineEdit()
         self.notes_edit.setPlaceholderText("Optional notes")
@@ -443,17 +430,52 @@ class TradeEditDialog(QDialog):
         form.addRow("Share count", self.share_count_spin)
         self.buy_price_lbl = QLabel("Buy Price")
         form.addRow(self.buy_price_lbl, self.buy_price_spin)
-        form.addRow("Status", self.status_combo)
-        self.sell_price_lbl = QLabel("Sell Price")
-        form.addRow(self.sell_price_lbl, self.sell_price_spin)
-        form.addRow("Open date", self.open_date_edit)
-        form.addRow("Close date", self.close_date_edit)
         form.addRow("Notes", self.notes_edit)
         root.addLayout(form)
 
-        self.preview_label = QLabel("Trade Profit: —")
-        root.addWidget(self.preview_label)
+        # ---- Open section: shown when Confirmed (hidden when Pending) ----
+        self._open_section = QWidget()
+        open_form = QFormLayout(self._open_section)
+        open_form.setContentsMargins(0, 4, 0, 0)
+        open_form.setSpacing(8)
 
+        self.open_date_edit = QDateEdit()
+        self.open_date_edit.setCalendarPopup(True)
+        self.open_date_edit.setDisplayFormat("yyyy-MM-dd")
+
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(["OPEN", "CLOSED"])
+
+        open_form.addRow("Open date", self.open_date_edit)
+        open_form.addRow("Status", self.status_combo)
+        root.addWidget(self._open_section)
+
+        # ---- Close section: shown only when Status = CLOSED ----
+        self._close_section = QWidget()
+        close_form = QFormLayout(self._close_section)
+        close_form.setContentsMargins(0, 4, 0, 0)
+        close_form.setSpacing(8)
+
+        self.sell_price_spin = QDoubleSpinBox()
+        self.sell_price_spin.setRange(0.0, 1_000_000_000.0)
+        self.sell_price_spin.setDecimals(2)
+        self.sell_price_spin.setPrefix("$ ")
+        self.sell_price_spin.setSpecialValueText("")
+        self.sell_price_spin.setValue(self.sell_price_spin.minimum())
+
+        self.close_date_edit = QDateEdit()
+        self.close_date_edit.setCalendarPopup(True)
+        self.close_date_edit.setDisplayFormat("yyyy-MM-dd")
+
+        self.sell_price_lbl = QLabel("Sell Price")
+        close_form.addRow(self.sell_price_lbl, self.sell_price_spin)
+        close_form.addRow("Close date", self.close_date_edit)
+
+        self.preview_label = QLabel("Trade Profit: —")
+        close_form.addRow(self.preview_label)
+        root.addWidget(self._close_section)
+
+        # ---- Buttons ----
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         if close_holdings_mode:
             btn_label = "Close Holdings"
@@ -478,7 +500,6 @@ class TradeEditDialog(QDialog):
         self._apply_mode_constraints()
         self._sync_type(self.type_combo.currentText())
         self._sync_pending(self.pending_combo.currentText())
-        self._sync_status(self.status_combo.currentText())
         self._update_preview()
 
     def _apply_trade(self, trade: Optional[Trade]):
@@ -489,17 +510,14 @@ class TradeEditDialog(QDialog):
         self.sell_price_spin.setValue(
             float(trade.sell_price) if trade and trade.sell_price is not None else self.sell_price_spin.minimum()
         )
-        # Trade type
         if trade and trade.is_short:
             self.type_combo.setCurrentText("Short (Sell Short)")
         else:
             self.type_combo.setCurrentText("Long (Buy)")
-        # Pending status
         if trade and trade.is_pending:
-            self.pending_combo.setCurrentText("Pending (Waiting)")
+            self.pending_combo.setCurrentText("Pending")
         else:
             self.pending_combo.setCurrentText("Confirmed")
-        # Closed status
         if self._close_holdings_mode or self._cover_mode:
             self.status_combo.setCurrentText("CLOSED")
         elif trade and trade.is_closed:
@@ -524,7 +542,6 @@ class TradeEditDialog(QDialog):
             self.notes_edit.setEnabled(False)
             self.type_combo.setEnabled(False)
             self.pending_combo.setEnabled(False)
-            # Lock type to match the mode
             if self._cover_mode:
                 self.type_combo.setCurrentText("Short (Sell Short)")
             else:
@@ -533,30 +550,34 @@ class TradeEditDialog(QDialog):
     def _sync_type(self, text: str):
         is_short = "Short" in text
         if is_short:
-            self.buy_price_lbl.setText("Short Price (entry)")
-            self.sell_price_lbl.setText("Cover Price (exit)")
+            self.buy_price_lbl.setText("Short Price")
+            self.sell_price_lbl.setText("Cover Price")
         else:
             self.buy_price_lbl.setText("Buy Price")
             self.sell_price_lbl.setText("Sell Price")
         self._update_preview()
 
     def _sync_pending(self, text: str):
-        is_pending = "Pending" in text
-        # Pending orders have no open date yet; grey it out
-        self.open_date_edit.setEnabled(not is_pending and not self._close_holdings_mode and not self._cover_mode)
-        # Pending orders can't be closed
+        """Hide open/status section when Pending — order hasn't been filled yet."""
+        is_pending = text == "Pending"
+        self._open_section.setVisible(not is_pending)
         if is_pending:
+            # Force OPEN so close section also hides; reset status when un-pending
             self.status_combo.setCurrentText("OPEN")
-            self.status_combo.setEnabled(False)
+            self._close_section.setVisible(False)
+            self.setFixedHeight(self._HEIGHT_PENDING)
         else:
-            if not self._close_holdings_mode and not self._cover_mode:
-                self.status_combo.setEnabled(True)
+            # Re-apply status visibility now that open section is shown again
+            self._sync_status(self.status_combo.currentText())
         self._update_preview()
 
     def _sync_status(self, status: str):
+        """Show/hide close section and resize based on status."""
         closed = status == "CLOSED"
-        self.sell_price_spin.setEnabled(closed)
-        self.close_date_edit.setEnabled(closed)
+        self._close_section.setVisible(closed)
+        self.setFixedHeight(
+            self._HEIGHT_CLOSED if closed else self._HEIGHT_OPEN
+        )
         self._update_preview()
 
     def _update_preview(self):
@@ -583,7 +604,7 @@ class TradeEditDialog(QDialog):
         self.accept()
 
     def _is_pending(self) -> bool:
-        return "Pending" in self.pending_combo.currentText()
+        return self.pending_combo.currentText() == "Pending"
 
     def _is_short(self) -> bool:
         return "Short" in self.type_combo.currentText()

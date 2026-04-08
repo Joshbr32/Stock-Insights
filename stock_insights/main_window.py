@@ -16,7 +16,7 @@ from .widgets import SpinnerLabel, WatchTable
 from .workers import MarksWorker, NetCheckWorker
 from .logging_utils import setup_logging, serial_debug
 from .portfolio_tab import PortfolioTab
-from .api_client import DataStore, LocalDataStore, RemoteDataStore
+from .api_client import DataStore, FallbackDataStore, LocalDataStore, RemoteDataStore
 
 _ORG = "StockInsights"
 _APP = "StocksGUI"
@@ -348,6 +348,10 @@ class MainWindow(QMainWindow):
         setup_logging()
         serial_debug("MainWindow init start")
         self._store = store
+        # Wire offline/online callbacks if using FallbackDataStore
+        if isinstance(store, FallbackDataStore):
+            store._on_offline_cb = self._set_offline_status
+            store._on_online_cb  = self._set_synced_status
         self.setWindowTitle(f"Stock Insights — {store.username}")
         self.resize(1200, 800)
         self._last_sidebar_size = 240
@@ -355,6 +359,7 @@ class MainWindow(QMainWindow):
         self._online = True
         self._portfolio_tabs: Dict[str, PortfolioTab] = {}
         self._viewer_windows: Dict[int, UserPortfolioViewer] = {}  # user_id -> window
+        self._reconnect_timer_obj = None   # QTimer for reconnect attempts
 
         self._build_ui()
         self.theme = ThemeManager(self)
@@ -363,6 +368,7 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._bind_shortcuts()
         self._init_timers()
+        self._init_reconnect_timer()
         serial_debug("MainWindow init done")
 
     # ---- QSettings (device-local UI prefs only) ----
@@ -666,6 +672,65 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_status.setText("● Offline"); self.lbl_status.setStyleSheet("color: #ef4444;")
         thread.quit()
+
+    def _init_reconnect_timer(self):
+        """Start a 30-second reconnect timer if we are using FallbackDataStore."""
+        if not isinstance(self._store, FallbackDataStore):
+            return
+        self._reconnect_timer_obj = QTimer(self)
+        self._reconnect_timer_obj.setInterval(30_000)
+        self._reconnect_timer_obj.timeout.connect(self._attempt_reconnect)
+        self._reconnect_timer_obj.start()
+
+    def _attempt_reconnect(self):
+        """Try to re-establish server connection and flush queued writes."""
+        if not isinstance(self._store, FallbackDataStore):
+            return
+        if self._store._is_online:
+            return   # already online, nothing to do
+        serial_debug("Attempting reconnect to server...")
+        # Run in a thread so it doesn't block the UI
+        th = QThread(self)
+        th.started.connect(lambda: self._do_reconnect(th))
+        th.finished.connect(th.deleteLater)
+        th.start()
+
+    def _do_reconnect(self, thread: QThread):
+        try:
+            ok = self._store.attempt_reconnect()
+        except Exception:
+            ok = False
+        # Signal back to main thread via a queued connection
+        from PySide6.QtCore import QMetaObject, Qt as _Qt
+        if ok:
+            QMetaObject.invokeMethod(self, "_on_reconnected", _Qt.ConnectionType.QueuedConnection)
+        thread.quit()
+
+    def _on_reconnected(self):
+        """Called on main thread after successful reconnect."""
+        pending = self._store.pending_sync_count
+        if pending == 0:
+            self.lbl_status.setText("● Online")
+            self.lbl_status.setStyleSheet("color: #22c55e;")
+        else:
+            self.lbl_status.setText(f"● Online — syncing...")
+            self.lbl_status.setStyleSheet("color: #22c55e;")
+        # Reload all tabs so they get fresh server data
+        for tab in self._portfolio_tabs.values():
+            tab.reload_from_store()
+
+    def _set_offline_status(self, n_pending: int):
+        """Called by FallbackDataStore when a write fails and is queued."""
+        self.lbl_status.setText(f"● Offline — {n_pending} change{'s' if n_pending != 1 else ''} queued")
+        self.lbl_status.setStyleSheet("color: #f59e0b;")   # amber
+
+    def _set_synced_status(self, synced_count: int):
+        """Called by FallbackDataStore after successfully flushing queued writes."""
+        if synced_count > 0:
+            self.lbl_status.setText(f"● Online — synced {synced_count} change{'s' if synced_count != 1 else ''}")
+        else:
+            self.lbl_status.setText("● Online")
+        self.lbl_status.setStyleSheet("color: #22c55e;")
 
     def _busy_enter(self):
         self._busy_ops += 1
