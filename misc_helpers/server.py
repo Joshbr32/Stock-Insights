@@ -58,8 +58,8 @@ except ImportError as _e:
 
 SQL_SERVER   = os.environ.get("PORTFOLIO_SQL_SERVER",   r"localhost\STOCKINSIGHTS")
 SQL_DATABASE = os.environ.get("PORTFOLIO_SQL_DATABASE",  "StockInsights")
-SQL_USER     = os.environ.get("PORTFOLIO_SQL_USER",      "stock_app")
-SQL_PASSWORD = os.environ.get("PORTFOLIO_SQL_PASSWORD",  "")
+SQL_USER     = os.environ.get("PORTFOLIO_SQL_USER",      "sa")
+SQL_PASSWORD = os.environ.get("PORTFOLIO_SQL_PASSWORD",  "zYSW1955h5Zw")
 HOST         = os.environ.get("PORTFOLIO_HOST",          "0.0.0.0")
 PORT         = int(os.environ.get("PORTFOLIO_PORT",      "8742"))
 TOKEN_DAYS   = 30
@@ -273,6 +273,8 @@ class TradeIn(BaseModel):
     open_date: Optional[str] = None
     close_date: Optional[str] = None
     notes: str = ""
+    is_pending: bool = False
+    is_short: bool = False
 
 class TradesBatch(BaseModel):
     account_name: str
@@ -454,7 +456,8 @@ def get_trades(user: dict = Depends(current_user), for_user_id: Optional[int] = 
     with db() as conn:
         cur = _exec(conn,
             "SELECT t.id, a.name AS account, t.instrument, t.share_count, "
-            "       t.buy_price, t.sell_price, t.open_date, t.close_date, t.notes "
+            "       t.buy_price, t.sell_price, t.open_date, t.close_date, "
+            "       t.notes, t.is_pending, t.is_short "
             "FROM dbo.trades t "
             "JOIN dbo.accounts a ON a.id = t.account_id "
             "WHERE a.user_id = ? "
@@ -496,12 +499,13 @@ def replace_account_trades(
             cur2.executemany(
                 "INSERT INTO dbo.trades "
                 "(account_id, instrument, share_count, buy_price, "
-                " sell_price, open_date, close_date, notes) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " sell_price, open_date, close_date, notes, is_pending, is_short) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         acct_id, t.instrument, t.share_count, t.buy_price,
                         t.sell_price, t.open_date, t.close_date, t.notes,
+                        int(t.is_pending), int(t.is_short),
                     )
                     for t in body.trades
                 ],
@@ -611,17 +615,24 @@ def _test_connection():
 def setup_admin():
     _test_connection()
     print("\n=== Stock Insights — First-time Setup ===")
-    username = input("Admin username: ").strip()
-    password = input("Admin password: ").strip()
-    if not username or not password:
+    username = input("Username: ").strip()
+    password = input("Password: ").strip()
+    admin_rights = input("Admin rights? (Y/N): ").strip().upper()
+    if not username or not password or not admin_rights:
         print("Cancelled."); return
     try:
         with db() as conn:
-            _exec(conn,
-                "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 1)",
-                username, _hash_password(password),
-            )
-        print(f"\nAdmin '{username}' created. Start the server with: python server.py\n")
+            if admin_rights == "Y":
+                _exec(conn,
+                    "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 1)",
+                    username, _hash_password(password),
+                )
+            else:
+                _exec(conn,
+                    "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 0)",
+                    username, _hash_password(password),
+                )
+        print(f"\nUser '{username}' created. Start the server with: python server.py\n")
     except pyodbc.IntegrityError:
         print(f"User '{username}' already exists.")
 

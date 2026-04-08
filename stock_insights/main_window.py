@@ -479,6 +479,10 @@ class MainWindow(QMainWindow):
         self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
         self._save_settings()
 
+    def _check_for_updates(self) -> None:
+        from .update_checker import check_for_updates
+        check_for_updates(parent=self, silent_if_current=False)
+
     def _open_user_account_dialog(self):
         dlg = UserAccountDialog(self._store, self)
         dlg.exec()
@@ -594,6 +598,9 @@ class MainWindow(QMainWindow):
         act_settings.setShortcut("Ctrl+,")
         act_settings.triggered.connect(self._open_settings_dialog)
         file_menu.addAction("User Account").triggered.connect(self._open_user_account_dialog)
+        file_menu.addSeparator()
+        act_check_updates = file_menu.addAction("Check for Updates…")
+        act_check_updates.triggered.connect(self._check_for_updates)
         file_menu.addSeparator()
         file_menu.addAction("Quit").triggered.connect(self.close)
 
