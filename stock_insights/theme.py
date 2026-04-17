@@ -1,10 +1,11 @@
 import ctypes
 import os
 import sys
+from pathlib import Path
 from typing import Optional, Tuple
-from PySide6.QtCore import QTimer, QObject
-from PySide6.QtGui import QPalette, QColor, QFont
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer, QObject, QPointF, Qt
+from PySide6.QtGui import QPalette, QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle
 
 if sys.platform.startswith("win"):
     import winreg
@@ -282,6 +283,24 @@ FONT_SIZES = {"Small": 9, "Normal": 11, "Large": 13, "X-Large": 16}
 FONT_SIZE_LABELS = list(FONT_SIZES.keys())
 
 
+_UI = {
+    "panel_radius": 14,
+    "card_radius": 12,
+    "group_radius": 10,
+    "control_radius": 8,
+    "title_radius": 7,
+    "splitter_radius": 6,
+    "cell_hpad": 10,
+    "cell_vpad": 6,
+    "header_hpad": 10,
+    "header_vpad": 8,
+    "control_hpad": 10,
+    "control_vpad": 5,
+    "button_hpad": 12,
+    "button_vpad": 8,
+}
+
+
 def _windows_high_contrast_enabled() -> bool:
     if not sys.platform.startswith("win"):
         return False
@@ -298,6 +317,69 @@ def _windows_high_contrast_enabled() -> bool:
         return False
 
 
+class ChevronProxyStyle(QProxyStyle):
+    """Draw clearer chevrons for Qt arrow indicators across the app."""
+
+    _ARROW_DIRECTIONS = {
+        QStyle.PrimitiveElement.PE_IndicatorArrowDown: "down",
+        QStyle.PrimitiveElement.PE_IndicatorArrowUp: "up",
+        QStyle.PrimitiveElement.PE_IndicatorArrowLeft: "left",
+        QStyle.PrimitiveElement.PE_IndicatorArrowRight: "right",
+    }
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        direction = self._ARROW_DIRECTIONS.get(element)
+        if direction is not None and option is not None and painter is not None:
+            self._draw_chevron(direction, option, painter)
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+    def _draw_chevron(self, direction: str, option, painter: QPainter) -> None:
+        rect = option.rect.adjusted(1, 1, -1, -1)
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+
+        span = max(4.0, min(rect.width(), rect.height()) * 0.34)
+        half = span / 2.0
+        center = QPointF(rect.center())
+
+        if direction == "down":
+            points = [
+                QPointF(center.x() - half, center.y() - half * 0.35),
+                QPointF(center.x(), center.y() + half * 0.45),
+                QPointF(center.x() + half, center.y() - half * 0.35),
+            ]
+        elif direction == "up":
+            points = [
+                QPointF(center.x() - half, center.y() + half * 0.35),
+                QPointF(center.x(), center.y() - half * 0.45),
+                QPointF(center.x() + half, center.y() + half * 0.35),
+            ]
+        elif direction == "left":
+            points = [
+                QPointF(center.x() + half * 0.35, center.y() - half),
+                QPointF(center.x() - half * 0.45, center.y()),
+                QPointF(center.x() + half * 0.35, center.y() + half),
+            ]
+        else:
+            points = [
+                QPointF(center.x() - half * 0.35, center.y() - half),
+                QPointF(center.x() + half * 0.45, center.y()),
+                QPointF(center.x() - half * 0.35, center.y() + half),
+            ]
+
+        color = option.palette.buttonText().color()
+        if not (option.state & QStyle.StateFlag.State_Enabled):
+            color.setAlpha(120)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPolyline(QPolygonF(points))
+        painter.restore()
+
+
 class ThemeManager(QObject):
     override_mode: str = "System"       # Colour Mode: System / Light / Dark
     match_system_accent: bool = True
@@ -310,8 +392,21 @@ class ThemeManager(QObject):
         self.poll_secs = poll_secs
         self._last_state = None
         self._timer: Optional[QTimer] = None
+        self._chevron_style: Optional[ChevronProxyStyle] = None
         self._fixed_light_accent = (10, 102, 194)
         self._fixed_dark_accent  = (96, 165, 250)
+
+    def _assets_dir(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "stock_insights" / "assets"
+        return Path(__file__).resolve().parent / "assets"
+
+    def _asset_url(self, filename: str) -> str:
+        return self._assets_dir().joinpath(filename).resolve().as_posix()
+
+    def _chevron_asset(self, direction: str) -> str:
+        suffix = "dark" if self._is_light() else "light"
+        return self._asset_url(f"chevron-{direction}-{suffix}.svg")
 
     # ---- Windows helpers ----
 
@@ -401,6 +496,14 @@ class ThemeManager(QObject):
     def apply(self):
         if sys.platform.startswith("win") and _windows_high_contrast_enabled():
             self.win.setStyleSheet("")
+            for refresh_name in ("update_ui", "updateUI"):
+                refresh = getattr(self.win, refresh_name, None)
+                if callable(refresh):
+                    try:
+                        refresh()
+                    except Exception:
+                        pass
+                    break
             return
 
         is_light, r, g, b, msa, tn, fsl = self.current_state()
@@ -418,9 +521,16 @@ class ThemeManager(QObject):
 
         app = QApplication.instance()
         if app is not None:
+            if self._chevron_style is None:
+                existing_style = app.style()
+                self._chevron_style = existing_style if isinstance(existing_style, ChevronProxyStyle) else ChevronProxyStyle(existing_style)
+            if app.style() is not self._chevron_style:
+                app.setStyle(self._chevron_style)
             app.setPalette(palette)
             app.setStyleSheet(stylesheet)
 
+        if self._chevron_style is not None and self.win.style() is not self._chevron_style:
+            self.win.setStyle(self._chevron_style)
         self.win.setPalette(palette)
         self.win.setStyleSheet(stylesheet)
 
@@ -429,6 +539,14 @@ class ThemeManager(QObject):
             self.win.style().polish(self.win)
         except Exception:
             pass
+        for refresh_name in ("update_ui", "updateUI"):
+            refresh = getattr(self.win, refresh_name, None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except Exception:
+                    pass
+                break
         self.win.update()
         self._apply_font()
 
@@ -447,6 +565,43 @@ class ThemeManager(QObject):
         if t:
             return t["good"]
         return "#4a9a30" if self._is_light() else "#6ee78a"
+
+    def text_color(self) -> str:
+        t = self._tokens()
+        if t:
+            return t["text"]
+        return "#0f1115" if self._is_light() else "#eaeef2"
+
+    def border_color(self) -> str:
+        t = self._tokens()
+        if t:
+            return t["border"]
+        return "#e5e7eb" if self._is_light() else "#232833"
+
+    def button_color(self) -> str:
+        t = self._tokens()
+        if t:
+            return t["button"]
+        return "#ffffff" if self._is_light() else "#1f2430"
+
+    def selected_surface_color(self) -> str:
+        t = self._tokens()
+        if t:
+            return t["primary"]
+        return "#f5f7fb" if self._is_light() else "#1f2430"
+
+    def selected_text_color(self) -> str:
+        t = self._tokens()
+        if t:
+            return t["text_on_color"]
+        return "#0f1115" if self._is_light() else "#eaeef2"
+
+    def focus_border_color(self) -> str:
+        t = self._tokens()
+        if t:
+            return t["secondary"]
+        is_light, r, g, b, *_ = self.current_state()
+        return QColor(r, g, b).name()
 
     def loss_color(self) -> str:
         """Hex color for negative P/L text in tables — contrasts with card background."""
@@ -486,50 +641,114 @@ class ThemeManager(QObject):
         bg=t["bg"]; card=t["card"]; card2=t["card2"]; text=t["text"]
         muted=t["text_muted"]; btn=t["button"]; pri=t["primary"]
         sec=t["secondary"]; brd=t["border"]; toc=t["text_on_color"]
+        panel_radius = _UI["panel_radius"]
+        card_radius = _UI["card_radius"]
+        group_radius = _UI["group_radius"]
+        control_radius = _UI["control_radius"]
+        title_radius = _UI["title_radius"]
+        splitter_radius = _UI["splitter_radius"]
+        cell_hpad = _UI["cell_hpad"]
+        cell_vpad = _UI["cell_vpad"]
+        header_hpad = _UI["header_hpad"]
+        header_vpad = _UI["header_vpad"]
+        control_hpad = _UI["control_hpad"]
+        control_vpad = _UI["control_vpad"]
+        button_hpad = _UI["button_hpad"]
+        button_vpad = _UI["button_vpad"]
+        chevron_down = self._chevron_asset("down")
+        chevron_up = self._chevron_asset("up")
         return f"""
         QMainWindow {{ background: {bg}; color: {text}; }}
-        QWidget {{ background: {bg}; color: {text}; }}
-        #leftPane {{ background: {card}; border-right: 1px solid {brd}; }}
-        #leftTitle {{ color: {muted}; font-size: 14px; font-weight: 700; padding: 8px 4px; }}
+        QWidget {{ background: {card}; color: {text}; }}
+        #leftPane {{ background: {bg}; border: 1px solid {brd}; border-radius: {panel_radius}px; }}
+        #leftTitle {{ color: {muted}; font-size: 14px; font-weight: 700; padding: 4px 2px; }}
+        #watchTableCard {{ background: {card}; border: 1px solid {brd}; border-radius: {card_radius}px; }}
+        #watchTable {{ background: transparent; border: none; border-radius: {card_radius}px;
+                       alternate-background-color: {card2};
+                       selection-background-color: {sec}; selection-color: {toc}; }}
+        #watchTable::item {{ padding: {cell_vpad}px {cell_hpad}px; border-bottom: 1px solid {brd}; }}
+        #watchTable::item:selected {{ background: {sec}; color: {toc}; }}
+        #watchTable QHeaderView {{ background: transparent; border: none; }}
+        #watchTable QHeaderView::section {{ background: {card2}; color: {muted};
+                                           border: none; border-bottom: 1px solid {brd};
+                                           padding: {header_vpad}px {header_hpad}px; font-weight: 700; }}
+        #watchTable QHeaderView::section:first {{ border-top-left-radius: {card_radius}px; }}
+        #watchTable QHeaderView::section:last {{ border-top-right-radius: {card_radius}px; }}
         QToolTip {{ color: {text}; background: {card}; border: 1px solid {brd}; }}
         QDialog {{ background: {bg}; }}
         QScrollArea {{ background: {bg}; border: none; }}
         QScrollArea > QWidget > QWidget {{ background: {bg}; }}
-        QLineEdit {{ background: {card}; border: 1px solid {brd}; border-radius: 8px;
-                     padding: 6px 10px; color: {text}; }}
+        QLineEdit {{ background: {card}; border: 1px solid {brd}; border-radius: {control_radius}px;
+                     padding: {control_vpad}px {control_hpad}px; min-height: 22px; color: {text}; }}
         QLineEdit:focus {{ border: 1px solid {sec}; }}
         QPushButton {{ background: {btn}; border: 1px solid {brd}; color: {text};
-                       border-radius: 8px; padding: 8px 12px; font-weight: 600; }}
+                       border-radius: {control_radius}px; padding: {button_vpad}px {button_hpad}px; font-weight: 600; }}
         QPushButton:hover {{ background: {pri}; }}
         QPushButton:pressed {{ background: {sec}; color: {toc}; }}
         QPushButton:focus {{ outline: none; border: 1px solid {sec}; }}
         QPushButton[flat="true"] {{ background: transparent; border: none; color: {muted}; }}
         QTabBar::tab {{ background: {card}; color: {text}; padding: 8px 14px;
-                        border: 1px solid {brd}; border-bottom: none;
-                        border-top-left-radius: 8px; border-top-right-radius: 8px;
-                        margin-right: 6px; }}
-        QTabBar::tab:selected {{ background: {pri}; color: {toc}; border-bottom-color: {sec}; }}
-        QTabWidget::pane {{ border: 1px solid {brd}; top: -0.2em; background: {bg}; }}
-        QGroupBox {{ border: 1px solid {brd}; border-radius: 10px; margin-top: 16px;
+                        border: 1px solid {brd};
+                        border-top-left-radius: {control_radius}px; border-top-right-radius: {control_radius}px;
+                        margin-right: 6px; margin-top: 0px; }}
+        QTabBar::tab:selected {{ background: {pri}; color: {toc}; border-color: {sec}; margin-bottom: -1px; }}
+        QTabWidget::pane {{ border: 1px solid {brd}; border-radius: {card_radius}px;
+                            margin-top: 0px; top: -1px; background: {bg}; }}
+        QGroupBox {{ border: 1px solid {brd}; border-radius: {group_radius}px; margin-top: 16px;
                      background: {card}; }}
-        QGroupBox::title {{ left: 12px; padding: 0 4px; color: {muted}; background: {card}; }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 8px;
+                            color: {muted}; background: {card};
+                            border: 1px solid {brd}; border-radius: {title_radius}px; }}
         QTableWidget {{ background: {card}; gridline-color: {brd}; color: {text};
                         alternate-background-color: {card2}; border: 1px solid {brd};
-                        border-radius: 8px; }}
-        QHeaderView::section {{ background: {card2}; color: {text}; border: 0px; padding: 6px; }}
+                        border-radius: {control_radius}px; }}
+        QHeaderView::section {{ background: {card2}; color: {text}; border: 0px; padding: {cell_vpad}px {cell_hpad}px; }}
+        QTableCornerButton::section {{ background: {card2}; border: 0px; border-top-left-radius: {control_radius}px; }}
         QTableWidget::item:selected {{ background: {sec}; color: {toc}; }}
         QComboBox {{ background: {card}; color: {text}; border: 1px solid {brd};
-                     border-radius: 8px; padding: 6px 10px; }}
+                     border-radius: {control_radius}px; padding: {control_vpad}px 34px {control_vpad}px {control_hpad}px; min-height: 22px; }}
         QComboBox:focus {{ border: 1px solid {sec}; }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: top right;
+            width: 26px; background: {card2}; border-left: 1px solid {brd};
+            border-top-right-radius: {control_radius}px; border-bottom-right-radius: {control_radius}px;
+        }}
+        QComboBox::drop-down:hover {{ background: {btn}; }}
+        QComboBox::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
         QComboBox QAbstractItemView {{ background: {card}; color: {text};
             selection-background-color: {sec}; selection-color: {toc};
             border: 1px solid {brd}; }}
         QSpinBox, QDoubleSpinBox {{ background: {card}; color: {text}; border: 1px solid {brd};
-                                    border-radius: 8px; padding: 4px 8px; }}
+                                    border-radius: {control_radius}px; padding: {control_vpad}px 32px {control_vpad}px {control_hpad}px; min-height: 22px; }}
         QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {sec}; }}
+        QSpinBox::up-button, QDoubleSpinBox::up-button {{
+            subcontrol-origin: border; subcontrol-position: top right;
+            width: 22px; background: {card2}; border-left: 1px solid {brd};
+            border-bottom: 1px solid {brd}; border-top-right-radius: {control_radius}px;
+        }}
+        QSpinBox::down-button, QDoubleSpinBox::down-button {{
+            subcontrol-origin: border; subcontrol-position: bottom right;
+            width: 22px; background: {card2}; border-left: 1px solid {brd};
+            border-bottom-right-radius: {control_radius}px;
+        }}
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {btn}; }}
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+            image: url("{chevron_up}"); width: 12px; height: 12px;
+        }}
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+            image: url("{chevron_down}"); width: 12px; height: 12px;
+        }}
         QDateEdit {{ background: {card}; color: {text}; border: 1px solid {brd};
-                     border-radius: 8px; padding: 4px 8px; }}
+                     border-radius: {control_radius}px; padding: {control_vpad}px 34px {control_vpad}px {control_hpad}px; min-height: 22px; }}
         QDateEdit:focus {{ border: 1px solid {sec}; }}
+        QDateEdit::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: top right;
+            width: 26px; background: {card2}; border-left: 1px solid {brd};
+            border-top-right-radius: {control_radius}px; border-bottom-right-radius: {control_radius}px;
+        }}
+        QDateEdit::drop-down:hover {{ background: {btn}; }}
+        QDateEdit::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
         QCheckBox {{ color: {text}; spacing: 6px; }}
         QCheckBox::indicator {{ border: 1px solid {brd}; border-radius: 4px;
                                 background: {card}; width: 14px; height: 14px; }}
@@ -538,16 +757,18 @@ class ThemeManager(QObject):
         QMenu::item {{ padding: 6px 18px 6px 18px; }}
         QMenu::item:selected {{ background: {sec}; color: {toc}; }}
         QMenu::separator {{ height: 1px; background: {brd}; margin: 4px 6px; }}
-        QProgressBar {{ background: {card}; border: 1px solid {brd}; border-radius: 8px;
+        QProgressBar {{ background: {card}; border: 1px solid {brd}; border-radius: {control_radius}px;
                         text-align: center; color: {text}; }}
-        QProgressBar::chunk {{ background-color: {sec}; border-radius: 8px; }}
+        QProgressBar::chunk {{ background-color: {sec}; border-radius: {control_radius}px; }}
         QScrollBar:vertical {{ background: {bg}; width: 8px; border-radius: 4px; }}
         QScrollBar::handle:vertical {{ background: {brd}; border-radius: 4px; min-height: 20px; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
-        QSplitter::handle {{ background: {brd}; }}
+        QSplitter::handle {{ background: {brd}; border-radius: {splitter_radius}px; margin: 4px 2px; }}
         QStatusBar {{ background: {bg}; color: {muted}; }}
-        QMenuBar {{ background: {bg}; color: {text}; }}
+        QMenuBar {{ background: {bg}; color: {text}; border-bottom: 1px solid {brd}; padding-bottom: 2px; }}
         QMenuBar::item:selected {{ background: {pri}; color: {toc}; }}
+        #menuStatusCorner {{ background: {bg}; border: none; }}
+        #menuStatusCorner QLabel {{ background: transparent; padding: 0px; border: none; text-decoration: none; }}
         QLabel {{ color: {text}; background: transparent; }}
         """
 
@@ -587,13 +808,27 @@ class ThemeManager(QObject):
 
     def _default_dark_stylesheet(self, accent: QColor) -> str:
         acc = accent.name()
+        chevron_down = self._chevron_asset("down")
+        chevron_up = self._chevron_asset("up")
         return f"""
         QMainWindow {{ background: #0f1115; color: #eaeef2; }}
-        #leftPane {{ background: #10131a; border-right: 1px solid #232833; }}
-        #leftTitle {{ color: #a9b1bd; font-size: 14px; font-weight: 700; padding: 8px 4px; }}
+        #leftPane {{ background: #0f1115; border: 1px solid #232833; border-radius: 14px; }}
+        #leftTitle {{ color: #a9b1bd; font-size: 14px; font-weight: 700; padding: 4px 2px; }}
+        #watchTableCard {{ background: #10131a; border: 1px solid #232833; border-radius: 12px; }}
+        #watchTable {{ background: transparent; border: none; border-radius: 12px;
+                       alternate-background-color: #14171d;
+                       selection-background-color: {acc}; selection-color: white; }}
+        #watchTable::item {{ padding: 6px 8px; border-bottom: 1px solid #232833; }}
+        #watchTable::item:selected {{ background: {acc}; color: white; }}
+        #watchTable QHeaderView {{ background: transparent; border: none; }}
+        #watchTable QHeaderView::section {{ background: #171a21; color: #a9b1bd;
+                                           border: none; border-bottom: 1px solid #232833;
+                                           padding: 8px 10px; font-weight: 700; }}
+        #watchTable QHeaderView::section:first {{ border-top-left-radius: 12px; }}
+        #watchTable QHeaderView::section:last {{ border-top-right-radius: 12px; }}
         QToolTip {{ color: #eaeef2; background: #10131a; border: 1px solid #232833; }}
         QLineEdit {{ background: #171a21; border: 1px solid #232833; border-radius: 8px;
-                     padding: 6px 10px; color: #eaeef2; }}
+                     padding: 5px 10px; min-height: 22px; color: #eaeef2; }}
         QLineEdit:focus {{ border: 1px solid {acc}; }}
         QPushButton {{ background: #1f2430; border: 1px solid #2b3240; color: #eaeef2;
                        border-radius: 8px; padding: 8px 12px; font-weight: 600; }}
@@ -601,24 +836,66 @@ class ThemeManager(QObject):
         QPushButton:pressed {{ background: #2b3240; }}
         QPushButton:focus {{ outline: none; border: 1px solid {acc}; }}
         QTabBar::tab {{ background: #171a21; color: #eaeef2; padding: 8px 14px;
-                        border: 1px solid #232833; border-bottom: none;
+                        border: 1px solid #232833;
                         border-top-left-radius: 8px; border-top-right-radius: 8px;
-                        margin-right: 6px; }}
-        QTabBar::tab:selected {{ background: #1f2430; border-color: {acc}; }}
-        QTabWidget::pane {{ border: 1px solid #232833; top: -0.2em; }}
+                        margin-right: 6px; margin-top: 0px; }}
+        QTabBar::tab:selected {{ background: #1f2430; border-color: {acc}; margin-bottom: -1px; }}
+        QTabWidget::pane {{ border: 1px solid #232833; border-radius: 12px;
+                            margin-top: 0px; top: -1px; background: #0f1115; }}
         QGroupBox {{ border: 1px solid #232833; border-radius: 10px; margin-top: 16px; }}
-        QGroupBox::title {{ left: 12px; padding: 0 4px; color: #a9b1bd; }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 8px;
+                            color: #a9b1bd; background: #171a21;
+                            border: 1px solid #232833; border-radius: 7px; }}
         QTableWidget {{ background: #0f1115; gridline-color: #232833; color: #eaeef2;
                         alternate-background-color: #14171d; border: 1px solid #232833;
                         border-radius: 8px; }}
         QHeaderView::section {{ background: #171a21; color: #eaeef2; border: 0px; padding: 6px; }}
+        QTableCornerButton::section {{ background: #171a21; border: 0px; border-top-left-radius: 8px; }}
         QTableWidget::item:selected {{ background: {acc}; color: white; }}
         QComboBox {{ background: #171a21; color: #eaeef2; border: 1px solid #232833;
-                     border-radius: 8px; padding: 6px 10px; }}
+                     border-radius: 8px; padding: 5px 34px 5px 10px; min-height: 22px; }}
         QComboBox:focus {{ border: 1px solid {acc}; }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: top right;
+            width: 26px; background: #1f2430; border-left: 1px solid #232833;
+            border-top-right-radius: 8px; border-bottom-right-radius: 8px;
+        }}
+        QComboBox::drop-down:hover {{ background: #262d3a; }}
+        QComboBox::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
         QComboBox QAbstractItemView {{ background: #171a21; color: #eaeef2;
             selection-background-color: {acc}; selection-color: white;
             border: 1px solid #232833; }}
+        QSpinBox, QDoubleSpinBox {{ background: #171a21; color: #eaeef2; border: 1px solid #232833;
+                                    border-radius: 8px; padding: 5px 32px 5px 10px; min-height: 22px; }}
+        QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {acc}; }}
+        QSpinBox::up-button, QDoubleSpinBox::up-button {{
+            subcontrol-origin: border; subcontrol-position: top right;
+            width: 22px; background: #1f2430; border-left: 1px solid #232833;
+            border-bottom: 1px solid #232833; border-top-right-radius: 8px;
+        }}
+        QSpinBox::down-button, QDoubleSpinBox::down-button {{
+            subcontrol-origin: border; subcontrol-position: bottom right;
+            width: 22px; background: #1f2430; border-left: 1px solid #232833;
+            border-bottom-right-radius: 8px;
+        }}
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: #262d3a; }}
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+            image: url("{chevron_up}"); width: 12px; height: 12px;
+        }}
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+            image: url("{chevron_down}"); width: 12px; height: 12px;
+        }}
+        QDateEdit {{ background: #171a21; color: #eaeef2; border: 1px solid #232833;
+                     border-radius: 8px; padding: 5px 34px 5px 10px; min-height: 22px; }}
+        QDateEdit:focus {{ border: 1px solid {acc}; }}
+        QDateEdit::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: top right;
+            width: 26px; background: #1f2430; border-left: 1px solid #232833;
+            border-top-right-radius: 8px; border-bottom-right-radius: 8px;
+        }}
+        QDateEdit::drop-down:hover {{ background: #262d3a; }}
+        QDateEdit::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
         QMenu {{ background: #171a21; color: #eaeef2; border: 1px solid #232833; }}
         QMenu::item {{ padding: 6px 18px 6px 18px; }}
         QMenu::item:selected {{ background: {acc}; color: white; }}
@@ -626,19 +903,36 @@ class ThemeManager(QObject):
         QProgressBar {{ background: #171a21; border: 1px solid #232833; border-radius: 8px;
                         text-align: center; color: #eaeef2; }}
         QProgressBar::chunk {{ background-color: {acc}; border-radius: 8px; }}
-        QMenuBar {{ background: #0f1115; color: #eaeef2; }}
+        QSplitter::handle {{ background: #232833; border-radius: 6px; margin: 4px 2px; }}
+        QMenuBar {{ background: #0f1115; color: #eaeef2; border-bottom: 1px solid #232833; padding-bottom: 2px; }}
         QMenuBar::item:selected {{ background: #1f2430; color: #eaeef2; }}
+        #menuStatusCorner {{ background: #0f1115; border: none; }}
+        #menuStatusCorner QLabel {{ background: transparent; padding: 0px; border: none; text-decoration: none; }}
         """
 
     def _default_light_stylesheet(self, accent: QColor) -> str:
         acc = accent.name()
+        chevron_down = self._chevron_asset("down")
+        chevron_up = self._chevron_asset("up")
         return f"""
         QMainWindow {{ background: #ffffff; color: #0f1115; }}
-        #leftPane {{ background: #f6f7f9; border-right: 1px solid #e5e7eb; }}
-        #leftTitle {{ color: #374151; font-size: 14px; font-weight: 700; padding: 8px 4px; }}
+        #leftPane {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; }}
+        #leftTitle {{ color: #374151; font-size: 14px; font-weight: 700; padding: 4px 2px; }}
+        #watchTableCard {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; }}
+        #watchTable {{ background: transparent; border: none; border-radius: 12px;
+                       alternate-background-color: #f8fafc;
+                       selection-background-color: {acc}; selection-color: white; }}
+        #watchTable::item {{ padding: 6px 8px; border-bottom: 1px solid #e5e7eb; }}
+        #watchTable::item:selected {{ background: {acc}; color: white; }}
+        #watchTable QHeaderView {{ background: transparent; border: none; }}
+        #watchTable QHeaderView::section {{ background: #f3f4f6; color: #374151;
+                                           border: none; border-bottom: 1px solid #e5e7eb;
+                                           padding: 8px 10px; font-weight: 700; }}
+        #watchTable QHeaderView::section:first {{ border-top-left-radius: 12px; }}
+        #watchTable QHeaderView::section:last {{ border-top-right-radius: 12px; }}
         QToolTip {{ color: #0f1115; background: #f3f5f7; border: 1px solid #e5e7eb; }}
         QLineEdit {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px;
-                     padding: 6px 10px; color: #0f1115; }}
+                     padding: 5px 10px; min-height: 22px; color: #0f1115; }}
         QLineEdit:focus {{ border: 1px solid {acc}; }}
         QPushButton {{ background: #ffffff; border: 1px solid #e5e7eb; color: #0f1115;
                        border-radius: 8px; padding: 8px 12px; font-weight: 600; }}
@@ -646,24 +940,66 @@ class ThemeManager(QObject):
         QPushButton:pressed {{ background: #eef2f7; }}
         QPushButton:focus {{ outline: none; border: 1px solid {acc}; }}
         QTabBar::tab {{ background: #ffffff; color: #0f1115; padding: 8px 14px;
-                        border: 1px solid #e5e7eb; border-bottom: none;
+                        border: 1px solid #e5e7eb;
                         border-top-left-radius: 8px; border-top-right-radius: 8px;
-                        margin-right: 6px; }}
-        QTabBar::tab:selected {{ background: #f5f7fb; border-color: {acc}; }}
-        QTabWidget::pane {{ border: 1px solid #e5e7eb; top: -0.2em; }}
+                        margin-right: 6px; margin-top: 0px; }}
+        QTabBar::tab:selected {{ background: #f5f7fb; border-color: {acc}; margin-bottom: -1px; }}
+        QTabWidget::pane {{ border: 1px solid #e5e7eb; border-radius: 12px;
+                            margin-top: 0px; top: -1px; background: #ffffff; }}
         QGroupBox {{ border: 1px solid #e5e7eb; border-radius: 10px; margin-top: 16px; }}
-        QGroupBox::title {{ left: 12px; padding: 0 4px; color: #374151; }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 8px;
+                            color: #374151; background: #ffffff;
+                            border: 1px solid #e5e7eb; border-radius: 7px; }}
         QTableWidget {{ background: #ffffff; gridline-color: #e5e7eb; color: #0f1115;
                         alternate-background-color: #f8fafc; border: 1px solid #e5e7eb;
                         border-radius: 8px; }}
         QHeaderView::section {{ background: #f3f4f6; color: #0f1115; border: 0px; padding: 6px; }}
+        QTableCornerButton::section {{ background: #f3f4f6; border: 0px; border-top-left-radius: 8px; }}
         QTableWidget::item:selected {{ background: {acc}; color: white; }}
         QComboBox {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb;
-                     border-radius: 8px; padding: 6px 10px; }}
+                     border-radius: 8px; padding: 5px 34px 5px 10px; min-height: 22px; }}
         QComboBox:focus {{ border: 1px solid {acc}; }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: top right;
+            width: 26px; background: #f3f4f6; border-left: 1px solid #e5e7eb;
+            border-top-right-radius: 8px; border-bottom-right-radius: 8px;
+        }}
+        QComboBox::drop-down:hover {{ background: #eef2f7; }}
+        QComboBox::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
         QComboBox QAbstractItemView {{ background: #ffffff; color: #0f1115;
             selection-background-color: {acc}; selection-color: white;
             border: 1px solid #e5e7eb; }}
+        QSpinBox, QDoubleSpinBox {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb;
+                                    border-radius: 8px; padding: 5px 32px 5px 10px; min-height: 22px; }}
+        QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {acc}; }}
+        QSpinBox::up-button, QDoubleSpinBox::up-button {{
+            subcontrol-origin: border; subcontrol-position: top right;
+            width: 22px; background: #f3f4f6; border-left: 1px solid #e5e7eb;
+            border-bottom: 1px solid #e5e7eb; border-top-right-radius: 8px;
+        }}
+        QSpinBox::down-button, QDoubleSpinBox::down-button {{
+            subcontrol-origin: border; subcontrol-position: bottom right;
+            width: 22px; background: #f3f4f6; border-left: 1px solid #e5e7eb;
+            border-bottom-right-radius: 8px;
+        }}
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: #eef2f7; }}
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+            image: url("{chevron_up}"); width: 12px; height: 12px;
+        }}
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+            image: url("{chevron_down}"); width: 12px; height: 12px;
+        }}
+        QDateEdit {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb;
+                     border-radius: 8px; padding: 5px 34px 5px 10px; min-height: 22px; }}
+        QDateEdit:focus {{ border: 1px solid {acc}; }}
+        QDateEdit::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: top right;
+            width: 26px; background: #f3f4f6; border-left: 1px solid #e5e7eb;
+            border-top-right-radius: 8px; border-bottom-right-radius: 8px;
+        }}
+        QDateEdit::drop-down:hover {{ background: #eef2f7; }}
+        QDateEdit::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
         QMenu {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb; }}
         QMenu::item {{ padding: 6px 18px 6px 18px; }}
         QMenu::item:selected {{ background: {acc}; color: white; }}
@@ -671,8 +1007,11 @@ class ThemeManager(QObject):
         QProgressBar {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px;
                         text-align: center; color: #0f1115; }}
         QProgressBar::chunk {{ background-color: {acc}; border-radius: 8px; }}
-        QMenuBar {{ background: #ffffff; color: #0f1115; }}
+        QSplitter::handle {{ background: #e5e7eb; border-radius: 6px; margin: 4px 2px; }}
+        QMenuBar {{ background: #ffffff; color: #0f1115; border-bottom: 1px solid #e5e7eb; padding-bottom: 2px; }}
         QMenuBar::item:selected {{ background: #eef2f7; color: #0f1115; }}
+        #menuStatusCorner {{ background: #ffffff; border: none; }}
+        #menuStatusCorner QLabel {{ background: transparent; padding: 0px; border: none; text-decoration: none; }}
         """
 
     # Aliases for old call sites

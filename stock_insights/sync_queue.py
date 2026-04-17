@@ -22,7 +22,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -58,12 +58,16 @@ def _save_raw(entries: List[dict]) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def queue_length() -> int:
-    return len(_load_raw())
+def _matches_username(entry: dict, username: Optional[str]) -> bool:
+    return username is None or entry.get("username", "") == username
 
 
-def is_empty() -> bool:
-    return queue_length() == 0
+def queue_length(username: Optional[str] = None) -> int:
+    return sum(1 for entry in _load_raw() if _matches_username(entry, username))
+
+
+def is_empty(username: Optional[str] = None) -> bool:
+    return queue_length(username=username) == 0
 
 
 def enqueue(username: str, action: str, payload: dict) -> None:
@@ -79,19 +83,26 @@ def enqueue(username: str, action: str, payload: dict) -> None:
     log.info("sync_queue: queued %s for %s (queue length: %d)", action, username, len(entries))
 
 
-def clear() -> None:
-    _save_raw([])
+def clear(username: Optional[str] = None) -> None:
+    if username is None:
+        _save_raw([])
+        return
+    kept = [entry for entry in _load_raw() if not _matches_username(entry, username)]
+    _save_raw(kept)
 
 
-def flush(remote_store) -> tuple[int, int]:
+def flush(remote_store, username: Optional[str] = None) -> tuple[int, int]:
     """Replay all queued writes against remote_store.
 
     Returns (succeeded, failed).  Entries that succeed are removed from the
     queue.  Entries that fail (server error) are kept for the next attempt.
     On a network error the flush aborts early and keeps all remaining entries.
     """
-    from .api_client import RemoteDataStore, APIError  # local import to avoid circular
+    from .api_client import APIError  # local import to avoid circular
     import requests
+
+    if username is not None:
+        return _flush_for_user(remote_store, username)
 
     entries = _load_raw()
     if not entries:
@@ -130,6 +141,49 @@ def flush(remote_store) -> tuple[int, int]:
             remaining.append(entry)
             failed += 1
 
+    _save_raw(remaining)
+    return succeeded, failed
+
+
+def _flush_for_user(remote_store, username: str) -> tuple[int, int]:
+    from .api_client import APIError
+    import requests
+
+    indexed_entries = list(enumerate(_load_raw()))
+    target_entries = [(idx, entry) for idx, entry in indexed_entries if _matches_username(entry, username)]
+    if not target_entries:
+        return 0, 0
+
+    succeeded = 0
+    failed = 0
+    keep_indices = {idx for idx, entry in indexed_entries if not _matches_username(entry, username)}
+
+    for pos, (original_idx, entry) in enumerate(target_entries):
+        action = entry.get("action", "")
+        payload = entry.get("payload", {})
+        try:
+            _replay(remote_store, action, payload)
+            succeeded += 1
+            log.info("sync_queue: flushed %s for %s", action, username)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            keep_indices.add(original_idx)
+            keep_indices.update(idx for idx, _ in target_entries[pos + 1:])
+            log.warning("sync_queue: network lost during flush for %s, keeping queued writes", username)
+            break
+        except APIError as exc:
+            if exc.status_code in (401, 403):
+                log.error("sync_queue: discarding %s for %s due to auth error: %s", action, username, exc)
+                failed += 1
+            else:
+                keep_indices.add(original_idx)
+                failed += 1
+                log.warning("sync_queue: server error for %s (%s), keeping", action, exc)
+        except Exception as exc:
+            log.error("sync_queue: unexpected error replaying %s for %s: %s", action, username, exc)
+            keep_indices.add(original_idx)
+            failed += 1
+
+    remaining = [entry for idx, entry in indexed_entries if idx in keep_indices]
     _save_raw(remaining)
     return succeeded, failed
 

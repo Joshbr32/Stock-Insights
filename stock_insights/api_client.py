@@ -351,24 +351,28 @@ class LocalDataStore(DataStore):
     def __init__(self, username: str = "local"):
         self._settings = QSettings(self.ORG, self.APP)
         self._username = username
+        self._scope_prefix = f"user_cache/{_scope_username(username)}"
+
+    def _scoped_key(self, key: str) -> str:
+        return f"{self._scope_prefix}/{key}"
 
     @property
     def user_info(self) -> dict:
         return {"user_id": 0, "username": self._username, "is_admin": False}
 
     def get_all_trades(self) -> List[Trade]:
-        return trades_from_json(self._settings.value(self.TRADES_KEY, []))
+        return trades_from_json(self._settings.value(self._scoped_key(self.TRADES_KEY), []))
 
     def save_account_trades(self, account_name: str, trades: List[Trade]) -> None:
         # Read all trades, replace the slice for this account, write back
         all_trades = self.get_all_trades()
         kept = [t for t in all_trades if (t.account or "").strip() != account_name]
         combined = kept + [t for t in trades]
-        self._settings.setValue(self.TRADES_KEY, trades_to_json(combined))
+        self._settings.setValue(self._scoped_key(self.TRADES_KEY), trades_to_json(combined))
         self._settings.sync()
 
     def get_account_names(self) -> List[str]:
-        raw = self._settings.value(self.ACCOUNTS_KEY, ["Default"])
+        raw = self._settings.value(self._scoped_key(self.ACCOUNTS_KEY), ["Default"])
         if isinstance(raw, str):
             try: raw = json.loads(raw)
             except Exception: raw = [x.strip() for x in raw.split(",") if x.strip()]
@@ -381,21 +385,49 @@ class LocalDataStore(DataStore):
         return out or ["Default"]
 
     def save_accounts(self, accounts: List[str]) -> None:
-        self._settings.setValue(self.ACCOUNTS_KEY, json.dumps(accounts))
+        existing_accounts = set(self.get_account_names())
+        normalized_accounts = []
+        seen = set()
+        for item in accounts:
+            name = str(item or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                normalized_accounts.append(name)
+        allowed_accounts = set(normalized_accounts)
+
+        all_trades = self.get_all_trades()
+        kept_trades = [t for t in all_trades if (t.account or "").strip() in allowed_accounts]
+        self._settings.setValue(self._scoped_key(self.TRADES_KEY), trades_to_json(kept_trades))
+        self._settings.setValue(self._scoped_key(self.ACCOUNTS_KEY), json.dumps(normalized_accounts))
+
+        shared_accounts, shared_goal = self.get_goal_group()
+        filtered_shared = [name for name in shared_accounts if name in allowed_accounts]
+        self._settings.setValue(self._scoped_key(self.GOAL_GROUP_KEY), json.dumps(filtered_shared))
+        self._settings.setValue(self._scoped_key(self.GOAL_GROUP_SHARED_KEY), float(shared_goal))
+
+        removed_accounts = existing_accounts - allowed_accounts
+        for account in removed_accounts:
+            self._settings.remove(self._scoped_key(f"portfolio/goal_target/{account}"))
+            self._settings.remove(self._scoped_key(f"goals/presets/{account}"))
         self._settings.sync()
 
     def get_goal_target(self, account_name: str) -> float:
         try:
-            return float(self._settings.value(f"portfolio/goal_target/{account_name}", 500_000.0) or 500_000.0)
+            return float(
+                self._settings.value(
+                    self._scoped_key(f"portfolio/goal_target/{account_name}"),
+                    500_000.0,
+                ) or 500_000.0
+            )
         except Exception:
             return 500_000.0
 
     def set_goal_target(self, account_name: str, value: float) -> None:
-        self._settings.setValue(f"portfolio/goal_target/{account_name}", float(value))
+        self._settings.setValue(self._scoped_key(f"portfolio/goal_target/{account_name}"), float(value))
         self._settings.sync()
 
     def get_goal_presets(self, account_name: str) -> List[float]:
-        raw = self._settings.value(f"goals/presets/{account_name}", None)
+        raw = self._settings.value(self._scoped_key(f"goals/presets/{account_name}"), None)
         if raw is not None:
             try:
                 parsed = json.loads(raw) if isinstance(raw, str) else raw
@@ -406,16 +438,21 @@ class LocalDataStore(DataStore):
         return [250_000.0, 500_000.0, 1_000_000.0]
 
     def set_goal_presets(self, account_name: str, presets: List[float]) -> None:
-        self._settings.setValue(f"goals/presets/{account_name}", json.dumps([float(p) for p in presets]))
+        self._settings.setValue(
+            self._scoped_key(f"goals/presets/{account_name}"),
+            json.dumps([float(p) for p in presets]),
+        )
         self._settings.sync()
 
     def get_goal_group(self) -> Tuple[List[str], float]:
-        raw = self._settings.value(self.GOAL_GROUP_KEY, [])
+        raw = self._settings.value(self._scoped_key(self.GOAL_GROUP_KEY), [])
         if isinstance(raw, str):
             try: raw = json.loads(raw)
             except Exception: raw = []
         if not isinstance(raw, list): raw = []
-        shared_goal = float(self._settings.value(self.GOAL_GROUP_SHARED_KEY, 500_000.0) or 500_000.0)
+        shared_goal = float(
+            self._settings.value(self._scoped_key(self.GOAL_GROUP_SHARED_KEY), 500_000.0) or 500_000.0
+        )
         return list(raw), shared_goal
 
     def set_goal_group(
@@ -425,8 +462,8 @@ class LocalDataStore(DataStore):
         individual_goals: Dict[str, float],
         individual_presets: Dict[str, List[float]],
     ) -> None:
-        self._settings.setValue(self.GOAL_GROUP_KEY, json.dumps(shared_accounts))
-        self._settings.setValue(self.GOAL_GROUP_SHARED_KEY, float(shared_goal))
+        self._settings.setValue(self._scoped_key(self.GOAL_GROUP_KEY), json.dumps(shared_accounts))
+        self._settings.setValue(self._scoped_key(self.GOAL_GROUP_SHARED_KEY), float(shared_goal))
         for account in shared_accounts:
             self.set_goal_target(account, shared_goal)
             if account in individual_presets:
@@ -438,14 +475,14 @@ class LocalDataStore(DataStore):
         self._settings.sync()
 
     def get_watchlist(self) -> List[str]:
-        items = self._settings.value("watchlist/items", [])
+        items = self._settings.value(self._scoped_key("watchlist/items"), [])
         if isinstance(items, str):
             try: items = json.loads(items)
             except Exception: items = [x.strip() for x in items.split(",") if x.strip()]
         return [str(t).upper() for t in items] if items else []
 
     def save_watchlist(self, symbols: List[str]) -> None:
-        self._settings.setValue("watchlist/items", symbols)
+        self._settings.setValue(self._scoped_key("watchlist/items"), symbols)
         self._settings.sync()
 
 
@@ -508,6 +545,11 @@ def _parse_presets(raw) -> List[float]:
     return [250_000.0, 500_000.0, 1_000_000.0]
 
 
+def _scope_username(username: str) -> str:
+    text = str(username or "local").strip() or "local"
+    return text.encode("utf-8").hex()
+
+
 # ---------------------------------------------------------------------------
 # FallbackDataStore — wraps RemoteDataStore with automatic offline fallback
 # ---------------------------------------------------------------------------
@@ -556,8 +598,9 @@ class FallbackDataStore(DataStore):
         """Called when a remote write fails. Save locally and queue for sync."""
         from . import sync_queue
         self._is_online = False
-        sync_queue.enqueue(self._remote.user_info.get("username", "unknown"), action, payload)
-        n = sync_queue.queue_length()
+        username = self._remote.user_info.get("username", "unknown")
+        sync_queue.enqueue(username, action, payload)
+        n = sync_queue.queue_length(username=username)
         if self._on_offline_cb:
             self._on_offline_cb(n)
 
@@ -729,7 +772,7 @@ class FallbackDataStore(DataStore):
 
         # Server is back — flush queued writes
         self._is_online = True
-        synced, failed = sync_queue.flush(self._remote)
+        synced, failed = sync_queue.flush(self._remote, username=self.username)
         if self._on_online_cb:
             self._on_online_cb(synced)
         return True
@@ -737,4 +780,4 @@ class FallbackDataStore(DataStore):
     @property
     def pending_sync_count(self) -> int:
         from . import sync_queue
-        return sync_queue.queue_length()
+        return sync_queue.queue_length(username=self.username)

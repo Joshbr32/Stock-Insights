@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import cmp_to_key
 import json
 
 from datetime import date
@@ -51,7 +52,7 @@ from .portfolio import (
 
 GROUP_STYLE = (
     "QGroupBox { margin-top: 8px; }"
-    "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }"
+    "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 2px 8px; }"
 )
 
 _DEFAULT_PRESETS = [250_000.0, 500_000.0, 1_000_000.0]
@@ -919,10 +920,19 @@ class DoubleDownDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 class TradeHistoryColumnsDialog(QDialog):
-    def __init__(self, columns: List[tuple], visible_keys: List[str], parent=None):
+    NONE_SORT_LABEL = "(Not used)"
+
+    def __init__(
+        self,
+        columns: List[tuple],
+        visible_keys: List[str],
+        sort_rules: List[dict],
+        max_sort_levels: int = 5,
+        parent=None,
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Trade History Columns")
-        self.resize(320, 360)
+        self.setWindowTitle("Trade History Settings")
+        self.resize(420, 520)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -935,6 +945,45 @@ class TradeHistoryColumnsDialog(QDialog):
             self._checks[key] = cb
             root.addWidget(cb)
 
+        sort_group = QGroupBox("Sort Priority")
+        sort_grid = QGridLayout(sort_group)
+        sort_grid.setContentsMargins(12, 16, 12, 12)
+        sort_grid.setHorizontalSpacing(8)
+        sort_grid.setVerticalSpacing(8)
+        sort_grid.addWidget(QLabel("Priority"), 0, 0)
+        sort_grid.addWidget(QLabel("Column"), 0, 1)
+        sort_grid.addWidget(QLabel("Direction"), 0, 2)
+
+        self._sort_controls: List[tuple[QComboBox, QComboBox]] = []
+        column_options = [(self.NONE_SORT_LABEL, self.NONE_SORT_LABEL)] + [
+            (label, key) for key, label in columns
+        ]
+        for row in range(max_sort_levels):
+            sort_grid.addWidget(QLabel(f"{row + 1}."), row + 1, 0)
+
+            column_combo = QComboBox()
+            for label, key in column_options:
+                column_combo.addItem(label, key)
+
+            direction_combo = QComboBox()
+            direction_combo.addItem("Ascending", True)
+            direction_combo.addItem("Descending", False)
+
+            if row < len(sort_rules):
+                rule = sort_rules[row]
+                key = str(rule.get("key", self.NONE_SORT_LABEL))
+                index = column_combo.findData(key)
+                column_combo.setCurrentIndex(index if index >= 0 else 0)
+                direction_index = direction_combo.findData(bool(rule.get("ascending", True)))
+                direction_combo.setCurrentIndex(direction_index if direction_index >= 0 else 0)
+            else:
+                direction_combo.setCurrentIndex(0)
+
+            sort_grid.addWidget(column_combo, row + 1, 1)
+            sort_grid.addWidget(direction_combo, row + 1, 2)
+            self._sort_controls.append((column_combo, direction_combo))
+
+        root.addWidget(sort_group)
         root.addStretch(1)
 
         buttons = QDialogButtonBox(
@@ -946,6 +995,20 @@ class TradeHistoryColumnsDialog(QDialog):
 
     def selected_keys(self) -> List[str]:
         return [key for key, cb in self._checks.items() if cb.isChecked()]
+
+    def selected_sort_rules(self) -> List[dict]:
+        rules: List[dict] = []
+        seen = set()
+        for column_combo, direction_combo in self._sort_controls:
+            key = column_combo.currentData()
+            if key == self.NONE_SORT_LABEL or key in seen:
+                continue
+            seen.add(key)
+            rules.append({
+                "key": str(key),
+                "ascending": bool(direction_combo.currentData()),
+            })
+        return rules
 
 
 
@@ -969,6 +1032,8 @@ class PortfolioTab(QWidget):
     tradesChanged = Signal()
 
     TRADE_HISTORY_VISIBLE_COLUMNS_KEY = "portfolio/trade_history_visible_columns"
+    TRADE_HISTORY_SORT_KEY = "portfolio/trade_history_sort"
+    TRADE_HISTORY_MAX_SORT_LEVELS = 5
 
     TRADE_HISTORY_COLUMNS = [
         ("instrument", "Instrument"),
@@ -1001,6 +1066,8 @@ class PortfolioTab(QWidget):
         self._holdings: List[Holding] = []
         self._trade_row_indices: List[int] = []
         self._holding_row_instruments: List[str] = []
+        self._holding_row_is_short: List[bool] = []
+        self._preset_buttons: List[tuple[float, QPushButton]] = []
         self._build_ui()
         self._load_state()
 
@@ -1023,6 +1090,19 @@ class PortfolioTab(QWidget):
             if price is not None:
                 self._marks[symbol] = float(price)
         self.refresh_view()
+
+    def update_ui(self):
+        """Refresh theme-sensitive UI state such as custom table colors."""
+        self.refresh_view()
+        self.update()
+
+    # Backward-compatible alias if callers prefer camelCase naming.
+    updateUI = update_ui
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "trade_table"):
+            self._size_trade_table_columns()
 
     def reload_from_store(self):
         """Re-read all data from the store and refresh. Called when siblings change."""
@@ -1050,6 +1130,13 @@ class PortfolioTab(QWidget):
     def _default_trade_history_visible_keys(self) -> List[str]:
         return [key for key, _ in self.TRADE_HISTORY_COLUMNS]
 
+    def _default_trade_history_sort_rules(self) -> List[dict]:
+        return [
+            {"key": "close_date", "ascending": False},
+            {"key": "open_date", "ascending": False},
+            {"key": "instrument", "ascending": True},
+        ]
+
     def _trade_history_visible_keys(self) -> List[str]:
         raw = self._settings.value(self.TRADE_HISTORY_VISIBLE_COLUMNS_KEY, [])
         if isinstance(raw, str):
@@ -1064,6 +1151,50 @@ class PortfolioTab(QWidget):
         valid = {key for key, _ in self.TRADE_HISTORY_COLUMNS}
         cleaned = [key for key in keys if key in valid] or self._default_trade_history_visible_keys()
         self._settings.setValue(self.TRADE_HISTORY_VISIBLE_COLUMNS_KEY, json.dumps(cleaned))
+        self._settings.sync()
+
+    def _trade_history_sort_rules(self) -> List[dict]:
+        raw = self._settings.value(self.TRADE_HISTORY_SORT_KEY, [])
+        if isinstance(raw, str):
+            try: raw = json.loads(raw)
+            except Exception: raw = []
+        if not isinstance(raw, list):
+            raw = []
+
+        valid = {key for key, _ in self.TRADE_HISTORY_COLUMNS}
+        rules: List[dict] = []
+        seen = set()
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key", "") or "")
+            if key not in valid or key in seen:
+                continue
+            seen.add(key)
+            rules.append({
+                "key": key,
+                "ascending": bool(item.get("ascending", True)),
+            })
+        return rules or self._default_trade_history_sort_rules()
+
+    def _save_trade_history_sort_rules(self, rules: List[dict]):
+        valid = {key for key, _ in self.TRADE_HISTORY_COLUMNS}
+        cleaned: List[dict] = []
+        seen = set()
+        for item in rules:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key", "") or "")
+            if key not in valid or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append({
+                "key": key,
+                "ascending": bool(item.get("ascending", True)),
+            })
+        if not cleaned:
+            cleaned = self._default_trade_history_sort_rules()
+        self._settings.setValue(self.TRADE_HISTORY_SORT_KEY, json.dumps(cleaned))
         self._settings.sync()
 
     # ------------------------------------------------------------------
@@ -1198,6 +1329,10 @@ class PortfolioTab(QWidget):
         goal_header.addSpacing(6)
 
         self._preset_btn_container = QWidget()
+        self._preset_btn_container.setObjectName("goalPresetContainer")
+        self._preset_btn_container.setStyleSheet(
+            "#goalPresetContainer { background: transparent; border: none; }"
+        )
         self._preset_btn_layout = QHBoxLayout(self._preset_btn_container)
         self._preset_btn_layout.setContentsMargins(0, 0, 0, 0)
         self._preset_btn_layout.setSpacing(4)
@@ -1281,6 +1416,24 @@ class PortfolioTab(QWidget):
         trade_layout = QVBoxLayout(self.trade_group)
         trade_layout.setContentsMargins(14, 18, 14, 14)
         trade_layout.setSpacing(10)
+
+        trade_filter_row = QHBoxLayout()
+        trade_filter_row.setSpacing(8)
+        trade_filter_row.addWidget(QLabel("Filter:"))
+        self.trade_filter_edit = QLineEdit()
+        self.trade_filter_edit.setPlaceholderText(
+            "Search instrument, status, notes, quantity, price, or date"
+        )
+        self.trade_filter_edit.setClearButtonEnabled(True)
+        trade_filter_row.addWidget(self.trade_filter_edit, 1)
+        trade_filter_row.addWidget(QLabel("Status:"))
+        self.trade_status_filter = QComboBox()
+        self.trade_status_filter.addItem("All", "")
+        for status in ["WAITING", "OPEN", "SHORT", "CLOSED", "COVERED"]:
+            self.trade_status_filter.addItem(status.title(), status)
+        trade_filter_row.addWidget(self.trade_status_filter)
+        trade_layout.addLayout(trade_filter_row)
+
         self.trade_table = QTableWidget(0, len(self.TRADE_HISTORY_COLUMNS))
         self.trade_table.setHorizontalHeaderLabels([label for _, label in self.TRADE_HISTORY_COLUMNS])
         self.trade_table.verticalHeader().setVisible(False)
@@ -1288,9 +1441,19 @@ class PortfolioTab(QWidget):
         self.trade_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.trade_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.trade_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.trade_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.trade_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.trade_table.setWordWrap(False)
+        trade_header = self.trade_table.horizontalHeader()
+        trade_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        trade_header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        trade_header.setMinimumSectionSize(92)
+        trade_header.setSectionsClickable(True)
+        trade_header.setSortIndicatorShown(True)
+        trade_header.sectionClicked.connect(self._on_trade_header_clicked)
         self.trade_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.trade_table.customContextMenuRequested.connect(self._open_trade_context_menu)
+        self.trade_filter_edit.textChanged.connect(lambda _text: self.refresh_view())
+        self.trade_status_filter.currentIndexChanged.connect(lambda _index: self.refresh_view())
         trade_layout.addWidget(self.trade_table)
 
         if not self._read_only:
@@ -1318,6 +1481,7 @@ class PortfolioTab(QWidget):
             item = self._preset_btn_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self._preset_buttons = []
 
         if self._read_only:
             return
@@ -1326,10 +1490,14 @@ class PortfolioTab(QWidget):
         for preset_value in presets:
             label = _fmt_preset_label(preset_value)
             btn = QPushButton(label)
-            btn.setStyleSheet("padding-left: 8px; padding-right: 8px;")
+            btn.setCheckable(True)
+            btn.setAutoExclusive(False)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setMinimumWidth(btn.fontMetrics().horizontalAdvance(label) + 24)
             btn.clicked.connect(lambda _checked, v=preset_value: self._set_goal_target(v))
+            self._preset_buttons.append((float(preset_value), btn))
             self._preset_btn_layout.addWidget(btn)
+        self._apply_preset_button_style(self._current_goal_target())
 
     def _set_goal_target(self, value: float):
         if self._read_only:
@@ -1347,6 +1515,52 @@ class PortfolioTab(QWidget):
         except Exception as exc:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Save Failed", str(exc))
+
+    def _apply_preset_button_style(self, current_goal: Optional[float] = None):
+        theme = self._theme_manager()
+        if theme is not None:
+            text_color = theme.text_color()
+            border_color = theme.border_color()
+            hover_color = theme.button_color()
+            selected_bg = theme.selected_surface_color()
+            selected_text = theme.selected_text_color()
+            selected_border = theme.focus_border_color()
+        else:
+            text_color = "#0f1115"
+            border_color = "#d1d5db"
+            hover_color = "#f3f4f6"
+            selected_bg = "#f5f7fb"
+            selected_text = "#0f1115"
+            selected_border = "#3b82f6"
+
+        stylesheet = (
+            "QPushButton {"
+            "background: transparent;"
+            f"color: {text_color};"
+            f"border: 1px solid {border_color};"
+            "border-radius: 8px;"
+            "padding: 5px 10px;"
+            "font-weight: 600;"
+            "}"
+            "QPushButton:hover {"
+            f"background: {hover_color};"
+            "}"
+            "QPushButton:pressed {"
+            f"background: {selected_bg};"
+            f"color: {selected_text};"
+            f"border: 1px solid {selected_border};"
+            "}"
+            "QPushButton:checked {"
+            f"background: {selected_bg};"
+            f"color: {selected_text};"
+            f"border: 1px solid {selected_border};"
+            "}"
+        )
+
+        for preset_value, button in self._preset_buttons:
+            button.setStyleSheet(stylesheet)
+            is_selected = current_goal is not None and abs(float(preset_value) - float(current_goal)) < 0.5
+            button.setChecked(is_selected)
 
     # ------------------------------------------------------------------
     # State persistence (via DataStore)
@@ -1427,10 +1641,15 @@ class PortfolioTab(QWidget):
 
     def open_trade_history_view_settings(self):
         dlg = TradeHistoryColumnsDialog(
-            self.TRADE_HISTORY_COLUMNS, self._trade_history_visible_keys(), parent=self,
+            self.TRADE_HISTORY_COLUMNS,
+            self._trade_history_visible_keys(),
+            self._trade_history_sort_rules(),
+            max_sort_levels=self.TRADE_HISTORY_MAX_SORT_LEVELS,
+            parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted: return
         self._save_trade_history_visible_keys(dlg.selected_keys())
+        self._save_trade_history_sort_rules(dlg.selected_sort_rules())
         self.refresh_view(selected_trade_source_index=self._selected_trade_source_index())
 
     # ------------------------------------------------------------------
@@ -1540,12 +1759,9 @@ class PortfolioTab(QWidget):
 
     def _holding_is_short(self, view_row: int) -> bool:
         """Return True if the holding at this view row is a short position (negative qty)."""
-        item = self.holdings_table.item(view_row, 1)  # Qty column
-        if item is None: return False
-        try:
-            return int(item.text().replace(",", "").replace(" ", "")) < 0
-        except Exception:
-            return False
+        if 0 <= view_row < len(self._holding_row_is_short):
+            return self._holding_row_is_short[view_row]
+        return False
 
 
     def _fulfill_pending_order(self):
@@ -1640,6 +1856,137 @@ class PortfolioTab(QWidget):
         menu.exec(self.trade_table.viewport().mapToGlobal(pos))
 
     # ------------------------------------------------------------------
+    # Trade sorting
+    # ------------------------------------------------------------------
+
+    def _trade_row_sort_value(self, row: "TradeRow", key: str):
+        value = getattr(row, key, None)
+        if key in {"instrument", "status"}:
+            return str(value or "").lower()
+        if key == "close_date":
+            if value is None and row.status in {"WAITING", "OPEN", "SHORT"}:
+                return date.max
+            return value
+        if key == "open_date":
+            if value is None and row.status == "WAITING":
+                return date.max
+            return value
+        return value
+
+    def _default_sort_direction_for_key(self, key: str) -> bool:
+        for rule in self._default_trade_history_sort_rules():
+            if rule["key"] == key:
+                return bool(rule.get("ascending", True))
+        return True
+
+    def _primary_trade_sort_rule(self) -> Optional[dict]:
+        rules = self._trade_history_sort_rules()
+        return rules[0] if rules else None
+
+    def _apply_trade_table_sort_indicator(self):
+        header = self.trade_table.horizontalHeader()
+        primary_rule = self._primary_trade_sort_rule()
+        if not primary_rule:
+            return
+        key = str(primary_rule["key"])
+        ascending = bool(primary_rule.get("ascending", True))
+        for section, (column_key, _) in enumerate(self.TRADE_HISTORY_COLUMNS):
+            if column_key == key:
+                header.setSortIndicator(
+                    section,
+                    Qt.SortOrder.AscendingOrder if ascending else Qt.SortOrder.DescendingOrder,
+                )
+                return
+
+    def _on_trade_header_clicked(self, section: int):
+        if not (0 <= section < len(self.TRADE_HISTORY_COLUMNS)):
+            return
+        key = self.TRADE_HISTORY_COLUMNS[section][0]
+        current_rules = self._trade_history_sort_rules()
+        primary_rule = current_rules[0] if current_rules else None
+        if primary_rule and primary_rule["key"] == key:
+            new_primary = {
+                "key": key,
+                "ascending": not bool(primary_rule.get("ascending", True)),
+            }
+        else:
+            existing = next((rule for rule in current_rules if rule["key"] == key), None)
+            new_primary = {
+                "key": key,
+                "ascending": bool(existing["ascending"]) if existing is not None
+                else self._default_sort_direction_for_key(key),
+            }
+        remaining = [rule for rule in current_rules if rule["key"] != key]
+        self._save_trade_history_sort_rules([new_primary] + remaining)
+        self.refresh_view(selected_trade_source_index=self._selected_trade_source_index())
+
+    def _compare_trade_rows(self, left: "TradeRow", right: "TradeRow") -> int:
+        for rule in self._trade_history_sort_rules():
+            key = rule["key"]
+            ascending = bool(rule.get("ascending", True))
+            left_value = self._trade_row_sort_value(left, key)
+            right_value = self._trade_row_sort_value(right, key)
+
+            if left_value is None and right_value is None:
+                continue
+            if left_value is None:
+                return 1
+            if right_value is None:
+                return -1
+            if left_value < right_value:
+                return -1 if ascending else 1
+            if left_value > right_value:
+                return 1 if ascending else -1
+
+        if left.index < right.index:
+            return -1
+        if left.index > right.index:
+            return 1
+        return 0
+
+    def _sorted_trade_rows(self, rows: List["TradeRow"]) -> List["TradeRow"]:
+        return sorted(rows, key=cmp_to_key(self._compare_trade_rows))
+
+    def _theme_manager(self):
+        widget = self
+        while widget is not None:
+            theme = getattr(widget, "theme", None)
+            if theme is not None:
+                return theme
+            widget = widget.parentWidget()
+        return None
+
+    def _trade_matches_filters(self, row: "TradeRow", trade: Trade) -> bool:
+        status_filter = str(self.trade_status_filter.currentData() or "")
+        if status_filter and row.status != status_filter:
+            return False
+
+        text = self.trade_filter_edit.text().strip().lower()
+        if not text:
+            return True
+
+        search_parts = [
+            row.instrument,
+            row.status,
+            trade.notes,
+            f"{row.share_count}",
+            f"{row.buy_price:.2f}",
+            "" if row.sell_price is None else f"{row.sell_price:.2f}",
+            "" if row.trade_profit is None else f"{row.trade_profit:.2f}",
+            "" if row.open_date is None else row.open_date.isoformat(),
+            "" if row.close_date is None else row.close_date.isoformat(),
+        ]
+        haystack = " ".join(part for part in search_parts if part).lower()
+        return text in haystack
+
+    def _filtered_trade_rows(self, rows: List["TradeRow"], trades: List[Trade]) -> List["TradeRow"]:
+        filtered: List["TradeRow"] = []
+        for row in rows:
+            if 0 <= row.index < len(trades) and self._trade_matches_filters(row, trades[row.index]):
+                filtered.append(row)
+        return filtered
+
+    # ------------------------------------------------------------------
     # Core view refresh
     # ------------------------------------------------------------------
 
@@ -1665,7 +2012,8 @@ class PortfolioTab(QWidget):
             idx for idx, trade in enumerate(self._trades)
             if (trade.account or "").strip() == self._account_name
         ]
-        trade_rows = compute_trade_rows(visible_trades)
+        trade_rows = self._sorted_trade_rows(compute_trade_rows(visible_trades))
+        trade_rows = self._filtered_trade_rows(trade_rows, visible_trades)
 
         self._render_goal(goal)
         self._render_analytics(analytics)
@@ -1684,6 +2032,7 @@ class PortfolioTab(QWidget):
 
     def _render_goal(self, goal):
         self.goal_target_label.setText(_fmt_goal(goal.goal_target))
+        self._apply_preset_button_style(goal.goal_target)
         self.goal_labels["realized_profit"].setText(_fmt_money(goal.realized_profit))
         self.goal_labels["unrealized_profit"].setText(_fmt_money(goal.unrealized_profit))
         self.goal_labels["remaining_profit"].setText(_fmt_money(goal.remaining_profit))
@@ -1714,6 +2063,7 @@ class PortfolioTab(QWidget):
         visible_keys = set(self._trade_history_visible_keys())
         for col, (key, _) in enumerate(self.TRADE_HISTORY_COLUMNS):
             self.trade_table.setColumnHidden(col, key not in visible_keys)
+        self._apply_trade_table_sort_indicator()
         for r, row in enumerate(rows):
             value_map = {
                 "instrument": row.instrument, "share_count": f"{row.share_count:,d}",
@@ -1727,7 +2077,7 @@ class PortfolioTab(QWidget):
             }
             # Row background based on status — uses theme tint colors
             from PySide6.QtGui import QColor, QBrush
-            _theme = getattr(self.window(), "theme", None)
+            _theme = self._theme_manager()
             if row.status == "WAITING":
                 _r,_g,_b,_a = _theme.waiting_row_tint() if _theme else (120, 90, 0, 80)
                 row_bg = QBrush(QColor(_r, _g, _b, _a))
@@ -1743,7 +2093,7 @@ class PortfolioTab(QWidget):
                 if key == "instrument":
                     f = item.font(); f.setBold(True); item.setFont(f)
                 if key == "trade_profit" and row.trade_profit is not None:
-                    _theme = getattr(self.window(), "theme", None)
+                    _theme = self._theme_manager()
                     if _theme is not None:
                         from PySide6.QtGui import QColor
                         item.setForeground(QColor(_theme.profit_color() if row.trade_profit > 0
@@ -1754,6 +2104,7 @@ class PortfolioTab(QWidget):
                 if row_bg is not None:
                     item.setBackground(row_bg)
                 self.trade_table.setItem(r, c, item)
+        self._size_trade_table_columns()
         if rows:
             row_to_select = 0
             if selected_trade_source_index is not None:
@@ -1761,12 +2112,17 @@ class PortfolioTab(QWidget):
                 except ValueError: row_to_select = 0
             self.trade_table.selectRow(row_to_select)
 
+    def _size_trade_table_columns(self):
+        header = self.trade_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
     def _render_holdings_table(self, rows):
         self.holdings_table.setRowCount(len(rows))
         self._holding_row_instruments = [row.instrument for row in rows]
+        self._holding_row_is_short = [row.qty < 0 for row in rows]
         from PySide6.QtGui import QColor, QBrush
         for r, row in enumerate(rows):
-            is_short = row.qty < 0
+            is_short = self._holding_row_is_short[r]
             # Show absolute qty with a SHORT label for short positions
             qty_display = f"{abs(row.qty):,d} (SHORT)" if is_short else f"{row.qty:,d}"
             values = [
@@ -1780,7 +2136,7 @@ class PortfolioTab(QWidget):
                 if c == 0:
                     f = item.font(); f.setBold(True); item.setFont(f)
                 if is_short:
-                    _theme = getattr(self.window(), "theme", None)
+                    _theme = self._theme_manager()
                     _r,_g,_b,_a = _theme.short_row_tint() if _theme else (30, 80, 140, 70)
                     item.setBackground(QBrush(QColor(_r, _g, _b, _a)))
                 self.holdings_table.setItem(r, c, item)

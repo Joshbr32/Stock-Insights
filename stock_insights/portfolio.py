@@ -320,23 +320,7 @@ def sort_trades(trades: Iterable[Trade]) -> List[Trade]:
 
 def compute_trade_rows(trades: Iterable[Trade]) -> List[TradeRow]:
     rows: List[TradeRow] = []
-    indexed_trades = list(enumerate(list(trades)))
-
-    def sort_key(item: tuple[int, Trade]):
-        original_index, trade = item
-        # Sort order: WAITING first (0), then OPEN/SHORT (1), then CLOSED/COVERED (2)
-        if trade.is_pending:
-            order = 0
-        elif not trade.is_closed:
-            order = 1
-        else:
-            order = 2
-        close_key = trade.close_date if trade.close_date is not None else date.max
-        open_key = trade.open_date if trade.open_date is not None else date.max
-        symbol = trade.normalized_instrument()
-        return (order, close_key, symbol, open_key, original_index)
-
-    for idx, trade in sorted(indexed_trades, key=sort_key):
+    for idx, trade in enumerate(list(trades)):
         profit = trade.trade_profit
         days = business_days_between(trade.open_date, trade.close_date) if trade.is_closed else None
         avg_daily = (profit / days) if (profit is not None and days not in (None, 0)) else None
@@ -415,7 +399,7 @@ def compute_portfolio(
     for holding in holdings:
         instrument = holding.normalized_instrument()
         qty = int(holding.qty)
-        if not instrument or qty <= 0:
+        if not instrument or qty == 0:
             continue
         cleaned.append(
             Holding(
@@ -427,23 +411,26 @@ def compute_portfolio(
         )
 
     total_market_value = 0.0
-    total_cost_basis = 0.0
+    gross_market_value = 0.0
+    gross_cost_basis = 0.0
     staged: List[Tuple[Holding, Optional[float], float, float, float]] = []
 
     for holding in cleaned:
         mark = marks.get(holding.instrument)
+        cost_basis = holding.cost_basis
         market_value = (float(mark) * holding.qty) if mark is not None else 0.0
-        unrealized_pl = (market_value - holding.cost_basis) if mark is not None else 0.0
+        unrealized_pl = (market_value - cost_basis) if mark is not None else 0.0
         realized_pl = float(realized_by_symbol.get(holding.instrument, 0.0))
         total_market_value += market_value
-        total_cost_basis += holding.cost_basis
+        gross_market_value += abs(market_value)
+        gross_cost_basis += abs(cost_basis)
         staged.append((holding, mark, market_value, unrealized_pl, realized_pl))
 
     rows: List[HoldingView] = []
     total_unrealized = 0.0
     for holding, mark, market_value, unrealized_pl, realized_pl in staged:
         total_unrealized += unrealized_pl
-        weight_pct = (market_value / total_market_value * 100.0) if total_market_value > 0 else 0.0
+        weight_pct = (abs(market_value) / gross_market_value * 100.0) if gross_market_value > 0 else 0.0
         rows.append(
             HoldingView(
                 instrument=holding.instrument,
@@ -462,12 +449,12 @@ def compute_portfolio(
     all_realized = float(sum(realized_by_symbol.values()))
     summary = PortfolioSummary(
         market_value=total_market_value,
-        cost_basis=total_cost_basis,
+        cost_basis=gross_cost_basis,
         unrealized_pl=total_unrealized,
         realized_pl=all_realized,
         total_pl=all_realized + total_unrealized,
         positions=len(rows),
-        return_pct=((total_unrealized / total_cost_basis) * 100.0) if total_cost_basis > 0 else None,
+        return_pct=((total_unrealized / gross_cost_basis) * 100.0) if gross_cost_basis > 0 else None,
     )
     return rows, summary
 

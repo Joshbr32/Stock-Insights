@@ -57,3 +57,21 @@ class NetCheckWorker(QObject):
         if not ok:
             logger.warning("Connectivity probe failed for all endpoints")
         self.done.emit(ok)
+
+
+class ReconnectWorker(QObject):
+    done = Signal(bool)
+
+    def __init__(self, store):
+        super().__init__()
+        self._store = store
+
+    def run(self) -> None:
+        try:
+            logger.info("Reconnect attempt started")
+            ok = bool(self._store.attempt_reconnect())
+            logger.info("Reconnect attempt finished: %s", "success" if ok else "no change")
+        except Exception:  # pragma: no cover - Qt worker boundary
+            logger.exception("Reconnect worker failed")
+            ok = False
+        self.done.emit(ok)

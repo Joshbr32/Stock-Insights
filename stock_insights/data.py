@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import yfinance as yf
@@ -8,6 +10,20 @@ from .logging_utils import get_logger
 
 
 logger = get_logger("data")
+
+
+def _configure_yfinance_cache() -> None:
+    """Route yfinance's sqlite cache into a known writable app folder."""
+    base_dir = tempfile.gettempdir()
+    cache_dir = Path(base_dir) / "StockInsights" / "yfinance"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        yf.set_tz_cache_location(str(cache_dir))
+    except Exception as exc:
+        logger.debug("Could not set yfinance cache directory: %s", exc)
+
+
+_configure_yfinance_cache()
 
 
 def fetch_marks(tickers: List[str]) -> dict:

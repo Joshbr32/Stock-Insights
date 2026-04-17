@@ -1,6 +1,8 @@
 
-PySide6>=6.5
-yfinance>=0.2.38
-pandas>=2.0
-numpy>=1.24
-matplotlib>=3.8
+PySide6>=6.11
+requests>=2.33
+yfinance>=1.2
+
+# Optional: improves business-day calculations in portfolio.py when installed.
+# The app already falls back gracefully if this package is missing.
+# pandas-market-calendars>=4.0

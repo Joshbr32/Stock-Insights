@@ -7,13 +7,14 @@ from PySide6.QtWidgets import (
     QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QPushButton,
+    QSizePolicy,
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from .theme import ThemeManager
 from .widgets import SpinnerLabel, WatchTable
-from .workers import MarksWorker, NetCheckWorker
+from .workers import MarksWorker, NetCheckWorker, ReconnectWorker
 from .logging_utils import setup_logging, serial_debug
 from .portfolio_tab import PortfolioTab
 from .api_client import DataStore, FallbackDataStore, LocalDataStore, RemoteDataStore
@@ -58,6 +59,8 @@ class UserAccountDialog(QDialog):
         server_url = ""
         if isinstance(store, RemoteDataStore):
             server_url = store._base
+        elif isinstance(store, FallbackDataStore):
+            server_url = store._remote._base
         profile_grid.addWidget(QLabel(server_url or "(offline)"), 2, 1)
         root.addWidget(profile_grp)
 
@@ -104,16 +107,17 @@ class UserAccountDialog(QDialog):
         password = self.new_pass_edit.text().strip()
         if not password:
             return
-        if not isinstance(self._store, RemoteDataStore):
+        remote_store = self._remote_store()
+        if remote_store is None:
             QMessageBox.information(self, "Offline", "Password change requires a server connection.")
             return
         try:
             import requests
-            user_id = self._store.user_info["user_id"]
+            user_id = remote_store.user_info["user_id"]
             r = requests.put(
-                f"{self._store._base}/users/{user_id}/password",
+                f"{remote_store._base}/users/{user_id}/password",
                 json={"new_password": password},
-                headers=self._store._headers(),
+                headers=remote_store._headers(),
                 timeout=8,
             )
             if r.ok:
@@ -123,6 +127,13 @@ class UserAccountDialog(QDialog):
                 QMessageBox.warning(self, "Error", r.text)
         except Exception as exc:
             QMessageBox.warning(self, "Error", str(exc))
+
+    def _remote_store(self) -> Optional[RemoteDataStore]:
+        if isinstance(self._store, RemoteDataStore):
+            return self._store
+        if isinstance(self._store, FallbackDataStore) and self._store._is_online:
+            return self._store._remote
+        return None
 
     def _add_account(self):
         text, ok = QInputDialog.getText(self, "Add Account", "Account name:")
@@ -169,6 +180,7 @@ class UserPortfolioViewer(QMainWindow):
         self.resize(1100, 750)
         self._store = user_store
         self._settings = settings
+        self.theme = getattr(parent, "theme", None)
         self._tabs: Dict[str, PortfolioTab] = {}
         self._closing = False
         self._active_marks_thread: Optional[QThread] = None
@@ -248,6 +260,13 @@ class UserPortfolioViewer(QMainWindow):
         for tab in self._tabs.values():
             tab.update_marks(data)
         thread.quit()
+
+    def update_ui(self):
+        for tab in self._tabs.values():
+            tab.update_ui()
+        self.update()
+
+    updateUI = update_ui
 
     def closeEvent(self, event):
         """Cleanly shut down before GC.
@@ -336,7 +355,6 @@ class MainWindow(QMainWindow):
 
     SORT_DEFAULT = "Default (custom)"
     SORT_ALPHA = "Alphabetical"
-    SORT_INDUSTRY = "Industry"
     SORT_PRICE = "Price"
 
     L1_INTERVAL = 20_000
@@ -354,12 +372,20 @@ class MainWindow(QMainWindow):
             store._on_online_cb  = self._set_synced_status
         self.setWindowTitle(f"Stock Insights — {store.username}")
         self.resize(1200, 800)
-        self._last_sidebar_size = 240
+        self._last_sidebar_size = 210
         self._busy_ops = 0
         self._online = True
+        self._watch_sort_mode = self.SORT_DEFAULT
+        self._closing = False
         self._portfolio_tabs: Dict[str, PortfolioTab] = {}
         self._viewer_windows: Dict[int, UserPortfolioViewer] = {}  # user_id -> window
         self._reconnect_timer_obj = None   # QTimer for reconnect attempts
+        self._marks_thread: Optional[QThread] = None
+        self._marks_worker: Optional[MarksWorker] = None
+        self._netcheck_thread: Optional[QThread] = None
+        self._netcheck_worker: Optional[NetCheckWorker] = None
+        self._reconnect_thread: Optional[QThread] = None
+        self._reconnect_worker: Optional[ReconnectWorker] = None
 
         self._build_ui()
         self.theme = ThemeManager(self)
@@ -442,6 +468,17 @@ class MainWindow(QMainWindow):
         s.setValue("ui/FONT_SIZE", self.theme.font_size_label)
         s.sync()
 
+    def update_ui(self):
+        for tab in self._portfolio_tabs.values():
+            tab.update_ui()
+        for viewer in self._viewer_windows.values():
+            viewer.update_ui()
+        self.watch.viewport().update()
+        self.tabs.update()
+        self.update()
+
+    updateUI = update_ui
+
     def _open_settings_dialog(self):
         from .settings_dialog import SettingsDialog
         s = self._qsettings()
@@ -477,6 +514,7 @@ class MainWindow(QMainWindow):
         self.timer_l1.setInterval(self.L1_INTERVAL)
         self.timer_net.setInterval(self.NET_INTERVAL)
         self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
+        self.update_ui()
         self._save_settings()
 
     def _check_for_updates(self) -> None:
@@ -585,8 +623,15 @@ class MainWindow(QMainWindow):
         root_layout = QVBoxLayout(central)
 
         self.spinner = SpinnerLabel()
+        self.spinner.setFixedWidth(14)
         self.lbl_updating = QLabel("")
         self.lbl_status = QLabel("")
+        self.lbl_updating.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_updating.setMinimumWidth(86)
+        self.lbl_status.setMinimumWidth(172)
+        self.lbl_updating.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self.lbl_status.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setFixedWidth(120)
@@ -609,7 +654,7 @@ class MainWindow(QMainWindow):
         self.act_toggle_sidebar.setCheckable(True)
         self.act_toggle_sidebar.setShortcut(QKeySequence("Ctrl+B"))
         self.act_toggle_sidebar.triggered.connect(self._toggle_sidebar)
-        view_menu.addAction("Trade History Columns").triggered.connect(self._open_trade_history_columns)
+        view_menu.addAction("Trade History Settings").triggered.connect(self._open_trade_history_columns)
         view_menu.addAction("Goal Dashboard Options").triggered.connect(self._open_goal_dashboard_options)
 
         # Admin menu (always built; items shown/hidden based on role)
@@ -620,50 +665,74 @@ class MainWindow(QMainWindow):
 
         # Status corner
         status_corner = QWidget(self)
+        status_corner.setObjectName("menuStatusCorner")
         sr = QHBoxLayout(status_corner)
-        sr.setContentsMargins(8, 0, 8, 0); sr.setSpacing(8)
+        sr.setContentsMargins(8, 2, 8, 3); sr.setSpacing(8)
+        self.lbl_updating.setObjectName("menuUpdatingLabel")
+        self.lbl_status.setObjectName("menuOnlineLabel")
         sr.addWidget(self.spinner); sr.addWidget(self.lbl_updating)
         sr.addWidget(self.lbl_status); sr.addWidget(self.progress)
+        status_corner.adjustSize()
         self.menuBar().setCornerWidget(status_corner, Qt.Corner.TopRightCorner)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setHandleWidth(7)
+        self.splitter.splitterMoved.connect(self._remember_sidebar_size)
         root_layout.addWidget(self.splitter)
 
         # Left: Watchlist
+        left_container = QWidget()
+        left_outer = QVBoxLayout(left_container)
+        left_outer.setContentsMargins(0, 0, 8, 0)
+        left_outer.setSpacing(0)
         left_wrap = QFrame()
         left_wrap.setObjectName("leftPane")
         left_layout = QVBoxLayout(left_wrap)
+        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setSpacing(10)
         title_row = QHBoxLayout()
+        title_row.setSpacing(8)
         lbl = QLabel("Watchlist"); lbl.setObjectName("leftTitle")
-        self.sort_mode = QComboBox()
-        self.sort_mode.addItems([self.SORT_DEFAULT, self.SORT_ALPHA, self.SORT_INDUSTRY, self.SORT_PRICE])
-        self.sort_mode.currentTextChanged.connect(self._on_sort_mode_changed)
-        self.sort_mode.setFixedWidth(170)
         title_row.addWidget(lbl); title_row.addStretch(1)
-        title_row.addWidget(QLabel("Sort:")); title_row.addWidget(self.sort_mode)
         left_layout.addLayout(title_row)
         self.watch = WatchTable(self)
+        self.watch.set_sort_mode(self._watch_sort_mode)
         self.watch.renameRequested.connect(self._ctx_rename_selected)
         self.watch.moveRequested.connect(self._ctx_move_row)
-        left_layout.addWidget(self.watch, stretch=1)
+        self.watch.sortRequested.connect(self._on_sort_mode_changed)
+        watch_card = QFrame()
+        watch_card.setObjectName("watchTableCard")
+        watch_card_layout = QVBoxLayout(watch_card)
+        watch_card_layout.setContentsMargins(0, 0, 0, 0)
+        watch_card_layout.setSpacing(0)
+        watch_card_layout.addWidget(self.watch)
+        left_layout.addWidget(watch_card, stretch=1)
         wl_btns = QHBoxLayout()
+        wl_btns.setSpacing(8)
         self.add_btn = QPushButton("+ Add"); self.add_btn.clicked.connect(self._on_add_ticker)
         self.remove_btn = QPushButton("- Remove"); self.remove_btn.clicked.connect(self._on_remove_ticker)
         wl_btns.addWidget(self.add_btn); wl_btns.addWidget(self.remove_btn)
         left_layout.addLayout(wl_btns)
-        self.splitter.addWidget(left_wrap)
+        left_outer.addWidget(left_wrap)
+        self.splitter.addWidget(left_container)
         self.splitter.setStretchFactor(0, 0)
 
         # Right: per-account tabs
+        right_container = QWidget()
+        right_outer = QVBoxLayout(right_container)
+        right_outer.setContentsMargins(8, 0, 0, 0)
+        right_outer.setSpacing(0)
         right_wrap = QWidget()
         right_layout = QVBoxLayout(right_wrap)
+        right_layout.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget()
         right_layout.addWidget(self.tabs)
         self._build_portfolio_tabs()
-        self.splitter.addWidget(right_wrap)
+        right_outer.addWidget(right_wrap)
+        self.splitter.addWidget(right_container)
         self.splitter.setStretchFactor(1, 1)
 
-        self.statusBar().showMessage("Ready")
+        self.statusBar().hide()
 
     # ---- View menu ----
 
@@ -689,16 +758,32 @@ class MainWindow(QMainWindow):
         self._kick_netcheck()
         self._level1_tick()
 
-    def _kick_netcheck(self):
-        w = NetCheckWorker()
-        th = QThread(self)
-        w.moveToThread(th)
-        th.started.connect(w.run)
-        w.done.connect(lambda ok: self._on_net_status(ok, th, w))
-        th.finished.connect(th.deleteLater)
-        th.start()
+    def _thread_running(self, thread: Optional[QThread]) -> bool:
+        return thread is not None and thread.isRunning()
 
-    def _on_net_status(self, ok: bool, thread: QThread, worker):
+    def _kick_netcheck(self):
+        if self._closing or self._thread_running(self._netcheck_thread):
+            return
+        worker = NetCheckWorker()
+        thread = QThread(self)
+        self._netcheck_worker = worker
+        self._netcheck_thread = thread
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_net_status)
+        worker.done.connect(worker.deleteLater)
+        worker.done.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_netcheck_thread)
+        thread.start()
+
+    def _cleanup_netcheck_thread(self):
+        self._netcheck_thread = None
+        self._netcheck_worker = None
+
+    def _on_net_status(self, ok: bool):
+        if self._closing:
+            return
         self._online = ok
         if not ok:
             # No network at all → red
@@ -718,7 +803,6 @@ class MainWindow(QMainWindow):
             # Server reachable → green
             self.lbl_status.setText("● Online")
             self.lbl_status.setStyleSheet("color: #22c55e;")
-        thread.quit()
 
     def _init_reconnect_timer(self):
         """Start a 30-second reconnect timer if we are using FallbackDataStore."""
@@ -733,28 +817,34 @@ class MainWindow(QMainWindow):
         """Try to re-establish server connection and flush queued writes."""
         if not isinstance(self._store, FallbackDataStore):
             return
-        if self._store._is_online:
+        if self._closing or self._store._is_online or self._thread_running(self._reconnect_thread):
             return   # already online, nothing to do
         serial_debug("Attempting reconnect to server...")
-        # Run in a thread so it doesn't block the UI
-        th = QThread(self)
-        th.started.connect(lambda: self._do_reconnect(th))
-        th.finished.connect(th.deleteLater)
-        th.start()
+        worker = ReconnectWorker(self._store)
+        thread = QThread(self)
+        self._reconnect_worker = worker
+        self._reconnect_thread = thread
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_reconnect_finished)
+        worker.done.connect(worker.deleteLater)
+        worker.done.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_reconnect_thread)
+        thread.start()
 
-    def _do_reconnect(self, thread: QThread):
-        try:
-            ok = self._store.attempt_reconnect()
-        except Exception:
-            ok = False
-        # Signal back to main thread via a queued connection
-        from PySide6.QtCore import QMetaObject, Qt as _Qt
-        if ok:
-            QMetaObject.invokeMethod(self, "_on_reconnected", _Qt.ConnectionType.QueuedConnection)
-        thread.quit()
+    def _cleanup_reconnect_thread(self):
+        self._reconnect_thread = None
+        self._reconnect_worker = None
+
+    def _on_reconnect_finished(self, ok: bool):
+        if ok and not self._closing:
+            self._on_reconnected()
 
     def _on_reconnected(self):
         """Called on main thread after successful reconnect."""
+        if self._closing:
+            return
         pending = self._store.pending_sync_count
         if pending == 0:
             self.lbl_status.setText("● Online")
@@ -790,24 +880,39 @@ class MainWindow(QMainWindow):
             self.spinner.stop(); self.lbl_updating.setText("")
 
     def _level1_tick(self):
+        if self._closing or self._thread_running(self._marks_thread):
+            return
         tickers = [self.watch.item(r, 0).text() for r in range(self.watch.rowCount())]
         for tab in self._portfolio_tabs.values():
             tickers.extend(tab.holdings_symbols())
         tickers = list(dict.fromkeys([t for t in tickers if t]))
-        if not tickers: return
+        if not tickers:
+            return
         self._busy_enter()
-        # Store worker as instance var so it isn't GC'd while the thread runs it.
-        self._marks_worker = MarksWorker(tickers)
-        th = QThread(self)
-        self._marks_worker.moveToThread(th)
-        th.started.connect(self._marks_worker.run)
-        self._marks_worker.done.connect(lambda data, t=th: self._on_marks(data, t, self._marks_worker))
-        self._marks_worker.error.connect(lambda msg, t=th: self._on_marks_error(msg, t, self._marks_worker))
-        th.finished.connect(th.deleteLater)
-        th.finished.connect(lambda: setattr(self, "_marks_worker", None))
-        th.start()
+        worker = MarksWorker(tickers)
+        thread = QThread(self)
+        self._marks_worker = worker
+        self._marks_thread = thread
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_marks)
+        worker.error.connect(self._on_marks_error)
+        worker.done.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        worker.done.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_marks_thread)
+        thread.start()
 
-    def _on_marks(self, data: dict, thread: QThread, worker):
+    def _cleanup_marks_thread(self):
+        self._marks_thread = None
+        self._marks_worker = None
+        self._busy_leave()
+
+    def _on_marks(self, data: dict):
+        if self._closing:
+            return
         for tab in self._portfolio_tabs.values():
             tab.update_marks(data)
         for r in range(self.watch.rowCount()):
@@ -818,11 +923,11 @@ class MainWindow(QMainWindow):
                 cell = QTableWidgetItem("--"); self.watch.setItem(r, 1, cell)
             if row.get("price") is not None:
                 cell.setText(f"{row['price']:.2f}")
-        thread.quit(); self._busy_leave()
 
-    def _on_marks_error(self, msg: str, thread: QThread, worker):
+    def _on_marks_error(self, msg: str):
+        if self._closing:
+            return
         self.lbl_status.setText("● Offline"); self.lbl_status.setStyleSheet("color: #ef4444;")
-        thread.quit(); self._busy_leave()
 
     def _bind_shortcuts(self):
         act = QAction("Refresh Marks (F5)", self)
@@ -833,6 +938,13 @@ class MainWindow(QMainWindow):
     # ---- Sidebar ----
 
     def _is_sidebar_visible(self): return self.splitter.sizes()[0] > 0
+
+    def _remember_sidebar_size(self, pos: int, index: int):
+        if index == 1:
+            return
+        sizes = self.splitter.sizes()
+        if sizes and sizes[0] > 0:
+            self._last_sidebar_size = sizes[0]
 
     def _set_sidebar_visible(self, visible: bool, apply_sizes: bool = True):
         sizes = self.splitter.sizes()
@@ -848,17 +960,31 @@ class MainWindow(QMainWindow):
 
     def _toggle_sidebar(self): self._set_sidebar_visible(not self._is_sidebar_visible())
 
+    def resizeEvent(self, event):
+        old_sizes = self.splitter.sizes() if hasattr(self, "splitter") else []
+        old_left = old_sizes[0] if old_sizes else 0
+        super().resizeEvent(event)
+        if not hasattr(self, "splitter") or not self._is_sidebar_visible():
+            return
+        total = sum(self.splitter.sizes())
+        if old_left <= 0 or total <= 0:
+            return
+        self.splitter.setSizes([old_left, max(1, total - old_left)])
+
     # ---- Watchlist ----
 
-    def _add_watch_row(self, sym: str, mark: str = "--", industry: str = "--"):
+    def _add_watch_row(self, sym: str, mark: str = "--"):
         r = self.watch.rowCount()
         self.watch.insertRow(r)
         it0 = QTableWidgetItem(sym.upper())
         f = it0.font(); f.setBold(True); it0.setFont(f)
         it0.setFlags(it0.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        it1 = QTableWidgetItem(mark); it1.setFlags(it1.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        it2 = QTableWidgetItem(industry); it2.setFlags(it2.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.watch.setItem(r, 0, it0); self.watch.setItem(r, 1, it1); self.watch.setItem(r, 2, it2)
+        it1 = QTableWidgetItem(mark)
+        it1.setFlags(it1.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        it1.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.watch.setItem(r, 0, it0); self.watch.setItem(r, 1, it1)
+        if hasattr(self.watch, "_size_columns"):
+            self.watch._size_columns()
 
     def _watch_current_row(self) -> int: return self.watch.currentRow()
 
@@ -873,7 +999,7 @@ class MainWindow(QMainWindow):
                 self.watch.selectRow(r); return
         self._add_watch_row(sym)
         self.watch.selectRow(self.watch.rowCount() - 1)
-        if self.sort_mode.currentText() == self.SORT_DEFAULT: self._save_settings()
+        if self._watch_sort_mode == self.SORT_DEFAULT: self._save_settings()
 
     def _on_remove_ticker(self):
         r = self._watch_current_row()
@@ -883,7 +1009,7 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Remove", f"Remove {sym} from watchlist?") \
                 != QMessageBox.StandardButton.Yes: return
         self.watch.removeRow(r)
-        if self.sort_mode.currentText() == self.SORT_DEFAULT: self._save_settings()
+        if self._watch_sort_mode == self.SORT_DEFAULT: self._save_settings()
 
     def _ctx_rename_selected(self):
         r = self._watch_current_row()
@@ -900,25 +1026,29 @@ class MainWindow(QMainWindow):
         self.watch.item(r, 0).setText(sym)
 
     def _ctx_move_row(self, delta: int):
-        if self.sort_mode.currentText() != self.SORT_DEFAULT:
+        if self._watch_sort_mode != self.SORT_DEFAULT:
             QMessageBox.information(self, "Reorder disabled", "Switch to Default (custom) sort to reorder."); return
         r = self._watch_current_row()
         if r < 0: return
         new_r = r + delta
         if not (0 <= new_r < self.watch.rowCount()): return
-        data = [self.watch.item(r, c).text() for c in range(3)]
+        data = [self.watch.item(r, c).text() for c in range(self.watch.columnCount())]
         self.watch.removeRow(r)
         self.watch.insertRow(new_r)
         for c, text in enumerate(data):
             item = QTableWidgetItem(text)
             if c == 0:
                 f = item.font(); f.setBold(True); item.setFont(f)
+            elif c == 1:
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.watch.setItem(new_r, c, item)
         self.watch.selectRow(new_r)
         self._save_settings()
 
     def _on_sort_mode_changed(self, mode: str):
+        self._watch_sort_mode = mode
+        self.watch.set_sort_mode(mode)
         if mode == self.SORT_DEFAULT:
             self.watch.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
             self.watch.setSortingEnabled(False)
@@ -931,7 +1061,6 @@ class MainWindow(QMainWindow):
             self.watch.setRowCount(0)
             for sym in items: self._add_watch_row(str(sym).upper())
         elif mode == self.SORT_ALPHA: self._apply_sort_by_column(0, True, False)
-        elif mode == self.SORT_INDUSTRY: self._apply_sort_by_column(2, True, False)
         elif mode == self.SORT_PRICE: self._apply_sort_by_column(1, False, True)
 
     def _apply_sort_by_column(self, col: int, case_insensitive: bool, numeric: bool):
@@ -939,7 +1068,10 @@ class MainWindow(QMainWindow):
         self.watch.setSortingEnabled(False)
         rows = []
         for r in range(self.watch.rowCount()):
-            rows.append([self.watch.item(r, c).text() if self.watch.item(r, c) else "" for c in range(3)])
+            rows.append([
+                self.watch.item(r, c).text() if self.watch.item(r, c) else ""
+                for c in range(self.watch.columnCount())
+            ])
 
         def key(row):
             v = row[col]
@@ -950,6 +1082,45 @@ class MainWindow(QMainWindow):
 
         rows.sort(key=key)
         self.watch.setRowCount(0)
-        for sym, mark, ind in rows:
-            self._add_watch_row(sym, mark, ind)
+        for sym, mark in rows:
+            self._add_watch_row(sym, mark)
         if self.watch.rowCount() > 0: self.watch.selectRow(0)
+
+    def closeEvent(self, event):
+        self._closing = True
+        self._save_settings()
+
+        for timer_name in ("timer_l1", "timer_net", "_reconnect_timer_obj"):
+            timer = getattr(self, timer_name, None)
+            if timer is None:
+                continue
+            timer.stop()
+            try:
+                timer.timeout.disconnect()
+            except Exception:
+                pass
+
+        for viewer in list(self._viewer_windows.values()):
+            try:
+                viewer.close()
+            except Exception:
+                pass
+
+        for thread_name in ("_marks_thread", "_netcheck_thread", "_reconnect_thread"):
+            thread = getattr(self, thread_name, None)
+            if thread is None or not thread.isRunning():
+                continue
+            try:
+                thread.disconnect()
+            except Exception:
+                pass
+            thread.quit()
+            thread.wait(4000)
+
+        self._marks_thread = None
+        self._marks_worker = None
+        self._netcheck_thread = None
+        self._netcheck_worker = None
+        self._reconnect_thread = None
+        self._reconnect_worker = None
+        super().closeEvent(event)
