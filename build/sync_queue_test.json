@@ -1,0 +1,10 @@
+[
+  {
+    "action": "set_goal_target",
+    "username": "bob",
+    "payload": {
+      "value": 2
+    },
+    "timestamp": "2026-04-14T13:56:01.579322"
+  }
+]

@@ -190,7 +190,7 @@ def _flush_for_user(remote_store, username: str) -> tuple[int, int]:
 
 def _replay(store, action: str, payload: dict) -> None:
     """Execute one queued action against the remote store."""
-    from .portfolio import Trade, trades_from_json
+    from .portfolio import trades_from_json
 
     if action == "save_trades":
         account_name = payload["account_name"]

@@ -1,23 +1,23 @@
 import json
 from typing import Dict, List, Optional
+
 from PySide6.QtCore import Qt, QSettings, QTimer, QThread, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
-    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
-    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QAbstractItemView, QDialog, QDialogButtonBox,
+    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QPushButton,
     QSizePolicy,
-    QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
+    QSplitter, QTabWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
+from .api_client import DataStore, FallbackDataStore, RemoteDataStore
+from .logging_utils import setup_logging, serial_debug
+from .portfolio_tab import PortfolioTab
 from .theme import ThemeManager
 from .widgets import SpinnerLabel, WatchTable
 from .workers import MarksWorker, NetCheckWorker, ReconnectWorker
-from .logging_utils import setup_logging, serial_debug
-from .portfolio_tab import PortfolioTab
-from .api_client import DataStore, FallbackDataStore, LocalDataStore, RemoteDataStore
 
 _ORG = "StockInsights"
 _APP = "StocksGUI"

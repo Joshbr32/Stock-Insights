@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from functools import cmp_to_key
 import json
-
 from datetime import date
+from functools import cmp_to_key
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QDate, QPoint, QSettings, Qt, Signal
@@ -36,7 +35,6 @@ from PySide6.QtWidgets import (
 )
 
 from .portfolio import (
-    GoalProgress,
     Holding,
     Trade,
     compute_goal_progress,
@@ -46,8 +44,6 @@ from .portfolio import (
     compute_trade_analytics,
     compute_trade_rows,
     solve_buy_mark_for_target_avg,
-    trades_from_json,
-    trades_to_json,
 )
 
 GROUP_STYLE = (

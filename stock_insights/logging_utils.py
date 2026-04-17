@@ -17,7 +17,6 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-
 SERIAL_COUNTER = 0
 LOGGER_NAME = "stock_insights"
 

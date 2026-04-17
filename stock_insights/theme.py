@@ -1,10 +1,10 @@
 import ctypes
-import os
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
+
 from PySide6.QtCore import QTimer, QObject, QPointF, Qt
-from PySide6.QtGui import QPalette, QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QPalette, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle
 
 if sys.platform.startswith("win"):

@@ -76,7 +76,6 @@ class _LoginThread(QThread):
     def _try_connect(self, url: str):
         """Returns RemoteDataStore on success, None if port unreachable.
         Raises APIError for HTTP-level errors (wrong password, etc.)."""
-        import requests
         host, port = _parse_host_port(url)
         self._emit(f"  Checking TCP {host}:{port} ...")
         if not _check_port_open(host, port, timeout=CONNECT_TIMEOUT):

@@ -517,7 +517,7 @@ def remote_login(base_url: str, username: str, password: str, timeout: int = 5) 
 def _parse_date_str(value):
     if not value:
         return None
-    from datetime import date, datetime
+    from datetime import datetime
     text = str(value).strip()
     if not text or text in ("None", "null"):
         return None

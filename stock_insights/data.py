@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List
 
 import yfinance as yf
 
 from .logging_utils import get_logger
-
 
 logger = get_logger("data")
 

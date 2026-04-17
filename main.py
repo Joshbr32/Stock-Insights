@@ -14,7 +14,7 @@ QApplication.setHighDpiScaleFactorRoundingPolicy(
 
 from stock_insights.connection_dialog import ConnectionDialog
 from stock_insights.main_window import MainWindow
-from stock_insights.theme import ThemeManager, FONT_SIZES
+from stock_insights.theme import ThemeManager
 
 
 def _apply_startup_theme(app: QApplication) -> None:

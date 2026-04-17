@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from typing import Optional
 
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (

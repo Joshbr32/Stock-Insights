@@ -10,7 +10,6 @@ from PySide6.QtCore import QObject, Signal
 from .data import fetch_marks
 from .logging_utils import get_logger
 
-
 logger = get_logger("workers")
 
 
