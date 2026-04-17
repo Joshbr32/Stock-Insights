@@ -4,22 +4,21 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="attempting UI fixes and optimizations">
-      <changelist_data name="Josh Dhori" email="joshbr32@gmail.com" automatic="false" />
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="optimized import">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/__init__.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/api_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/api_client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/connection_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/connection_dialog.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/data.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/data.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/logging_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/logging_utils.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/settings_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/settings_dialog.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/sync_queue.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/sync_queue.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/theme.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/theme.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/update_checker.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/update_checker.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/widgets.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/widgets.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/workers.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/workers.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/temp json.json" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -366,7 +365,15 @@
       <option name="project" value="LOCAL" />
       <updated>1776461133687</updated>
     </task>
-    <option name="localTasksCounter" value="20" />
+    <task id="LOCAL-00020" summary="optimized import">
+      <option name="closed" value="true" />
+      <created>1776463486521</created>
+      <option name="number" value="00020" />
+      <option name="presentableId" value="LOCAL-00020" />
+      <option name="project" value="LOCAL" />
+      <updated>1776463486521</updated>
+    </task>
+    <option name="localTasksCounter" value="21" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -402,7 +409,8 @@
     <MESSAGE value="bug fixes + better offline sync" />
     <MESSAGE value="added auto-updates" />
     <MESSAGE value="attempting UI fixes and optimizations" />
-    <option name="LAST_COMMIT_MESSAGE" value="attempting UI fixes and optimizations" />
+    <MESSAGE value="optimized import" />
+    <option name="LAST_COMMIT_MESSAGE" value="optimized import" />
     <option name="OPTIMIZE_IMPORTS_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REFORMAT_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REARRANGE_BEFORE_PROJECT_COMMIT" value="true" />

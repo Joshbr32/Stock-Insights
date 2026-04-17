@@ -1,15 +1,15 @@
-from __future__ import annotations
-
 """Shared Qt widgets used across the application."""
+
+from __future__ import annotations
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QHeaderView,
     QLabel,
     QMenu,
     QTableWidget,
-    QHeaderView,
 )
 
 
@@ -30,10 +30,18 @@ class SpinnerLabel(QLabel):
 
     def stop(self) -> None:
         self._timer.stop()
-        self.setText("")
+        try:
+            self.setText("")
+        except RuntimeError:
+            # C++ object already deleted — nothing to do.
+            pass
 
     def _tick(self) -> None:
-        self.setText(self.FRAMES[self._index % len(self.FRAMES)])
+        try:
+            self.setText(self.FRAMES[self._index % len(self.FRAMES)])
+        except RuntimeError:
+            self._timer.stop()
+            return
         self._index += 1
 
 

@@ -239,34 +239,34 @@ class UserPortfolioViewer(QMainWindow):
             return
         # Store worker as instance var — local var would be GC'd when this
         # function returns, destroying the worker while the thread is running it.
-        self._active_marks_worker = MarksWorker(tickers)
+        worker = MarksWorker(tickers)
         th = QThread(self)
-        self._active_marks_worker.moveToThread(th)
-        th.started.connect(self._active_marks_worker.run)
-        self._active_marks_worker.done.connect(lambda data, t=th: self._on_marks(data, t))
-        self._active_marks_worker.error.connect(lambda _, t=th: t.quit())
+        self._active_marks_worker = worker
+        self._active_marks_thread = th
+        worker.moveToThread(th)
+        th.started.connect(worker.run)
+        worker.done.connect(self._on_marks)
+        worker.done.connect(th.quit)
+        worker.error.connect(th.quit)
+        # Delete worker + thread only after the thread's event loop exits.
+        th.finished.connect(worker.deleteLater)
         th.finished.connect(th.deleteLater)
         def _cleanup():
             self._active_marks_thread = None
             self._active_marks_worker = None
         th.finished.connect(_cleanup)
-        self._active_marks_thread = th
         th.start()
 
-    def _on_marks(self, data: dict, thread: QThread):
+    def _on_marks(self, data: dict):
         if self._closing:
-            thread.quit()
             return
         for tab in self._tabs.values():
             tab.update_marks(data)
-        thread.quit()
 
     def update_ui(self):
         for tab in self._tabs.values():
             tab.update_ui()
         self.update()
-
-    updateUI = update_ui
 
     def closeEvent(self, event):
         """Cleanly shut down before GC.
@@ -286,16 +286,18 @@ class UserPortfolioViewer(QMainWindow):
         except Exception:
             pass
 
-        # Disconnect and wait for any in-flight marks thread (usually <3s)
-        if self._active_marks_thread is not None and self._active_marks_thread.isRunning():
+        # Wait for any in-flight marks thread (usually <3s). Don't disconnect
+        # the finished -> deleteLater chain — we want the C++ worker to be
+        # torn down before the QThread disappears.
+        if self._active_marks_thread is not None:
             try:
-                self._active_marks_thread.disconnect()
+                if self._active_marks_thread.isRunning():
+                    self._active_marks_thread.quit()
+                    self._active_marks_thread.wait(4000)
             except Exception:
                 pass
-            self._active_marks_thread.quit()
-            self._active_marks_thread.wait(4000)
             self._active_marks_thread = None
-            self._active_marks_worker = None   # release worker ref after thread done
+            self._active_marks_worker = None
 
         self._tabs.clear()
         event.accept()
@@ -476,8 +478,6 @@ class MainWindow(QMainWindow):
         self.watch.viewport().update()
         self.tabs.update()
         self.update()
-
-    updateUI = update_ui
 
     def _open_settings_dialog(self):
         from .settings_dialog import SettingsDialog
@@ -755,8 +755,13 @@ class MainWindow(QMainWindow):
         self.timer_net.timeout.connect(self._kick_netcheck)
         self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
         self.timer_net.start()
-        self._kick_netcheck()
-        self._level1_tick()
+        # Defer the first tick so MainWindow.show() has returned and the
+        # event loop is live before we start a QThread. Running these
+        # synchronously from __init__ can crash on Windows (0xC0000005)
+        # because the child thread's lifetime starts before the parent
+        # QMainWindow is fully installed in the parent/child tree.
+        QTimer.singleShot(250, self._kick_netcheck)
+        QTimer.singleShot(500, self._level1_tick)
 
     def _thread_running(self, thread: Optional[QThread]) -> bool:
         return thread is not None and thread.isRunning()
@@ -771,8 +776,11 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.done.connect(self._on_net_status)
-        worker.done.connect(worker.deleteLater)
         worker.done.connect(thread.quit)
+        # Delete worker + thread only AFTER the thread's event loop has
+        # exited — prevents an access violation when the worker's C++
+        # object is torn down while its thread is still spinning.
+        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._cleanup_netcheck_thread)
         thread.start()
@@ -780,6 +788,8 @@ class MainWindow(QMainWindow):
     def _cleanup_netcheck_thread(self):
         self._netcheck_thread = None
         self._netcheck_worker = None
+        # The corresponding `worker.deleteLater` slot ran already; clear our
+        # Python ref so the wrapper does not outlive the C++ object.
 
     def _on_net_status(self, ok: bool):
         if self._closing:
@@ -827,8 +837,8 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.done.connect(self._on_reconnect_finished)
-        worker.done.connect(worker.deleteLater)
         worker.done.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._cleanup_reconnect_thread)
         thread.start()
@@ -848,10 +858,9 @@ class MainWindow(QMainWindow):
         pending = self._store.pending_sync_count
         if pending == 0:
             self.lbl_status.setText("● Online")
-            self.lbl_status.setStyleSheet("color: #22c55e;")
         else:
-            self.lbl_status.setText(f"● Online — syncing...")
-            self.lbl_status.setStyleSheet("color: #22c55e;")
+            self.lbl_status.setText("● Online — syncing...")
+        self.lbl_status.setStyleSheet("color: #22c55e;")
         # Reload all tabs so they get fresh server data
         for tab in self._portfolio_tabs.values():
             tab.reload_from_store()
@@ -897,10 +906,12 @@ class MainWindow(QMainWindow):
         thread.started.connect(worker.run)
         worker.done.connect(self._on_marks)
         worker.error.connect(self._on_marks_error)
-        worker.done.connect(worker.deleteLater)
-        worker.error.connect(worker.deleteLater)
         worker.done.connect(thread.quit)
         worker.error.connect(thread.quit)
+        # Delete worker + thread only AFTER the thread's event loop has
+        # exited — prevents an access violation when the worker's C++
+        # object is torn down while its thread is still spinning.
+        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._cleanup_marks_thread)
         thread.start()
@@ -908,7 +919,8 @@ class MainWindow(QMainWindow):
     def _cleanup_marks_thread(self):
         self._marks_thread = None
         self._marks_worker = None
-        self._busy_leave()
+        if not self._closing:
+            self._busy_leave()
 
     def _on_marks(self, data: dict):
         if self._closing:
@@ -1090,6 +1102,13 @@ class MainWindow(QMainWindow):
         self._closing = True
         self._save_settings()
 
+        # Stop the theme poll timer first — it can otherwise fire a full
+        # repaint while widgets are being torn down (Windows access violation).
+        try:
+            self.theme.stop_watching()
+        except Exception:
+            pass
+
         for timer_name in ("timer_l1", "timer_net", "_reconnect_timer_obj"):
             timer = getattr(self, timer_name, None)
             if timer is None:
@@ -1106,16 +1125,20 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # Quit and wait — but do NOT disconnect signals: the
+        # `thread.finished -> worker.deleteLater` chain wired in
+        # `_level1_tick` etc. still has to fire so the C++ worker
+        # objects are torn down before the QThread itself disappears.
         for thread_name in ("_marks_thread", "_netcheck_thread", "_reconnect_thread"):
             thread = getattr(self, thread_name, None)
-            if thread is None or not thread.isRunning():
+            if thread is None:
                 continue
             try:
-                thread.disconnect()
+                if thread.isRunning():
+                    thread.quit()
+                    thread.wait(4000)
             except Exception:
                 pass
-            thread.quit()
-            thread.wait(4000)
 
         self._marks_thread = None
         self._marks_worker = None

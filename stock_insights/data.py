@@ -43,11 +43,15 @@ def fetch_marks(tickers: List[str]) -> dict:
             period="1d",
             group_by="ticker",
             progress=False,
-            threads=True,
+            # threads=False: yfinance's internal thread pool nests badly with
+            # QThread on Windows and has been seen to trigger C-level crashes
+            # on Python 3.13+. One HTTP roundtrip per batch is plenty fast.
+            threads=False,
         )
         logger.debug("yfinance batch download succeeded for %d instrument(s)", len(symbols))
     except Exception as exc:
         logger.warning("yfinance batch download failed: %s", exc)
+        df = None
 
     for ticker in symbols:
         price = None

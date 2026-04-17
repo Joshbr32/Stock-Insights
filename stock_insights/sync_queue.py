@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 log = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ def enqueue(username: str, action: str, payload: dict) -> None:
         "action": action,
         "username": username,
         "payload": payload,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     })
     _save_raw(entries)
     log.info("sync_queue: queued %s for %s (queue length: %d)", action, username, len(entries))
@@ -112,7 +112,7 @@ def flush(remote_store, username: Optional[str] = None) -> tuple[int, int]:
     failed = 0
     remaining: List[dict] = []
 
-    for entry in entries:
+    for i, entry in enumerate(entries):
         action  = entry.get("action", "")
         payload = entry.get("payload", {})
         try:
@@ -122,8 +122,7 @@ def flush(remote_store, username: Optional[str] = None) -> tuple[int, int]:
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout):
             # Network gone again — stop and keep everything from here on
-            remaining.append(entry)
-            remaining.extend(entries[entries.index(entry) + 1:])
+            remaining.extend(entries[i:])
             log.warning("sync_queue: network lost during flush, keeping %d entries", len(remaining))
             break
         except APIError as exc:

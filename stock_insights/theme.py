@@ -489,6 +489,16 @@ class ThemeManager(QObject):
             self._timer.timeout.connect(self._maybe_update_theme)
             self._timer.start()
 
+    def stop_watching(self):
+        """Stop the OS-theme poll timer. Call this before the window is torn
+        down so a pending tick cannot repaint a dying widget."""
+        if self._timer is not None:
+            self._timer.stop()
+            try:
+                self._timer.timeout.disconnect()
+            except Exception:
+                pass
+
     def _maybe_update_theme(self):
         if self.current_state() != self._last_state:
             self.apply()
@@ -496,14 +506,12 @@ class ThemeManager(QObject):
     def apply(self):
         if sys.platform.startswith("win") and _windows_high_contrast_enabled():
             self.win.setStyleSheet("")
-            for refresh_name in ("update_ui", "updateUI"):
-                refresh = getattr(self.win, refresh_name, None)
-                if callable(refresh):
-                    try:
-                        refresh()
-                    except Exception:
-                        pass
-                    break
+            refresh = getattr(self.win, "update_ui", None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except Exception:
+                    pass
             return
 
         is_light, r, g, b, msa, tn, fsl = self.current_state()
@@ -539,14 +547,12 @@ class ThemeManager(QObject):
             self.win.style().polish(self.win)
         except Exception:
             pass
-        for refresh_name in ("update_ui", "updateUI"):
-            refresh = getattr(self.win, refresh_name, None)
-            if callable(refresh):
-                try:
-                    refresh()
-                except Exception:
-                    pass
-                break
+        refresh = getattr(self.win, "update_ui", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                pass
         self.win.update()
         self._apply_font()
 
@@ -1013,9 +1019,3 @@ class ThemeManager(QObject):
         #menuStatusCorner {{ background: #ffffff; border: none; }}
         #menuStatusCorner QLabel {{ background: transparent; padding: 0px; border: none; text-decoration: none; }}
         """
-
-    # Aliases for old call sites
-    _dark_palette      = _default_dark_palette
-    _light_palette     = _default_light_palette
-    _dark_stylesheet   = _default_dark_stylesheet
-    _light_stylesheet  = _default_light_stylesheet

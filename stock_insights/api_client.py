@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import threading
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import requests
@@ -158,13 +158,13 @@ class RemoteDataStore(DataStore):
     def _params(self) -> dict:
         return {"for_user_id": self._for_user_id} if self._for_user_id else {}
 
-    def _get(self, path: str) -> any:
+    def _get(self, path: str) -> Any:
         r = requests.get(f"{self._base}{path}", headers=self._headers(), params=self._params(), timeout=10)
         if not r.ok:
             raise APIError(r.text, r.status_code)
         return r.json()
 
-    def _put(self, path: str, data: dict) -> any:
+    def _put(self, path: str, data: dict) -> Any:
         r = requests.put(
             f"{self._base}{path}", json=data,
             headers=self._headers(), params=self._params(), timeout=10
@@ -367,7 +367,7 @@ class LocalDataStore(DataStore):
         # Read all trades, replace the slice for this account, write back
         all_trades = self.get_all_trades()
         kept = [t for t in all_trades if (t.account or "").strip() != account_name]
-        combined = kept + [t for t in trades]
+        combined = kept + list(trades)
         self._settings.setValue(self._scoped_key(self.TRADES_KEY), trades_to_json(combined))
         self._settings.sync()
 
@@ -587,13 +587,6 @@ class FallbackDataStore(DataStore):
 
     # ---- internal ----
 
-    def _is_network_error(self, exc: Exception) -> bool:
-        import requests
-        return isinstance(exc, (
-            requests.exceptions.ConnectionError,
-            requests.exceptions.Timeout,
-        ))
-
     def _handle_write_failure(self, exc: Exception, action: str, payload: dict) -> None:
         """Called when a remote write fails. Save locally and queue for sync."""
         from . import sync_queue
@@ -756,7 +749,6 @@ class FallbackDataStore(DataStore):
         Returns True if the server is now reachable.
         Called periodically by MainWindow's reconnect timer.
         """
-        import requests
         from . import sync_queue
 
         try:

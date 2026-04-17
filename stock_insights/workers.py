@@ -44,17 +44,20 @@ class NetCheckWorker(QObject):
 
     def run(self) -> None:
         ok = False
-        for url in self.TEST_URLS:
-            try:
-                logger.debug("Connectivity probe -> %s", url)
-                urllib.request.urlopen(url, timeout=3)
-                logger.info("Connectivity probe succeeded via %s", url)
-                ok = True
-                break
-            except Exception as exc:
-                logger.debug("Connectivity probe failed via %s: %s", url, exc)
-        if not ok:
-            logger.warning("Connectivity probe failed for all endpoints")
+        try:
+            for url in self.TEST_URLS:
+                try:
+                    logger.debug("Connectivity probe -> %s", url)
+                    urllib.request.urlopen(url, timeout=3)
+                    logger.info("Connectivity probe succeeded via %s", url)
+                    ok = True
+                    break
+                except Exception as exc:
+                    logger.debug("Connectivity probe failed via %s: %s", url, exc)
+            if not ok:
+                logger.warning("Connectivity probe failed for all endpoints")
+        except Exception:  # pragma: no cover - Qt worker boundary
+            logger.exception("NetCheckWorker failed")
         self.done.emit(ok)
 
 

@@ -1,5 +1,6 @@
 __all__ = [
-    "logging_utils", "theme", "data", "workers",
-    "widgets", "cache", "main_window", "settings_dialog",
-    "portfolio", "portfolio_tab",
+    "api_client", "connection_dialog", "data", "logging_utils",
+    "main_window", "portfolio", "portfolio_tab", "settings_dialog",
+    "sync_queue", "theme", "update_checker", "version", "widgets",
+    "workers",
 ]

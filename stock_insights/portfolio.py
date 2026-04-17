@@ -304,19 +304,6 @@ def solve_buy_mark_for_target_avg(
 # ---------- Calculations ----------
 
 
-def sort_trades(trades: Iterable[Trade]) -> List[Trade]:
-    def sort_key(item: tuple[int, Trade]):
-        original_index, trade = item
-        is_open = not trade.is_closed
-        close_key = trade.close_date if trade.close_date is not None else date.max
-        open_key = trade.open_date if trade.open_date is not None else date.max
-        symbol = trade.normalized_instrument()
-        return (is_open, close_key, symbol, open_key, original_index)
-
-    indexed = list(enumerate(trades))
-    return [trade for _, trade in sorted(indexed, key=sort_key)]
-
-
 def compute_trade_rows(trades: Iterable[Trade]) -> List[TradeRow]:
     rows: List[TradeRow] = []
     for idx, trade in enumerate(list(trades)):
@@ -503,14 +490,9 @@ def compute_goal_progress(
     elapsed = business_days_elapsed_in_year(today)
     remaining_days = business_days_remaining_in_year(today)
 
-    monthly_target = (
-        (remaining_profit / _current_months_remaining(today))
-        if _current_months_remaining(today) > 0
-        else None
-    )
-    weekly_target = (
-        (remaining_profit / _weeks_remaining(today)) if _weeks_remaining(today) > 0 else None
-    )
+    # _current_months_remaining and _weeks_remaining return at least 1 by construction.
+    monthly_target = remaining_profit / _current_months_remaining(today)
+    weekly_target = remaining_profit / _weeks_remaining(today)
     daily_target = (remaining_profit / remaining_days) if remaining_days > 0 else None
     avg_daily_profit = (realized_profit / elapsed) if elapsed > 0 else None
 

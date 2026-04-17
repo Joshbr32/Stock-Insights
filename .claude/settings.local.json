@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m compileall -q main.py stock_insights/)",
+      "Bash(python -c \"import ast, pathlib; [ast.parse\\(p.read_text\\(encoding='utf-8'\\)\\) for p in [pathlib.Path\\('main.py'\\)] + list\\(pathlib.Path\\('stock_insights'\\).glob\\('*.py'\\)\\)]; print\\('All 16 modules parse cleanly'\\)\")",
+      "Bash(python -c \"import ast, pathlib; [ast.parse\\(p.read_text\\(encoding='utf-8'\\)\\) for p in [pathlib.Path\\('main.py'\\)] + list\\(pathlib.Path\\('stock_insights'\\).glob\\('*.py'\\)\\)]; print\\('All modules parse cleanly'\\)\")",
+      "Bash(python -c \"import importlib, sys; sys.path.insert\\(0, '.'\\); [importlib.import_module\\(m\\) for m in ['stock_insights.api_client', 'stock_insights.connection_dialog', 'stock_insights.data', 'stock_insights.logging_utils', 'stock_insights.main_window', 'stock_insights.portfolio', 'stock_insights.portfolio_tab', 'stock_insights.settings_dialog', 'stock_insights.sync_queue', 'stock_insights.theme', 'stock_insights.update_checker', 'stock_insights.version', 'stock_insights.widgets', 'stock_insights.workers']]; print\\('All modules import OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"import importlib, sys; sys.path.insert\\(0, '.'\\); [importlib.import_module\\(m\\) for m in ['stock_insights.api_client', 'stock_insights.connection_dialog', 'stock_insights.data', 'stock_insights.logging_utils', 'stock_insights.main_window', 'stock_insights.portfolio', 'stock_insights.portfolio_tab', 'stock_insights.settings_dialog', 'stock_insights.sync_queue', 'stock_insights.theme', 'stock_insights.update_checker', 'stock_insights.version', 'stock_insights.widgets', 'stock_insights.workers']]; print\\('All 14 stock_insights modules import OK'\\)\")"
+    ]
+  }
+}

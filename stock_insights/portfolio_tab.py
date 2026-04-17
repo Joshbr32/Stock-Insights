@@ -6,6 +6,7 @@ from functools import cmp_to_key
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QDate, QPoint, QSettings, Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -1092,9 +1093,6 @@ class PortfolioTab(QWidget):
         self.refresh_view()
         self.update()
 
-    # Backward-compatible alias if callers prefer camelCase naming.
-    updateUI = update_ui
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "trade_table"):
@@ -1103,9 +1101,6 @@ class PortfolioTab(QWidget):
     def reload_from_store(self):
         """Re-read all data from the store and refresh. Called when siblings change."""
         self._load_state()
-
-    # Keep old name as alias for backward compat with MainWindow signal wiring
-    reload_from_settings = reload_from_store
 
     # ------------------------------------------------------------------
     # UI helpers (device-local settings)
@@ -1278,7 +1273,6 @@ class PortfolioTab(QWidget):
         try:
             self._store.set_goal_group(chosen, shared_goal_new, individual_goals, all_presets)
         except Exception as exc:
-            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Save Failed", str(exc))
             return
 
@@ -1509,7 +1503,6 @@ class PortfolioTab(QWidget):
                 self._store.set_goal_target(self._account_name, float(value))
                 self.refresh_view()
         except Exception as exc:
-            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Save Failed", str(exc))
 
     def _apply_preset_button_style(self, current_goal: Optional[float] = None):
@@ -1569,7 +1562,8 @@ class PortfolioTab(QWidget):
             all_trades = []
 
         # Assign account field to any trade missing it (migration from pre-DB data)
-        default_account = self._account_names()[0] if self._account_names() else self._account_name
+        account_names = self._account_names()
+        default_account = account_names[0] if account_names else self._account_name
         migrated = False
         for trade in all_trades:
             if not (trade.account or "").strip():
@@ -1600,7 +1594,6 @@ class PortfolioTab(QWidget):
         try:
             self._store.save_account_trades(self._account_name, visible)
         except Exception as exc:
-            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Save Failed", str(exc))
             return
         self.tradesChanged.emit()
@@ -2072,13 +2065,12 @@ class PortfolioTab(QWidget):
                 "avg_daily_return": self._money_or_dash(row.avg_daily_return),
             }
             # Row background based on status — uses theme tint colors
-            from PySide6.QtGui import QColor, QBrush
             _theme = self._theme_manager()
             if row.status == "WAITING":
-                _r,_g,_b,_a = _theme.waiting_row_tint() if _theme else (120, 90, 0, 80)
+                _r, _g, _b, _a = _theme.waiting_row_tint() if _theme else (120, 90, 0, 80)
                 row_bg = QBrush(QColor(_r, _g, _b, _a))
             elif row.status in ("SHORT", "COVERED"):
-                _r,_g,_b,_a = _theme.short_row_tint() if _theme else (30, 80, 140, 70)
+                _r, _g, _b, _a = _theme.short_row_tint() if _theme else (30, 80, 140, 70)
                 row_bg = QBrush(QColor(_r, _g, _b, _a))
             else:
                 row_bg = None
@@ -2089,9 +2081,7 @@ class PortfolioTab(QWidget):
                 if key == "instrument":
                     f = item.font(); f.setBold(True); item.setFont(f)
                 if key == "trade_profit" and row.trade_profit is not None:
-                    _theme = self._theme_manager()
                     if _theme is not None:
-                        from PySide6.QtGui import QColor
                         item.setForeground(QColor(_theme.profit_color() if row.trade_profit > 0
                                                   else _theme.loss_color()))
                     else:
@@ -2116,7 +2106,9 @@ class PortfolioTab(QWidget):
         self.holdings_table.setRowCount(len(rows))
         self._holding_row_instruments = [row.instrument for row in rows]
         self._holding_row_is_short = [row.qty < 0 for row in rows]
-        from PySide6.QtGui import QColor, QBrush
+        _theme = self._theme_manager()
+        _r, _g, _b, _a = _theme.short_row_tint() if _theme else (30, 80, 140, 70)
+        short_brush = QBrush(QColor(_r, _g, _b, _a))
         for r, row in enumerate(rows):
             is_short = self._holding_row_is_short[r]
             # Show absolute qty with a SHORT label for short positions
@@ -2132,9 +2124,7 @@ class PortfolioTab(QWidget):
                 if c == 0:
                     f = item.font(); f.setBold(True); item.setFont(f)
                 if is_short:
-                    _theme = self._theme_manager()
-                    _r,_g,_b,_a = _theme.short_row_tint() if _theme else (30, 80, 140, 70)
-                    item.setBackground(QBrush(QColor(_r, _g, _b, _a)))
+                    item.setBackground(short_brush)
                 self.holdings_table.setItem(r, c, item)
 
     @staticmethod
