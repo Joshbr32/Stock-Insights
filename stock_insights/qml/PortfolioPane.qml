@@ -59,7 +59,7 @@ ColumnLayout {
                         // color — same accent as the bottom stripe.
                         color: tab.active ? app.theme.primary
                              : (tab.hovered ? app.theme.text : app.theme.textMuted)
-                        font.pointSize: 10
+                        font.pointSize: 10 * app.theme.fontScale
                         font.weight: tab.active ? Font.DemiBold : Font.Normal
                     }
 

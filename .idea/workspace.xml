@@ -4,19 +4,26 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="UI rework">
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="UI rework v2">
       <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/_qml_fit_1200.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/_qml_fit_1500.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/_qml_fit_900.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/qml/AnalyticsPanel.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/AnalyticsPanel.qml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/qml/GoalDashboard.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/GoalDashboard.qml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/qml/HoldingsTable.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/HoldingsTable.qml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/qml/Metric.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/Metric.qml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/qml/Pill.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/Pill.qml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/qml/PortfolioPane.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/PortfolioPane.qml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/qml/PortfolioView.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/PortfolioView.qml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/qml/SectionTitle.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/SectionTitle.qml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/qml/ToolButton2.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/ToolButton2.qml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/qml/TradesTable.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/TradesTable.qml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/qml/WatchlistPane.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/WatchlistPane.qml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/qml/qmldir" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/qmldir" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/qml_bridge.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml_bridge.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/settings_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/settings_dialog.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/theme.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/theme.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -52,6 +59,9 @@
     &quot;accountId&quot;: &quot;75d25b20-f277-4acc-b4b0-53829651bcb6&quot;
   }
 }</component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
+  </component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 8
 }</component>
@@ -387,7 +397,15 @@
       <option name="project" value="LOCAL" />
       <updated>1776519583147</updated>
     </task>
-    <option name="localTasksCounter" value="23" />
+    <task id="LOCAL-00023" summary="UI rework v2">
+      <option name="closed" value="true" />
+      <created>1776521314202</created>
+      <option name="number" value="00023" />
+      <option name="presentableId" value="LOCAL-00023" />
+      <option name="project" value="LOCAL" />
+      <updated>1776521314202</updated>
+    </task>
+    <option name="localTasksCounter" value="24" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -426,7 +444,8 @@
     <MESSAGE value="optimized import" />
     <MESSAGE value="claude optimizations" />
     <MESSAGE value="UI rework" />
-    <option name="LAST_COMMIT_MESSAGE" value="UI rework" />
+    <MESSAGE value="UI rework v2" />
+    <option name="LAST_COMMIT_MESSAGE" value="UI rework v2" />
     <option name="OPTIMIZE_IMPORTS_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REFORMAT_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REARRANGE_BEFORE_PROJECT_COMMIT" value="true" />

@@ -55,9 +55,9 @@ Card {
                 border.width: 1
             }
         }
-        ComboBox {
+        ThemedComboBox {
             id: statusCombo
-            Layout.preferredWidth: 130
+            Layout.preferredWidth: 150
             model: ["All statuses", "WAITING", "OPEN", "SHORT", "CLOSED", "COVERED"]
             currentIndex: {
                 if (!account) return 0
@@ -100,7 +100,7 @@ Card {
                     Layout.minimumWidth: 30
                     text: modelData.label
                     color: app.theme.textMuted
-                    font.pointSize: 9
+                    font.pointSize: 9 * app.theme.fontScale
                     font.weight: Font.DemiBold
                     horizontalAlignment: Text.AlignLeft
                     verticalAlignment: Text.AlignVCenter
@@ -118,7 +118,9 @@ Card {
     Rectangle {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        Layout.minimumHeight: 80
+        // 3 trade rows × 32 px + a couple px of breathing room ≈ 100.
+        // Below this the body clips partial rows — scrollbar reveals the rest.
+        Layout.minimumHeight: 100
         color: "transparent"
         clip: true
 
@@ -127,22 +129,45 @@ Card {
             anchors.fill: parent
             spacing: 1
             boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: ThemedScrollBar { }
             model: account ? account.trades : null
 
             delegate: Rectangle {
                 id: row
                 width: list.width                       // full width — alt-row backgrounds fill the row
                 height: 32
-                color: index % 2 === 0 ? "transparent" : Qt.lighter(app.theme.cardAlt, 1.02)
+                radius: 4
 
+                // Shared row-state model (see WatchlistPane / HoldingsTable).
+                //   selected → filled with app.theme.primary
+                //   hovered  → 1.5 px primary outline around the normal base
+                //   odd row  → subtle zebra stripe
+                //   even row → transparent (card bg shows through)
+                property bool selected: list.currentIndex === index
+                property bool hovered:  rowMouse.containsMouse
+
+                color: row.selected
+                    ? app.theme.primary
+                    : (index % 2 === 0 ? "transparent"
+                                       : Qt.lighter(app.theme.cardAlt, 1.02))
+                border.color: row.hovered && !row.selected
+                    ? app.theme.primary : "transparent"
+                border.width: 1.5
+
+                Behavior on color        { ColorAnimation { duration: 100 } }
+                Behavior on border.color { ColorAnimation { duration: 100 } }
+
+                // Status tints are hidden when the row is selected — on a
+                // primary-filled row they'd conflict with the selection
+                // color; the Status column text + color of the fill still
+                // convey "this row is selected and waiting/short".
                 Rectangle {
-                    visible: model.status === "WAITING"
+                    visible: model.status === "WAITING" && !row.selected
                     anchors.fill: parent
                     color: "#a0700a"; opacity: 0.16
                 }
                 Rectangle {
-                    visible: model.status === "SHORT" || model.status === "COVERED"
+                    visible: (model.status === "SHORT" || model.status === "COVERED") && !row.selected
                     anchors.fill: parent
                     color: "#1e3a5f"; opacity: 0.18
                 }
@@ -157,8 +182,10 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1500; Layout.minimumWidth: 30
                         text: model.instrument
-                        color: app.theme.text
-                        font.pointSize: 10; font.weight: Font.DemiBold
+                        // When the row is filled with `primary`, switch
+                        // text to textOnColor so it stays readable.
+                        color: row.selected ? app.theme.textOnColor : app.theme.text
+                        font.pointSize: 10 * app.theme.fontScale; font.weight: Font.DemiBold
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -169,7 +196,8 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 700; Layout.minimumWidth: 30
                         text: model.shareCount
-                        color: app.theme.text; font.pointSize: 10
+                        color: row.selected ? app.theme.textOnColor : app.theme.text
+                        font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -180,7 +208,8 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 900; Layout.minimumWidth: 30
                         text: model.status
-                        color: app.theme.textMuted; font.pointSize: 9
+                        color: row.selected ? app.theme.textOnColor : app.theme.textMuted
+                        font.pointSize: 9 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -191,7 +220,8 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1000; Layout.minimumWidth: 30
                         text: model.buyPrice
-                        color: app.theme.text; font.pointSize: 10
+                        color: row.selected ? app.theme.textOnColor : app.theme.text
+                        font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -202,21 +232,24 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1000; Layout.minimumWidth: 30
                         text: model.sellPrice
-                        color: app.theme.text; font.pointSize: 10
+                        color: row.selected ? app.theme.textOnColor : app.theme.text
+                        font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
                         elide: Label.ElideRight
                     }
-                    // Col 5 — Profit (sign-colored)
+                    // Col 5 — Profit (sign-colored, with selected override)
                     Label {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1200; Layout.minimumWidth: 30
                         text: model.tradeProfit
-                        color: model.profitSign > 0 ? app.theme.good
-                             : model.profitSign < 0 ? app.theme.bad
-                             : app.theme.text
-                        font.pointSize: 10; font.weight: Font.DemiBold
+                        color: row.selected
+                            ? app.theme.textOnColor
+                            : (model.profitSign > 0 ? app.theme.good
+                               : model.profitSign < 0 ? app.theme.bad
+                               : app.theme.text)
+                        font.pointSize: 10 * app.theme.fontScale; font.weight: Font.DemiBold
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -227,7 +260,8 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1000; Layout.minimumWidth: 30
                         text: model.openDate
-                        color: app.theme.text; font.pointSize: 10
+                        color: row.selected ? app.theme.textOnColor : app.theme.text
+                        font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -238,7 +272,8 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1000; Layout.minimumWidth: 30
                         text: model.closeDate
-                        color: app.theme.text; font.pointSize: 10
+                        color: row.selected ? app.theme.textOnColor : app.theme.text
+                        font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -249,7 +284,8 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 600; Layout.minimumWidth: 30
                         text: model.daysToClose
-                        color: app.theme.textMuted; font.pointSize: 10
+                        color: row.selected ? app.theme.textOnColor : app.theme.textMuted
+                        font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -258,7 +294,10 @@ Card {
                 }
 
                 MouseArea {
+                    id: rowMouse
                     anchors.fill: parent
+                    hoverEnabled: true              // drives the row's hover-highlight color
+                    cursorShape: Qt.PointingHandCursor
                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                     onDoubleClicked: app.editTrade(model.sourceIndex)
                     onClicked: function (mouse) {
@@ -279,7 +318,7 @@ Card {
                 ? "No trades match the current filter"
                 : "No trades yet — click + Trade to add one"
             color: app.theme.textMuted
-            font.pointSize: 10
+            font.pointSize: 10 * app.theme.fontScale
         }
     }
 

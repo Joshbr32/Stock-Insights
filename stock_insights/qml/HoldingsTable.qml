@@ -53,7 +53,7 @@ Card {
                     Layout.minimumWidth: 30
                     text: modelData.label
                     color: app.theme.textMuted
-                    font.pointSize: 9
+                    font.pointSize: 9 * app.theme.fontScale
                     font.weight: Font.DemiBold
                     horizontalAlignment: Text.AlignLeft
                     verticalAlignment: Text.AlignVCenter
@@ -81,13 +81,30 @@ Card {
             model: account ? account.holdings : null
             spacing: 1
             boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: ThemedScrollBar { }
 
             delegate: Rectangle {
                 id: row
                 width: list.width                                  // full width — alt-row backgrounds extend to right edge
                 height: 32
-                color: index % 2 === 0 ? "transparent" : Qt.lighter(app.theme.cardAlt, 1.02)
+                radius: 4
+
+                // Shared row-state model (see WatchlistPane / TradesTable):
+                //   hovered → 1.5 px primary-colored outline around the
+                //              normal base (no fill change — keeps sign-colored
+                //              P/L text legible against the stripe)
+                //   odd row → subtle zebra stripe
+                //   even row → transparent (card bg shows through)
+                // Holdings doesn't expose a selection state (right-click
+                // opens the context menu directly), so there's no "selected"
+                // branch in the color binding.
+                color: index % 2 === 0 ? "transparent"
+                                       : Qt.lighter(app.theme.cardAlt, 1.02)
+                border.color: rowMouse.containsMouse ? app.theme.primary : "transparent"
+                border.width: 1.5
+
+                Behavior on color        { ColorAnimation { duration: 100 } }
+                Behavior on border.color { ColorAnimation { duration: 100 } }
 
                 Rectangle {                                        // short-position tint overlay
                     visible: model.isShort
@@ -107,7 +124,7 @@ Card {
                         Layout.preferredWidth: 1600; Layout.minimumWidth: 30
                         text: model.instrument
                         color: app.theme.text
-                        font.pointSize: 10; font.weight: Font.DemiBold
+                        font.pointSize: 10 * app.theme.fontScale; font.weight: Font.DemiBold
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -118,7 +135,7 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1000; Layout.minimumWidth: 30
                         text: model.qtyText
-                        color: app.theme.text; font.pointSize: 10
+                        color: app.theme.text; font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -129,7 +146,7 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1000; Layout.minimumWidth: 30
                         text: model.avgCost
-                        color: app.theme.text; font.pointSize: 10
+                        color: app.theme.text; font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -140,7 +157,7 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1000; Layout.minimumWidth: 30
                         text: model.mark
-                        color: app.theme.text; font.pointSize: 10
+                        color: app.theme.text; font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -154,7 +171,7 @@ Card {
                         color: model.unrealizedSign > 0 ? app.theme.good
                              : model.unrealizedSign < 0 ? app.theme.bad
                              : app.theme.text
-                        font.pointSize: 10; font.weight: Font.DemiBold
+                        font.pointSize: 10 * app.theme.fontScale; font.weight: Font.DemiBold
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -165,7 +182,7 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 1400; Layout.minimumWidth: 30
                         text: model.marketValue
-                        color: app.theme.text; font.pointSize: 10
+                        color: app.theme.text; font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -176,7 +193,7 @@ Card {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.preferredWidth: 700; Layout.minimumWidth: 30
                         text: model.weight
-                        color: app.theme.textMuted; font.pointSize: 10
+                        color: app.theme.textMuted; font.pointSize: 10 * app.theme.fontScale
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 8; rightPadding: 8
@@ -185,7 +202,9 @@ Card {
                 }
 
                 MouseArea {
+                    id: rowMouse
                     anchors.fill: parent
+                    hoverEnabled: true                          // drives the row's hover-highlight color
                     acceptedButtons: Qt.RightButton
                     onClicked: app.showHoldingsMenu(model.instrument)
                 }
@@ -198,7 +217,7 @@ Card {
             visible: account && account.loaded && account.holdings.rowCount() === 0
             text: "No open positions"
             color: app.theme.textMuted
-            font.pointSize: 10
+            font.pointSize: 10 * app.theme.fontScale
         }
     }
 }

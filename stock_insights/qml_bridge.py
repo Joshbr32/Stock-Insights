@@ -42,6 +42,7 @@ from .portfolio import (
     compute_trade_analytics,
     compute_trade_rows,
 )
+from .theme import FONT_SIZES
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +708,19 @@ class ThemeController(QObject):
     @Property(str, notify=themeChanged)
     def textOnColor(self) -> str:
         return self._color("text_on_color")
+
+    # ── Font-size scale ────────────────────────────────────────────────────
+    # All QML Labels multiply their "designed" point size by this scale so
+    # the Settings > Appearance > Font Size dropdown actually affects the
+    # QML scene (QApplication.setFont doesn't propagate into QML Labels
+    # that use hard-coded pointSize).
+    @Property(float, notify=themeChanged)
+    def fontScale(self) -> float:
+        try:
+            pt = FONT_SIZES.get(self._theme.font_size_label, 11)
+        except Exception:
+            pt = 11
+        return float(pt) / 11.0
 
 
 # ---------------------------------------------------------------------------

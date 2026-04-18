@@ -456,13 +456,48 @@ class MainWindow(QMainWindow):
         # Apply theme + start watching for OS theme changes.
         self.theme.apply()
         self.theme.themeApplied.connect(self._app.theme.refresh)
+        # When the user changes font size, the QML widgets grow proportionally
+        # (via app.theme.fontScale); we also bump the window's minimum size
+        # so smaller widgets never get cropped when the user drags the edge.
+        self.theme.themeApplied.connect(self._apply_minimum_window_size)
         self.theme.start_watching()
+        self._apply_minimum_window_size()
 
         self._load_watchlist()
         self._init_timers()
         self._init_reconnect_timer()
 
         serial_debug("MainWindow init done")
+
+    # ------------------------------------------------------------------
+    # Minimum window size (scales with font size)
+    # ------------------------------------------------------------------
+
+    # Base numbers are tuned so that at Normal font (11 pt → fontScale 1.0):
+    #   • Watchlist shows section title + ≥ 3 rows + add/remove buttons.
+    #   • Goal Dashboard + Analytics Panel both fit their hero + metrics.
+    #   • Holdings and Trades each show ≥ 3 body rows below their header.
+    # Other font sizes scale linearly (Large × 1.18, X-Large × 1.45, etc.).
+    _BASE_MIN_WIDTH = 900
+    _BASE_MIN_HEIGHT = 860
+
+    def _current_font_scale(self) -> float:
+        try:
+            from .theme import FONT_SIZES as _FS
+            return float(_FS.get(self.theme.font_size_label, 11)) / 11.0
+        except Exception:
+            return 1.0
+
+    def _apply_minimum_window_size(self) -> None:
+        scale = self._current_font_scale()
+        w = int(self._BASE_MIN_WIDTH * scale)
+        h = int(self._BASE_MIN_HEIGHT * scale)
+        self.setMinimumSize(w, h)
+        # If the window is already smaller than the new minimum (e.g. user
+        # just picked X-Large font), enlarge it so all content fits.
+        cur = self.size()
+        if cur.width() < w or cur.height() < h:
+            self.resize(max(cur.width(), w), max(cur.height(), h))
 
     # ------------------------------------------------------------------
     # Helpers

@@ -33,19 +33,38 @@ Card {
             // sits on top of the row text.
             anchors.rightMargin: 10
             model: app.watchlist
-            spacing: 2
+            spacing: 1
             boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: ThemedScrollBar { }
 
             delegate: Rectangle {
+                id: row
                 width: list.width
-                height: 34
-                radius: 6
-                color: list.currentIndex === index
-                    ? app.theme.cardAlt
-                    : (mouse.containsMouse ? Qt.lighter(app.theme.cardAlt, 1.06) : "transparent")
+                height: 32
+                radius: 4
 
-                Behavior on color { ColorAnimation { duration: 100 } }
+                // Shared row-state model (see HoldingsTable / TradesTable):
+                //   selected → filled with app.theme.primary  (same hue as
+                //              the `+ Add` / `+ Trade` buttons, so "selected"
+                //              and "primary action" share a visual vocabulary)
+                //   hovered  → 1.5 px primary-colored outline around the
+                //              normal base, providing strong feedback without
+                //              competing with the selected fill
+                //   odd row  → subtle zebra stripe
+                //   even row → transparent (card bg shows through)
+                property bool selected: list.currentIndex === index
+                property bool hovered:  mouse.containsMouse
+
+                color: row.selected
+                    ? app.theme.primary
+                    : (index % 2 === 0 ? "transparent"
+                                       : Qt.lighter(app.theme.cardAlt, 1.02))
+                border.color: row.hovered && !row.selected
+                    ? app.theme.primary : "transparent"
+                border.width: 1.5
+
+                Behavior on color        { ColorAnimation { duration: 100 } }
+                Behavior on border.color { ColorAnimation { duration: 100 } }
 
                 RowLayout {
                     anchors.fill: parent
@@ -55,8 +74,10 @@ Card {
 
                     Label {
                         text: model.symbol
-                        color: app.theme.text
-                        font.pointSize: 10
+                        // When the row is filled with the primary accent,
+                        // switch text to textOnColor so it stays readable.
+                        color: row.selected ? app.theme.textOnColor : app.theme.text
+                        font.pointSize: 10 * app.theme.fontScale
                         font.weight: Font.DemiBold
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -66,10 +87,11 @@ Card {
                     }
                     Label {
                         text: model.priceText
-                        color: model.price === undefined || model.price === null
-                            ? app.theme.textMuted
-                            : app.theme.text
-                        font.pointSize: 10
+                        color: row.selected
+                            ? app.theme.textOnColor
+                            : (model.price === undefined || model.price === null
+                                ? app.theme.textMuted : app.theme.text)
+                        font.pointSize: 10 * app.theme.fontScale
                         Layout.fillHeight: true
                         horizontalAlignment: Text.AlignLeft
                         verticalAlignment: Text.AlignVCenter

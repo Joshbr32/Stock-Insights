@@ -10,7 +10,7 @@ Button {
     rightPadding: 14
     topPadding: 8
     bottomPadding: 8
-    font.pointSize: 9
+    font.pointSize: 9 * app.theme.fontScale
     font.weight: Font.DemiBold
 
     contentItem: Label {

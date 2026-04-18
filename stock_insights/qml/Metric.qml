@@ -15,7 +15,7 @@ RowLayout {
     Label {
         text: root.label
         color: app.theme.textMuted
-        font.pointSize: 9
+        font.pointSize: 9 * app.theme.fontScale
         Layout.fillWidth: true
         elide: Label.ElideRight
     }
@@ -25,7 +25,7 @@ RowLayout {
         color: root.sign > 0 ? app.theme.good
              : root.sign < 0 ? app.theme.bad
              : app.theme.text
-        font.pointSize: 10
+        font.pointSize: 10 * app.theme.fontScale
         font.weight: Font.DemiBold
         horizontalAlignment: Text.AlignRight
     }

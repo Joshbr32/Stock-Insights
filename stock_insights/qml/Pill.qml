@@ -26,7 +26,7 @@ Rectangle {
         anchors.centerIn: parent
         text: root.label
         color: root.selected ? app.theme.textOnColor : app.theme.text
-        font.pointSize: 9
+        font.pointSize: 9 * app.theme.fontScale
         font.weight: Font.DemiBold
     }
 

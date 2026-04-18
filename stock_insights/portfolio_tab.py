@@ -384,11 +384,14 @@ class TradeEditDialog(QDialog):
         self.setWindowTitle(title)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
-        # ---- Always-visible core fields ----
-        form = QFormLayout()
+        # ── Section: Trade Details (always visible) ─────────────────────
+        details_grp = QGroupBox("Trade Details")
+        details_grp.setStyleSheet(GROUP_STYLE)
+        form = QFormLayout(details_grp)
+        form.setContentsMargins(14, 14, 14, 14)
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
@@ -437,12 +440,13 @@ class TradeEditDialog(QDialog):
         self.buy_price_lbl = QLabel("Buy Price")
         form.addRow(self.buy_price_lbl, self.buy_price_spin)
         form.addRow("Notes", self.notes_edit)
-        root.addLayout(form)
+        root.addWidget(details_grp)
 
-        # ---- Open section: shown when Confirmed (hidden when Pending) ----
-        self._open_section = QWidget()
+        # ── Section: Open Date + Status (shown when Confirmed) ──────────
+        self._open_section = QGroupBox("Order Status")
+        self._open_section.setStyleSheet(GROUP_STYLE)
         open_form = QFormLayout(self._open_section)
-        open_form.setContentsMargins(0, 4, 0, 0)
+        open_form.setContentsMargins(14, 14, 14, 14)
         open_form.setSpacing(10)
         open_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         open_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
@@ -458,10 +462,11 @@ class TradeEditDialog(QDialog):
         open_form.addRow("Status", self.status_combo)
         root.addWidget(self._open_section)
 
-        # ---- Close section: shown only when Status = CLOSED ----
-        self._close_section = QWidget()
+        # ── Section: Close Details (shown when Status = CLOSED) ─────────
+        self._close_section = QGroupBox("Close Details")
+        self._close_section.setStyleSheet(GROUP_STYLE)
         close_form = QFormLayout(self._close_section)
-        close_form.setContentsMargins(0, 4, 0, 0)
+        close_form.setContentsMargins(14, 14, 14, 14)
         close_form.setSpacing(10)
         close_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         close_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
@@ -482,6 +487,7 @@ class TradeEditDialog(QDialog):
         close_form.addRow("Close date", self.close_date_edit)
 
         self.preview_label = QLabel("Trade Profit: —")
+        self.preview_label.setStyleSheet("font-weight: 600;")
         close_form.addRow(self.preview_label)
         root.addWidget(self._close_section)
 

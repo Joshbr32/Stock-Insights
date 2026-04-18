@@ -18,34 +18,46 @@ ColumnLayout {
         Layout.fillWidth: true
         spacing: 12
 
+        // Layout.alignment: Qt.AlignTop is intentionally absent — without
+        // an alignment hint, RowLayout stretches both cards to the tallest
+        // implicit height (see RowLayout docs: "By default, items have
+        // their preferred size in the direction of the layout, but
+        // stretch perpendicular to it"). This keeps the two cards
+        // visually balanced at equal heights across every window size.
         GoalDashboard {
             account: root.account
             Layout.fillWidth: true
-            // Goal:Analytics ≈ 1.3:1 — Analytics is denser (13 metrics
-            // vs. Goal's 10) so it gets a bigger share than the visual
-            // would suggest. Lower minimum widths than the cards' "ideal"
-            // because at narrow window sizes the cards must shrink (or
-            // they'd push the whole right pane past the window edge).
+            Layout.fillHeight: true
             Layout.preferredWidth: 1300
             Layout.minimumWidth: 240
-            Layout.alignment: Qt.AlignTop
+            // Split hero (44) + progress bar (6) + pills (30) + separator
+            // + 2×5 metrics grid (~100) + section title + spacings +
+            // padding = ~260. Below this the content overlaps/clips.
+            Layout.minimumHeight: 260
         }
 
         AnalyticsPanel {
             account: root.account
             Layout.fillWidth: true
+            Layout.fillHeight: true
             Layout.preferredWidth: 1000
             Layout.minimumWidth: 220
-            Layout.alignment: Qt.AlignTop
+            // Section title + separator + 2×6 metrics (~120) + Est. Yearly
+            // featured row (52) + spacings + padding ≈ 240.
+            Layout.minimumHeight: 240
         }
     }
 
+    // Holdings / Trades min heights: enough vertical space for the card
+    // chrome (section title, header, separator, action row, padding) PLUS
+    // at least 3 visible rows (≈ 96 px) so the user always sees real data
+    // at the minimum window size — per the "3 entries minimum" spec.
     HoldingsTable {
         account: root.account
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.preferredHeight: 220
-        Layout.minimumHeight: 120
+        Layout.minimumHeight: 200
     }
 
     TradesTable {
@@ -53,6 +65,6 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.preferredHeight: 320
-        Layout.minimumHeight: 160
+        Layout.minimumHeight: 260
     }
 }

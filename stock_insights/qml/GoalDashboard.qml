@@ -35,13 +35,13 @@ Card {
             Label {
                 text: "Annual Target"
                 color: app.theme.textMuted
-                font.pointSize: 9
+                font.pointSize: 9 * app.theme.fontScale
                 font.weight: Font.DemiBold
             }
             Label {
                 text: account && account.goal ? (account.goal.target || "—") : "—"
                 color: app.theme.primary
-                font.pointSize: 18
+                font.pointSize: 18 * app.theme.fontScale
                 font.weight: Font.Bold
                 elide: Label.ElideRight
                 Layout.fillWidth: true
@@ -63,7 +63,7 @@ Card {
             Label {
                 text: "Realized Profit"
                 color: app.theme.textMuted
-                font.pointSize: 9
+                font.pointSize: 9 * app.theme.fontScale
                 font.weight: Font.DemiBold
                 horizontalAlignment: Text.AlignRight
                 Layout.fillWidth: true
@@ -71,7 +71,7 @@ Card {
             Label {
                 text: account && account.goal ? (account.goal.realized || "—") : "—"
                 color: realizedColor()
-                font.pointSize: 18
+                font.pointSize: 18 * app.theme.fontScale
                 font.weight: Font.Bold
                 horizontalAlignment: Text.AlignRight
                 elide: Label.ElideRight
@@ -108,7 +108,7 @@ Card {
         Label {
             text: (account ? account.goalProgressPct.toFixed(1) : "0") + "%"
             color: app.theme.textMuted
-            font.pointSize: 9
+            font.pointSize: 9 * app.theme.fontScale
             font.weight: Font.DemiBold
             Layout.minimumWidth: 44
             horizontalAlignment: Text.AlignRight
@@ -124,7 +124,7 @@ Card {
         Label {
             text: "Preset Targets"
             color: app.theme.textMuted
-            font.pointSize: 9
+            font.pointSize: 9 * app.theme.fontScale
         }
         Repeater {
             model: account ? account.presets : []

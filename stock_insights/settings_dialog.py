@@ -1,85 +1,57 @@
+"""Application settings dialog. Uses the same QGroupBox-based aesthetic
+as MarkDownDialog / DoubleDownDialog / TradeEditDialog so the modal
+UI feels consistent throughout the app."""
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFormLayout,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
+    QGroupBox,
     QSpinBox,
-    QToolButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from .theme import FONT_SIZE_LABELS, THEME_NAMES
 
-
-class CollapsibleGroup(QWidget):
-    def __init__(self, title: str, collapsed: bool = False, parent=None):
-        super().__init__(parent)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(4)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-
-        self.btn = QToolButton(self)
-        self.btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.btn.setArrowType(Qt.ArrowType.RightArrow if collapsed else Qt.ArrowType.DownArrow)
-        self.btn.setText(title)
-        self.btn.setCheckable(True)
-        self.btn.setChecked(not collapsed)
-        self.btn.clicked.connect(self._toggle)
-
-        header.addWidget(self.btn)
-        header.addStretch(1)
-
-        self.content = QFrame(self)
-        self.content.setFrameShape(QFrame.Shape.NoFrame)
-        self.content.setVisible(not collapsed)
-        self._content_layout = QVBoxLayout(self.content)
-        self._content_layout.setContentsMargins(12, 6, 0, 6)
-        self._content_layout.setSpacing(8)
-
-        root.addLayout(header)
-        root.addWidget(self.content)
-
-    def _toggle(self, checked: bool):
-        self.btn.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
-        self.content.setVisible(checked)
-
-    def setContentLayout(self, layout):
-        QWidget().setLayout(self._content_layout)
-        self._content_layout = layout
-        self.content.setLayout(layout)
+# Keep in sync with the GROUP_STYLE used in portfolio_tab.py so every
+# dialog's grouped sections look identical.
+GROUP_STYLE = (
+    "QGroupBox { margin-top: 8px; }"
+    "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 2px 8px; }"
+)
 
 
 class SettingsDialog(QDialog):
     """Application settings — Data Refresh, Trade Defaults, Appearance.
 
-    Goal targets have been moved to View > Goal Dashboard Accounts.
+    Goal targets live in View > Goal Dashboard Options.
     """
 
     def __init__(self, parent=None, settings=None, current_values=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.resize(480, 320)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setMinimumWidth(440)
 
         self.settings = settings
         cv = current_values or {}
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
-        # ---- Data Refresh ----
-        grp_refresh = CollapsibleGroup("Data Refresh", collapsed=False)
-        refresh_form = QFormLayout()
-        refresh_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        # ── Section: Data Refresh ───────────────────────────────────────
+        refresh_grp = QGroupBox("Data Refresh")
+        refresh_grp.setStyleSheet(GROUP_STYLE)
+        refresh_form = QFormLayout(refresh_grp)
+        refresh_form.setContentsMargins(14, 14, 14, 14)
+        refresh_form.setSpacing(10)
+        refresh_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        refresh_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.sb_l1 = QSpinBox()
         self.sb_l1.setRange(5, 600)
@@ -94,16 +66,19 @@ class SettingsDialog(QDialog):
         self.cb_l1 = QCheckBox("Enable marks auto-refresh")
         self.cb_l1.setChecked(bool(cv.get("L1_ENABLED", True)))
 
-        refresh_form.addRow(QLabel("Marks refresh interval:"), self.sb_l1)
-        refresh_form.addRow(QLabel("Connectivity check:"), self.sb_net)
-        refresh_form.addRow(self.cb_l1)
-        grp_refresh.setContentLayout(refresh_form)
-        root.addWidget(grp_refresh)
+        refresh_form.addRow("Marks refresh interval", self.sb_l1)
+        refresh_form.addRow("Connectivity check", self.sb_net)
+        refresh_form.addRow("", self.cb_l1)
+        root.addWidget(refresh_grp)
 
-        # ---- Trade Defaults ----
-        grp_trade = CollapsibleGroup("Trade Defaults", collapsed=False)
-        trade_form = QFormLayout()
-        trade_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        # ── Section: Trade Defaults ─────────────────────────────────────
+        trade_grp = QGroupBox("Trade Defaults")
+        trade_grp.setStyleSheet(GROUP_STYLE)
+        trade_form = QFormLayout(trade_grp)
+        trade_form.setContentsMargins(14, 14, 14, 14)
+        trade_form.setSpacing(10)
+        trade_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        trade_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.trade_default_quantity = QSpinBox()
         self.trade_default_quantity.setRange(1, 1_000_000_000)
@@ -113,15 +88,18 @@ class SettingsDialog(QDialog):
         self.trade_quantity_increment.setRange(1, 1_000_000_000)
         self.trade_quantity_increment.setValue(int(cv.get("TRADE_QUANTITY_INCREMENT", 1)))
 
-        trade_form.addRow(QLabel("Default Quantity:"), self.trade_default_quantity)
-        trade_form.addRow(QLabel("Quantity Increment:"), self.trade_quantity_increment)
-        grp_trade.setContentLayout(trade_form)
-        root.addWidget(grp_trade)
+        trade_form.addRow("Default quantity", self.trade_default_quantity)
+        trade_form.addRow("Quantity increment", self.trade_quantity_increment)
+        root.addWidget(trade_grp)
 
-        # ---- Appearance ----
-        grp_appearance = CollapsibleGroup("Appearance", collapsed=False)
-        app_form = QFormLayout()
-        app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        # ── Section: Appearance ─────────────────────────────────────────
+        appearance_grp = QGroupBox("Appearance")
+        appearance_grp.setStyleSheet(GROUP_STYLE)
+        app_form = QFormLayout(appearance_grp)
+        app_form.setContentsMargins(14, 14, 14, 14)
+        app_form.setSpacing(10)
+        app_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        app_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.cmb_colour_mode = QComboBox()
         self.cmb_colour_mode.addItems(["System", "Light", "Dark"])
@@ -138,24 +116,21 @@ class SettingsDialog(QDialog):
         self.cmb_font_size.addItems(FONT_SIZE_LABELS)
         self.cmb_font_size.setCurrentText(cv.get("FONT_SIZE", "Normal"))
 
-        app_form.addRow(QLabel("Colour Mode:"), self.cmb_colour_mode)
-        app_form.addRow(QLabel("Theme:"), self.cmb_theme_name)
-        app_form.addRow(QLabel("Font Size:"), self.cmb_font_size)
-        app_form.addRow(self.cb_match_system_accent)
-        grp_appearance.setContentLayout(app_form)
-        root.addWidget(grp_appearance)
+        app_form.addRow("Colour Mode", self.cmb_colour_mode)
+        app_form.addRow("Theme", self.cmb_theme_name)
+        app_form.addRow("Font Size", self.cmb_font_size)
+        app_form.addRow("", self.cb_match_system_accent)
+        root.addWidget(appearance_grp)
 
         root.addStretch(1)
 
-        btns = QHBoxLayout()
-        btn_ok = QPushButton("OK")
-        btn_cancel = QPushButton("Cancel")
-        btn_ok.clicked.connect(self.accept)
-        btn_cancel.clicked.connect(self.reject)
-        btns.addStretch(1)
-        btns.addWidget(btn_ok)
-        btns.addWidget(btn_cancel)
-        root.addLayout(btns)
+        # ── Standard button row (matches other dialogs' rhythm) ────────
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
 
     def get_values(self) -> dict:
         return {

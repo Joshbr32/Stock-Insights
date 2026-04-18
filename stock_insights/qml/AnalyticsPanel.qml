@@ -100,13 +100,13 @@ Card {
                 Label {
                     text: "Est. Yearly Profit"
                     color: app.theme.textMuted
-                    font.pointSize: 9
+                    font.pointSize: 9 * app.theme.fontScale
                     font.weight: Font.DemiBold
                 }
                 Label {
                     text: "at current pace × 252 trading days"
                     color: app.theme.textMuted
-                    font.pointSize: 8
+                    font.pointSize: 8 * app.theme.fontScale
                     opacity: 0.75
                 }
             }
@@ -114,7 +114,7 @@ Card {
             Label {
                 text: metric("estYearly")
                 color: metricSign("estYearly") < 0 ? app.theme.bad : app.theme.primary
-                font.pointSize: 15
+                font.pointSize: 15 * app.theme.fontScale
                 font.weight: Font.Bold
                 horizontalAlignment: Text.AlignRight
             }

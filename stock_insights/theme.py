@@ -465,6 +465,9 @@ class ThemeManager(QObject):
     def set_font_size(self, label: str):
         self.font_size_label = label if label in FONT_SIZES else "Normal"
         self._apply_font()
+        # Emit so QML-side ThemeController.refresh() rebinds — without this
+        # the QML scene keeps its old fontScale and visually ignores the change.
+        self.themeApplied.emit()
 
     def _apply_font(self):
         pt = FONT_SIZES.get(self.font_size_label, 11)

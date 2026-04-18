@@ -21,7 +21,14 @@
       "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _theme_test.py)",
       "Bash(rm _theme_test.py _theme_*.png _qml_fit_*.png)",
       "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _hero_test.py)",
-      "Bash(rm _hero_test.py _hero_*.png)"
+      "Bash(rm _hero_test.py _hero_*.png)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _hover_test.py)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _select_test.py)",
+      "Bash(rm _select_test.py _select_test.png)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _all_fixes_test.py)",
+      "Bash(rm _all_fixes_test.py _fixes_*.png)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _min_size_test.py)",
+      "Bash(rm _min_size_test.py _min_*.png)"
     ]
   }
 }

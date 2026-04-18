@@ -26,7 +26,7 @@ RowLayout {
     Label {
         text: root.title
         color: app.theme.text
-        font.pointSize: 11
+        font.pointSize: 11 * app.theme.fontScale
         font.weight: Font.DemiBold
         verticalAlignment: Text.AlignVCenter
     }
@@ -34,7 +34,7 @@ RowLayout {
         visible: root.subtitle.length > 0
         text: root.subtitle
         color: app.theme.textMuted
-        font.pointSize: 10
+        font.pointSize: 10 * app.theme.fontScale
         Layout.fillWidth: true
         Layout.minimumWidth: 0
         elide: Label.ElideRight
