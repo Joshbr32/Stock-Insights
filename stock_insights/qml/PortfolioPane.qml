@@ -22,22 +22,30 @@ ColumnLayout {
                 delegate: Rectangle {
                     id: tab
                     property bool active: index === app.currentAccountIndex
+                    property bool hovered: false
                     height: parent.height
                     Layout.preferredWidth: Math.max(110, label.implicitWidth + 28)
                     radius: 10
-                    color: active ? app.theme.card : "transparent"
-                    border.color: active ? app.theme.border : "transparent"
+                    // Active tab uses the card background to "lift" out of
+                    // the pane background; inactive tabs stay flat.
+                    color: tab.active ? app.theme.card
+                         : (tab.hovered ? app.theme.cardAlt : "transparent")
+                    border.color: tab.active ? app.theme.border : "transparent"
                     border.width: 1
 
-                    // Active-tab accent stripe along the top
+                    // Active-tab accent stripe along the bottom — primary
+                    // color makes the active selection unmistakable and
+                    // visually rhymes with the +Trade button + Goal Target.
                     Rectangle {
                         visible: tab.active
                         anchors.left: parent.left
                         anchors.right: parent.right
-                        anchors.top: parent.top
-                        height: 2
-                        radius: 1
-                        color: app.theme.secondary
+                        anchors.bottom: parent.bottom
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        height: 3
+                        radius: 1.5
+                        color: app.theme.primary
                     }
 
                     Behavior on color { ColorAnimation { duration: 150 } }
@@ -47,14 +55,20 @@ ColumnLayout {
                         id: label
                         anchors.centerIn: parent
                         text: modelData.name
-                        color: tab.active ? app.theme.text : app.theme.textMuted
+                        // Active tab text picks up the theme's primary
+                        // color — same accent as the bottom stripe.
+                        color: tab.active ? app.theme.primary
+                             : (tab.hovered ? app.theme.text : app.theme.textMuted)
                         font.pointSize: 10
                         font.weight: tab.active ? Font.DemiBold : Font.Normal
                     }
 
                     MouseArea {
                         anchors.fill: parent
+                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
+                        onEntered: tab.hovered = true
+                        onExited:  tab.hovered = false
                         onClicked: app.setCurrentAccountIndex(index)
                     }
                 }

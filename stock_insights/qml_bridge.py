@@ -341,6 +341,12 @@ class AccountController(QObject):
         self._summary: Dict[str, str] = {}
         self._presets: List[Dict[str, Any]] = []
         self._goal_target_value: float = 500_000.0
+        # Raw numeric values used by QML progress bars / gauges. Kept
+        # separately from the formatted `goal` string dict so visual widgets
+        # don't have to parse currency strings back to numbers.
+        self._realized_raw: float = 0.0
+        self._goal_progress_pct: float = 0.0
+        self._est_yearly_raw: Optional[float] = None
         # Full unfiltered trade list — kept so we can re-apply filter without
         # round-tripping through the data store.
         self._all_trade_rows: List[Dict[str, Any]] = []
@@ -379,6 +385,27 @@ class AccountController(QObject):
     @Property(float, notify=metricsChanged)
     def goalTargetValue(self) -> float:
         return self._goal_target_value
+
+    # Raw realized profit and progress-to-goal percentage — used by QML
+    # visual widgets (progress bars etc.) that need real numbers, not
+    # formatted currency strings.
+    @Property(float, notify=metricsChanged)
+    def realizedRaw(self) -> float:
+        return self._realized_raw
+
+    @Property(float, notify=metricsChanged)
+    def goalProgressPct(self) -> float:
+        return self._goal_progress_pct
+
+    @Property(float, notify=metricsChanged)
+    def estYearlyRaw(self) -> float:
+        return 0.0 if self._est_yearly_raw is None else float(self._est_yearly_raw)
+
+    # Sign of the realized P/L — used by the Goal Dashboard's Realized
+    # Profit hero to color the number green (profit), red (loss), or neutral.
+    @Property(int, notify=metricsChanged)
+    def realizedSign(self) -> int:
+        return _sign(self._realized_raw)
 
     # ── Loaded flag — false until update() has been called at least once.
     # QML uses this to suppress the "No trades yet" placeholder during the
@@ -489,10 +516,33 @@ class AccountController(QObject):
         self._reapply_filter()
 
         self._goal_target_value = float(goal_target)
+        # Raw progress metrics for visual widgets (progress bar, gauges).
+        self._realized_raw = float(goal.realized_profit)
+        if goal_target > 0:
+            pct = (self._realized_raw / goal_target) * 100.0
+            # Clamp to [0, 100] so the progress bar never exceeds the track
+            # when you've already blown past your goal (still profitable!).
+            self._goal_progress_pct = max(0.0, min(100.0, pct))
+        else:
+            self._goal_progress_pct = 0.0
+        self._est_yearly_raw = analytics.est_yearly_profit
         self._presets = [
             {"label": _preset_label(p), "value": float(p)}
             for p in presets
         ]
+        # Year-End Forecast — realized so far plus a straight projection of
+        # the current avg-daily-profit over the remaining trading days. Shown
+        # where "Realized Profit" used to live in the grid (which is now the
+        # hero, so no point duplicating).
+        year_end_forecast: Optional[float]
+        if goal.avg_daily_profit is not None and goal.business_days_remaining >= 0:
+            year_end_forecast = (
+                    float(goal.realized_profit)
+                    + float(goal.avg_daily_profit) * int(goal.business_days_remaining)
+            )
+        else:
+            year_end_forecast = None
+
         self._goal = {
             "target": _goal_money(goal.goal_target),
             "realized": _money(goal.realized_profit),
@@ -505,6 +555,10 @@ class AccountController(QObject):
             "catchUp": _money(goal.profit_to_match_daily_avg),
             "daysElapsed": f"{goal.business_days_elapsed:,d}",
             "daysRemaining": f"{goal.business_days_remaining:,d}",
+            "yearEndForecast": _money(year_end_forecast),
+            "yearEndForecastSign": _sign(year_end_forecast),
+            "unrealizedSign": _sign(goal.unrealized_profit),
+            "remainingSign": _sign(goal.remaining_profit),
         }
         self._analytics = {
             # Counts (always non-negative, neutral color)

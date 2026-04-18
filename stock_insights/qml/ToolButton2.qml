@@ -24,14 +24,18 @@ Button {
 
     background: Rectangle {
         radius: 8
+        // Primary buttons pick up the theme's primary accent — the same
+        // hue used by Goal Target + selected preset pills + hero metric,
+        // creating a consistent "this is the main action / value" signal.
         color: root.primary
-            ? (root.down ? Qt.darker(app.theme.secondary, 1.1)
-              : root.hovered ? Qt.lighter(app.theme.secondary, 1.05)
-              : app.theme.secondary)
+            ? (root.down ? Qt.darker(app.theme.primary, 1.1)
+              : root.hovered ? Qt.lighter(app.theme.primary, 1.05)
+              : app.theme.primary)
             : (root.down ? app.theme.cardAlt
               : root.hovered ? Qt.lighter(app.theme.button, 1.04)
               : app.theme.button)
-        border.color: root.primary ? app.theme.secondary : app.theme.border
+        border.color: root.primary ? app.theme.primary : app.theme.border
         border.width: 1
+        Behavior on color { ColorAnimation { duration: 120 } }
     }
 }

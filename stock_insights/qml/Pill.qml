@@ -11,8 +11,11 @@ Rectangle {
     implicitHeight: 28
     implicitWidth: Math.max(48, txt.implicitWidth + 22)
     radius: height / 2
-    color: selected ? app.theme.secondary : "transparent"
-    border.color: selected ? app.theme.secondary : app.theme.border
+    // Selected pills use the theme's primary accent — this is the same
+    // token the Goal Target hero number uses, so picking a preset feels
+    // visually connected to the number it sets.
+    color: selected ? app.theme.primary : "transparent"
+    border.color: selected ? app.theme.primary : app.theme.border
     border.width: 1
 
     Behavior on color { ColorAnimation { duration: 120 } }
