@@ -149,6 +149,15 @@ class TradeAnalytics:
     avg_roi_pct: Optional[float] = None
     total_roi_pct: Optional[float] = None
     avg_daily_closed_profit: Optional[float] = None
+    # Forecast — extrapolates the current pace forward.
+    est_yearly_profit: Optional[float] = None  # avg_daily × 252 trading days
+    # Trade-quality summary — classic trader stat block.
+    win_rate_pct: Optional[float] = None  # wins / total_closed × 100
+    avg_win: Optional[float] = None  # mean profit of winning trades
+    avg_loss: Optional[float] = None  # mean profit of losing trades (negative)
+    best_trade: Optional[float] = None  # max single-trade profit
+    worst_trade: Optional[float] = None  # min single-trade profit (most negative)
+    profit_factor: Optional[float] = None  # Σ wins / |Σ losses|; >1 = net profitable
 
 
 @dataclass
@@ -464,6 +473,29 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
     total_trade_value = sum(trade_values) if trade_values else 0.0
     total_roi_pct = ((realized_profit / total_trade_value) * 100.0) if total_trade_value > 0 else None
 
+    avg_daily = (realized_profit / elapsed) if elapsed > 0 else None
+    # Pure-pace yearly projection: ~252 NYSE trading days per year.
+    est_yearly = (avg_daily * 252.0) if avg_daily is not None else None
+
+    # Trade-quality block — separate winners from losers and summarise both.
+    wins = [p for p in profits if p > 0]
+    losses = [p for p in profits if p < 0]
+    win_rate = (len(wins) / len(profits)) * 100.0 if profits else None
+    avg_win = (sum(wins) / len(wins)) if wins else None
+    avg_loss = (sum(losses) / len(losses)) if losses else None
+    best_trade = max(profits) if profits else None
+    worst_trade = min(profits) if profits else None
+    # Profit factor: total wins ÷ |total losses|. Edge cases:
+    #   • no losses but some wins → infinite (we cap with None and let the
+    #     formatter render "—" so we don't show a literal Infinity).
+    #   • no wins → 0.0 (which formats fine).
+    if losses and wins:
+        profit_factor = sum(wins) / abs(sum(losses))
+    elif wins and not losses:
+        profit_factor = None  # technically infinite; render as "—"
+    else:
+        profit_factor = None
+
     return TradeAnalytics(
         realized_profit=realized_profit,
         closed_trades=len(closed),
@@ -472,7 +504,14 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
         avg_trade_value=avg_trade_value,
         avg_roi_pct=avg_roi_pct,
         total_roi_pct=total_roi_pct,
-        avg_daily_closed_profit=(realized_profit / elapsed) if elapsed > 0 else None,
+        avg_daily_closed_profit=avg_daily,
+        est_yearly_profit=est_yearly,
+        win_rate_pct=win_rate,
+        avg_win=avg_win,
+        avg_loss=avg_loss,
+        best_trade=best_trade,
+        worst_trade=worst_trade,
+        profit_factor=profit_factor,
     )
 
 

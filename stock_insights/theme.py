@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-from PySide6.QtCore import QTimer, QObject, QPointF, Qt
+from PySide6.QtCore import QTimer, QObject, QPointF, Qt, Signal
 from PySide6.QtGui import QPalette, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle
 
@@ -386,6 +386,10 @@ class ThemeManager(QObject):
     theme_name: str = "Default"         # Theme: Default / Warm Earth / Forest / etc.
     font_size_label: str = "Normal"     # Font Size: Small / Normal / Large / X-Large
 
+    # Emitted at the end of every successful apply(). Subscribers (e.g. the
+    # QML ThemeController) use this to refresh their bound color tokens.
+    themeApplied = Signal()
+
     def __init__(self, window, poll_secs: int = 3):
         super().__init__(window)
         self.win = window
@@ -555,6 +559,7 @@ class ThemeManager(QObject):
                 pass
         self.win.update()
         self._apply_font()
+        self.themeApplied.emit()
 
     # ---- Colour accessor methods used by portfolio_tab / main_window ----
 

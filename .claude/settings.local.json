@@ -5,7 +5,19 @@
       "Bash(python -c \"import ast, pathlib; [ast.parse\\(p.read_text\\(encoding='utf-8'\\)\\) for p in [pathlib.Path\\('main.py'\\)] + list\\(pathlib.Path\\('stock_insights'\\).glob\\('*.py'\\)\\)]; print\\('All 16 modules parse cleanly'\\)\")",
       "Bash(python -c \"import ast, pathlib; [ast.parse\\(p.read_text\\(encoding='utf-8'\\)\\) for p in [pathlib.Path\\('main.py'\\)] + list\\(pathlib.Path\\('stock_insights'\\).glob\\('*.py'\\)\\)]; print\\('All modules parse cleanly'\\)\")",
       "Bash(python -c \"import importlib, sys; sys.path.insert\\(0, '.'\\); [importlib.import_module\\(m\\) for m in ['stock_insights.api_client', 'stock_insights.connection_dialog', 'stock_insights.data', 'stock_insights.logging_utils', 'stock_insights.main_window', 'stock_insights.portfolio', 'stock_insights.portfolio_tab', 'stock_insights.settings_dialog', 'stock_insights.sync_queue', 'stock_insights.theme', 'stock_insights.update_checker', 'stock_insights.version', 'stock_insights.widgets', 'stock_insights.workers']]; print\\('All modules import OK'\\)\")",
-      "Bash(./.venv/Scripts/python.exe -c \"import importlib, sys; sys.path.insert\\(0, '.'\\); [importlib.import_module\\(m\\) for m in ['stock_insights.api_client', 'stock_insights.connection_dialog', 'stock_insights.data', 'stock_insights.logging_utils', 'stock_insights.main_window', 'stock_insights.portfolio', 'stock_insights.portfolio_tab', 'stock_insights.settings_dialog', 'stock_insights.sync_queue', 'stock_insights.theme', 'stock_insights.update_checker', 'stock_insights.version', 'stock_insights.widgets', 'stock_insights.workers']]; print\\('All 14 stock_insights modules import OK'\\)\")"
+      "Bash(./.venv/Scripts/python.exe -c \"import importlib, sys; sys.path.insert\\(0, '.'\\); [importlib.import_module\\(m\\) for m in ['stock_insights.api_client', 'stock_insights.connection_dialog', 'stock_insights.data', 'stock_insights.logging_utils', 'stock_insights.main_window', 'stock_insights.portfolio', 'stock_insights.portfolio_tab', 'stock_insights.settings_dialog', 'stock_insights.sync_queue', 'stock_insights.theme', 'stock_insights.update_checker', 'stock_insights.version', 'stock_insights.widgets', 'stock_insights.workers']]; print\\('All 14 stock_insights modules import OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"import importlib; mods = ['stock_insights.api_client','stock_insights.connection_dialog','stock_insights.data','stock_insights.logging_utils','stock_insights.main_window','stock_insights.portfolio','stock_insights.portfolio_tab','stock_insights.qml_bridge','stock_insights.settings_dialog','stock_insights.sync_queue','stock_insights.theme','stock_insights.update_checker','stock_insights.version','stock_insights.widgets','stock_insights.workers']; [importlib.import_module\\(m\\) for m in mods]; print\\('All', len\\(mods\\), 'modules import OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe _qml_smoke.py)",
+      "Bash(./.venv/Scripts/python.exe -c ' *)",
+      "Bash(./.venv/Scripts/python.exe _qml_resize_test.py)",
+      "Bash(./.venv/Scripts/python.exe _qml_analytics_test.py)",
+      "Bash(./.venv/Scripts/python.exe _qml_fit_test.py)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _qml_fit_test.py)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _qml_check.py)",
+      "Bash(rm _qml_check.py _qml_check_*.png)",
+      "Bash(./.venv/Scripts/python.exe -c \"import importlib; mods=['stock_insights.api_client','stock_insights.connection_dialog','stock_insights.data','stock_insights.logging_utils','stock_insights.main_window','stock_insights.portfolio','stock_insights.portfolio_tab','stock_insights.qml_bridge','stock_insights.settings_dialog','stock_insights.sync_queue','stock_insights.theme','stock_insights.update_checker','stock_insights.version','stock_insights.widgets','stock_insights.workers']; [importlib.import_module\\(m\\) for m in mods]; print\\('All', len\\(mods\\), 'modules import OK'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _close_dialog_test.py)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _trades_fit_test.py)"
     ]
   }
 }

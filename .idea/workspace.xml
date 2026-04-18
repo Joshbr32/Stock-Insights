@@ -4,21 +4,16 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="optimized import">
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="claude optimizations">
+      <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights.spec" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights.spec" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/api_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/api_client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/data.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/data.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/sync_queue.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/sync_queue.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/theme.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/theme.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/widgets.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/widgets.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/workers.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/workers.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/temp json.json" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -373,7 +368,15 @@
       <option name="project" value="LOCAL" />
       <updated>1776463486521</updated>
     </task>
-    <option name="localTasksCounter" value="21" />
+    <task id="LOCAL-00021" summary="claude optimizations">
+      <option name="closed" value="true" />
+      <created>1776464917545</created>
+      <option name="number" value="00021" />
+      <option name="presentableId" value="LOCAL-00021" />
+      <option name="project" value="LOCAL" />
+      <updated>1776464917545</updated>
+    </task>
+    <option name="localTasksCounter" value="22" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -410,7 +413,8 @@
     <MESSAGE value="added auto-updates" />
     <MESSAGE value="attempting UI fixes and optimizations" />
     <MESSAGE value="optimized import" />
-    <option name="LAST_COMMIT_MESSAGE" value="optimized import" />
+    <MESSAGE value="claude optimizations" />
+    <option name="LAST_COMMIT_MESSAGE" value="claude optimizations" />
     <option name="OPTIMIZE_IMPORTS_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REFORMAT_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REARRANGE_BEFORE_PROJECT_COMMIT" value="true" />

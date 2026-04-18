@@ -1,30 +1,78 @@
+"""main_window.py — QML-hosted main window.
+
+The central widget is a QQuickWidget rendering `qml/Main.qml`. All data
+exposed to QML lives behind an AppController defined in qml_bridge.py.
+Modal dialogs (login, settings, trade edit, etc.) remain QWidget-based —
+forms are exactly what QWidget is good at.
+
+What still lives here
+─────────────────────
+• Menu bar & status corner (online indicator, busy spinner).
+• ThemeManager wiring + initial theme application.
+• MarksWorker / NetCheckWorker / ReconnectWorker QThread management.
+• Watchlist persistence and add/remove/rename slots called by QML.
+• Trade CRUD callbacks called by QML — they open the existing
+  TradeEditDialog / MarkDownDialog / DoubleDownDialog and persist via
+  the DataStore.
+• Admin dialogs (UserAccountDialog, UserPortfolioViewer, SelectUserDialog)
+  — UserPortfolioViewer still uses the legacy QWidget PortfolioTab.
+"""
+
+from __future__ import annotations
+
 import json
+from datetime import date
+from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import Qt, QSettings, QTimer, QThread, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import Qt, QSettings, QTimer, QThread, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QCursor, QKeySequence
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox,
-    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton,
+    QDialog,
+    QDialogButtonBox,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
     QSizePolicy,
-    QSplitter, QTabWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .api_client import DataStore, FallbackDataStore, RemoteDataStore
-from .logging_utils import setup_logging, serial_debug
-from .portfolio_tab import PortfolioTab
+from .logging_utils import get_logger, setup_logging, serial_debug
+from .portfolio import Holding, Trade
+from .portfolio_tab import (
+    DoubleDownDialog,
+    FulfillOrderDialog,
+    GoalDashboardOptionsDialog,
+    MarkDownDialog,
+    PortfolioTab,
+    TradeEditDialog,
+)
+from .qml_bridge import AppController
 from .theme import ThemeManager
-from .widgets import SpinnerLabel, WatchTable
+from .widgets import SpinnerLabel
 from .workers import MarksWorker, NetCheckWorker, ReconnectWorker
 
 _ORG = "StockInsights"
 _APP = "StocksGUI"
+_QML_DIR = Path(__file__).resolve().parent / "qml"
 
 
 # ---------------------------------------------------------------------------
-# Admin: User Account Management Dialog
+# Admin: User Account Management Dialog (unchanged from QWidget version)
 # ---------------------------------------------------------------------------
 
 class UserAccountDialog(QDialog):
@@ -39,8 +87,6 @@ class UserAccountDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
-
-        s = QSettings(_ORG, _APP)
 
         # ---- Profile group ----
         profile_grp = QGroupBox("Profile")
@@ -166,13 +212,13 @@ class UserAccountDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# Admin: portfolio viewer for another user (read-only window)
+# Admin: portfolio viewer for another user (still uses the QWidget PortfolioTab)
 # ---------------------------------------------------------------------------
 
 class UserPortfolioViewer(QMainWindow):
     """Read-only portfolio window opened by an admin to view another user's data."""
 
-    closed = Signal()   # emitted from closeEvent after clean shutdown
+    closed = Signal()
 
     def __init__(self, user_store: DataStore, username: str, settings: QSettings, parent=None):
         super().__init__(parent)
@@ -184,7 +230,7 @@ class UserPortfolioViewer(QMainWindow):
         self._tabs: Dict[str, PortfolioTab] = {}
         self._closing = False
         self._active_marks_thread: Optional[QThread] = None
-        self._active_marks_worker = None   # keep worker alive while thread runs
+        self._active_marks_worker = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -218,17 +264,15 @@ class UserPortfolioViewer(QMainWindow):
         if not accounts:
             self.tab_widget.addTab(QLabel("No accounts found."), "—")
 
-        # Refresh marks periodically
         self._marks_timer = QTimer(self)
         self._marks_timer.setInterval(30_000)
         self._marks_timer.timeout.connect(self._refresh_marks)
         self._marks_timer.start()
-        self._refresh_marks()
+        QTimer.singleShot(500, self._refresh_marks)
 
     def _refresh_marks(self):
         if self._closing:
             return
-        # Skip if a fetch is already in flight
         if self._active_marks_thread is not None and self._active_marks_thread.isRunning():
             return
         tickers: List[str] = []
@@ -237,8 +281,6 @@ class UserPortfolioViewer(QMainWindow):
         tickers = list(dict.fromkeys([t for t in tickers if t]))
         if not tickers:
             return
-        # Store worker as instance var — local var would be GC'd when this
-        # function returns, destroying the worker while the thread is running it.
         worker = MarksWorker(tickers)
         th = QThread(self)
         self._active_marks_worker = worker
@@ -248,9 +290,9 @@ class UserPortfolioViewer(QMainWindow):
         worker.done.connect(self._on_marks)
         worker.done.connect(th.quit)
         worker.error.connect(th.quit)
-        # Delete worker + thread only after the thread's event loop exits.
         th.finished.connect(worker.deleteLater)
         th.finished.connect(th.deleteLater)
+
         def _cleanup():
             self._active_marks_thread = None
             self._active_marks_worker = None
@@ -269,26 +311,12 @@ class UserPortfolioViewer(QMainWindow):
         self.update()
 
     def closeEvent(self, event):
-        """Cleanly shut down before GC.
-
-        Crash sequence (now fixed):
-          1. closeEvent fires, _viewer_windows.pop() drops last Python ref
-          2. Python GC collects the viewer
-          3. Marks thread finishes ~2s later, callback fires into dead self -> crash
-
-        Fix: set _closing flag immediately, wait for any active thread to
-        finish, THEN emit closed() which triggers the pop and allows GC.
-        """
         self._closing = True
         self._marks_timer.stop()
         try:
             self._marks_timer.timeout.disconnect()
         except Exception:
             pass
-
-        # Wait for any in-flight marks thread (usually <3s). Don't disconnect
-        # the finished -> deleteLater chain — we want the C++ worker to be
-        # torn down before the QThread disappears.
         if self._active_marks_thread is not None:
             try:
                 if self._active_marks_thread.isRunning():
@@ -298,10 +326,9 @@ class UserPortfolioViewer(QMainWindow):
                 pass
             self._active_marks_thread = None
             self._active_marks_worker = None
-
         self._tabs.clear()
         event.accept()
-        self.closed.emit()   # triggers _viewer_windows.pop() in MainWindow
+        self.closed.emit()
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +351,7 @@ class SelectUserDialog(QDialog):
         self.list_widget = QListWidget()
         for user in users:
             if user["id"] == current_user_id:
-                continue  # skip self
+                continue
             item = QListWidgetItem(f"{'[Admin] ' if user['is_admin'] else ''}{user['username']}")
             item.setData(Qt.ItemDataRole.UserRole, user)
             self.list_widget.addItem(item)
@@ -355,33 +382,22 @@ class MainWindow(QMainWindow):
     ORG = _ORG
     APP = _APP
 
-    SORT_DEFAULT = "Default (custom)"
-    SORT_ALPHA = "Alphabetical"
-    SORT_PRICE = "Price"
-
     L1_INTERVAL = 20_000
     NET_INTERVAL = 10_000
     L1_ENABLED = True
+    DEFAULT_WATCHLIST = ["NVDA", "SRPT", "RDDT", "FIG", "NCLH", "CCL"]
 
     def __init__(self, store: DataStore):
         super().__init__()
         setup_logging()
         serial_debug("MainWindow init start")
+
         self._store = store
-        # Wire offline/online callbacks if using FallbackDataStore
-        if isinstance(store, FallbackDataStore):
-            store._on_offline_cb = self._set_offline_status
-            store._on_online_cb  = self._set_synced_status
-        self.setWindowTitle(f"Stock Insights — {store.username}")
-        self.resize(1200, 800)
-        self._last_sidebar_size = 210
+        self._closing = False
         self._busy_ops = 0
         self._online = True
-        self._watch_sort_mode = self.SORT_DEFAULT
-        self._closing = False
-        self._portfolio_tabs: Dict[str, PortfolioTab] = {}
-        self._viewer_windows: Dict[int, UserPortfolioViewer] = {}  # user_id -> window
-        self._reconnect_timer_obj = None   # QTimer for reconnect attempts
+        self._viewer_windows: Dict[int, UserPortfolioViewer] = {}
+        self._reconnect_timer_obj: Optional[QTimer] = None
         self._marks_thread: Optional[QThread] = None
         self._marks_worker: Optional[MarksWorker] = None
         self._netcheck_thread: Optional[QThread] = None
@@ -389,239 +405,154 @@ class MainWindow(QMainWindow):
         self._reconnect_thread: Optional[QThread] = None
         self._reconnect_worker: Optional[ReconnectWorker] = None
 
-        self._build_ui()
+        if isinstance(store, FallbackDataStore):
+            store._on_offline_cb = self._set_offline_status
+            store._on_online_cb = self._set_synced_status
+
+        self.setWindowTitle(f"Stock Insights — {store.username}")
+        self.resize(1280, 820)
+
+        # ── ThemeManager (created early so AppController can reference it) ──
         self.theme = ThemeManager(self)
-        # Pre-load saved theme/font settings so the very first apply() uses
-        # them — eliminates the Default-theme flash before _load_settings runs.
-        _s = self._qsettings()
-        self.theme.override_mode     = _s.value("ui/THEME_OVERRIDE", "System")
-        self.theme.match_system_accent = _s.value("ui/MATCH_SYSTEM_ACCENT", True, type=bool)
-        self.theme.theme_name        = _s.value("ui/THEME_NAME",   "Default")
-        self.theme.font_size_label   = _s.value("ui/FONT_SIZE",    "Normal")
+        s = self._qsettings()
+        self.theme.override_mode = s.value("ui/THEME_OVERRIDE", "System")
+        self.theme.match_system_accent = s.value("ui/MATCH_SYSTEM_ACCENT", True, type=bool)
+        self.theme.theme_name = s.value("ui/THEME_NAME", "Default")
+        self.theme.font_size_label = s.value("ui/FONT_SIZE", "Normal")
+        self.L1_INTERVAL = int(s.value("intervals/L1_INTERVAL", self.L1_INTERVAL))
+        self.NET_INTERVAL = int(s.value("intervals/NET_INTERVAL", self.NET_INTERVAL))
+        self.L1_ENABLED = bool(s.value("intervals/L1_ENABLED", True, type=bool))
+
+        # ── AppController bridges store + theme into QML ──
+        self._app = AppController(self._store, self.theme, self)
+        # All QML-triggered handlers that open modal QDialogs / QMenus run
+        # through _safe_run so the QML callback unwinds before the dialog
+        # opens (avoids nested-event-loop crashes on Windows + QQuickWidget).
+        self._app.set_callbacks({
+            "add_ticker": lambda: self._safe_run(self._on_add_ticker),
+            "remove_ticker": lambda r: self._safe_run(self._on_remove_ticker, r),
+            "rename_ticker": lambda r, s: self._safe_run(self._on_rename_ticker, r, s),
+            "refresh_marks": self._level1_tick,  # not a dialog — direct call OK
+            "add_trade": lambda: self._safe_run(self._on_add_trade),
+            "edit_trade": lambda i: self._safe_run(self._on_edit_trade, i),
+            "delete_trade": lambda i: self._safe_run(self._on_delete_trade, i),
+            "set_goal_target": self._on_set_goal_target,  # store write — direct call OK
+            "open_goal_options": lambda: self._safe_run(self._on_open_goal_options),
+            "open_trade_history_options": lambda: self._safe_run(self._on_open_trade_history_options),
+            "holdings_menu": lambda i: self._safe_run(self._on_holdings_menu, i),
+            "trade_menu": lambda i: self._safe_run(self._on_trade_menu, i),
+        })
+        self._app.rebuild_accounts()
+        # Populate trades / holdings / goal data BEFORE QML is mounted, so
+        # the empty-state placeholder text never flashes on screen during
+        # the initial render. The data store reads from local cache /
+        # QSettings and is fast enough to do synchronously here.
+        self._app.refresh_all_accounts()
+
+        self._build_menus()
+        self._build_status_corner()
+        self._build_qml_host()
+
+        # Apply theme + start watching for OS theme changes.
         self.theme.apply()
+        self.theme.themeApplied.connect(self._app.theme.refresh)
         self.theme.start_watching()
-        self._load_settings()
-        self._bind_shortcuts()
+
+        self._load_watchlist()
         self._init_timers()
         self._init_reconnect_timer()
+
         serial_debug("MainWindow init done")
 
-    # ---- QSettings (device-local UI prefs only) ----
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     def _qsettings(self) -> QSettings:
         return QSettings(self.ORG, self.APP)
 
-    def _load_settings(self):
-        s = self._qsettings()
-
-        # Watchlist — load from store (synced), fall back to QSettings for migration
+    def _all_trades(self) -> List[Trade]:
         try:
-            items = self._store.get_watchlist()
+            return list(self._store.get_all_trades())
         except Exception:
-            items = []
-        if not items:
-            items_qs = s.value("watchlist/items", [])
-            if isinstance(items_qs, str):
-                try: items_qs = json.loads(items_qs)
-                except Exception: items_qs = []
-            items = [str(t).upper() for t in items_qs] if items_qs else ["NVDA", "SRPT", "RDDT", "FIG", "NCLH", "CCL"]
+            return []
 
-        self.watch.setRowCount(0)
-        for sym in items:
-            self._add_watch_row(sym)
+    def _account_trades(self, account_name: str, all_trades: List[Trade]) -> List[Trade]:
+        return [t for t in all_trades if (t.account or "").strip() == account_name]
 
-        self.L1_INTERVAL = int(s.value("intervals/L1_INTERVAL", self.L1_INTERVAL))
-        self.NET_INTERVAL = int(s.value("intervals/NET_INTERVAL", self.NET_INTERVAL))
-        self.L1_ENABLED = bool(s.value("intervals/L1_ENABLED", True, type=bool))
-        self.theme.set_override_mode(s.value("ui/THEME_OVERRIDE", "System"))
-        self.theme.set_match_system_accent(s.value("ui/MATCH_SYSTEM_ACCENT", True, type=bool))
-        self.theme.set_theme(s.value("ui/THEME_NAME", "Default"))
-        self.theme.set_font_size(s.value("ui/FONT_SIZE", "Normal"))
-        sidebar_visible = s.value("ui/sidebar_visible", True, type=bool)
-        sizes = s.value("ui/splitter_sizes", [])
-        if isinstance(sizes, str):
-            try: sizes = json.loads(sizes)
-            except Exception: sizes = []
-        if sizes and isinstance(sizes, list) and len(sizes) == 2:
-            try:
-                sizes = [int(sizes[0]), int(sizes[1])]
-                self.splitter.setSizes(sizes)
-                self._last_sidebar_size = max(200, sizes[0])
-            except Exception: pass
-        self._set_sidebar_visible(sidebar_visible, apply_sizes=False)
-
-    def _save_settings(self):
-        s = self._qsettings()
-        # Save watchlist to store (synced) AND to QSettings (offline fallback)
-        symbols = [self.watch.item(r, 0).text() for r in range(self.watch.rowCount())]
+    def _save_account(self, account_name: str, trades: List[Trade]) -> None:
         try:
-            self._store.save_watchlist(symbols)
-        except Exception:
-            pass
-        s.setValue("watchlist/items", symbols)
-        s.setValue("ui/splitter_sizes", self.splitter.sizes())
-        s.setValue("ui/sidebar_visible", self._is_sidebar_visible())
-        s.setValue("intervals/L1_INTERVAL", self.L1_INTERVAL)
-        s.setValue("intervals/NET_INTERVAL", self.NET_INTERVAL)
-        s.setValue("intervals/L1_ENABLED", self.L1_ENABLED)
-        s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
-        s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
-        s.setValue("ui/THEME_NAME", self.theme.theme_name)
-        s.setValue("ui/FONT_SIZE", self.theme.font_size_label)
-        s.sync()
-
-    def update_ui(self):
-        for tab in self._portfolio_tabs.values():
-            tab.update_ui()
-        for viewer in self._viewer_windows.values():
-            viewer.update_ui()
-        self.watch.viewport().update()
-        self.tabs.update()
-        self.update()
-
-    def _open_settings_dialog(self):
-        from .settings_dialog import SettingsDialog
-        s = self._qsettings()
-        cv = {
-            "L1_INTERVAL": self.L1_INTERVAL, "NET_INTERVAL": self.NET_INTERVAL,
-            "L1_ENABLED": self.L1_ENABLED,
-            "THEME_OVERRIDE": s.value("ui/THEME_OVERRIDE", getattr(self.theme, "override_mode", "System")),
-            "MATCH_SYSTEM_ACCENT": s.value("ui/MATCH_SYSTEM_ACCENT",
-                                            getattr(self.theme, "match_system_accent", True), type=bool),
-            "THEME_NAME": s.value("ui/THEME_NAME", getattr(self.theme, "theme_name", "Default")),
-            "FONT_SIZE": s.value("ui/FONT_SIZE", getattr(self.theme, "font_size_label", "Normal")),
-            "TRADE_DEFAULT_QUANTITY": int(s.value("trade_defaults/default_quantity", 1) or 1),
-            "TRADE_QUANTITY_INCREMENT": int(s.value("trade_defaults/quantity_increment", 1) or 1),
-        }
-        dlg = SettingsDialog(self, s, cv)
-        if dlg.exec() != QDialog.DialogCode.Accepted: return
-        vals = dlg.get_values()
-        self.L1_INTERVAL = int(vals["L1_INTERVAL"])
-        self.NET_INTERVAL = int(vals["NET_INTERVAL"])
-        self.L1_ENABLED = bool(vals["L1_ENABLED"])
-        self.theme.set_override_mode(vals["THEME_OVERRIDE"])
-        self.theme.set_match_system_accent(vals["MATCH_SYSTEM_ACCENT"])
-        self.theme.set_theme(vals.get("THEME_NAME", "Default"))
-        self.theme.set_font_size(vals.get("FONT_SIZE", "Normal"))
-        s = self._qsettings()
-        s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
-        s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
-        s.setValue("ui/THEME_NAME", self.theme.theme_name)
-        s.setValue("ui/FONT_SIZE", self.theme.font_size_label)
-        s.setValue("trade_defaults/default_quantity", int(vals["TRADE_DEFAULT_QUANTITY"]))
-        s.setValue("trade_defaults/quantity_increment", int(vals["TRADE_QUANTITY_INCREMENT"]))
-        s.sync()
-        self.timer_l1.setInterval(self.L1_INTERVAL)
-        self.timer_net.setInterval(self.NET_INTERVAL)
-        self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
-        self.update_ui()
-        self._save_settings()
-
-    def _check_for_updates(self) -> None:
-        from .update_checker import check_for_updates
-        check_for_updates(parent=self, silent_if_current=False)
-
-    def _open_user_account_dialog(self):
-        dlg = UserAccountDialog(self._store, self)
-        dlg.exec()
-        # Rebuild tabs in case accounts changed
-        self._rebuild_portfolio_tabs()
-
-    # ---- Portfolio tab management ----
-
-    def _build_portfolio_tabs(self):
-        try:
-            accounts = self._store.get_account_names()
-        except Exception:
-            accounts = ["Default"]
-        s = self._qsettings()
-        for account in accounts:
-            tab = PortfolioTab(
-                account_name=account,
-                store=self._store,
-                settings=s,
-                read_only=False,
-                parent=self,
-            )
-            self.tabs.addTab(tab, account)
-            self._portfolio_tabs[account] = tab
-        for tab in self._portfolio_tabs.values():
-            tab.tradesChanged.connect(self._on_portfolio_data_changed)
-
-    def _rebuild_portfolio_tabs(self):
-        for tab in list(self._portfolio_tabs.values()):
-            try: tab.tradesChanged.disconnect(self._on_portfolio_data_changed)
-            except Exception: pass
-            idx = self.tabs.indexOf(tab)
-            if idx >= 0: self.tabs.removeTab(idx)
-        self._portfolio_tabs.clear()
-        self._build_portfolio_tabs()
-        for tab in self._portfolio_tabs.values():
-            tab.sync_goal_dashboard_accounts()
-
-    def _current_portfolio_tab(self) -> Optional[PortfolioTab]:
-        w = self.tabs.currentWidget()
-        return w if isinstance(w, PortfolioTab) else None
-
-    def _on_portfolio_data_changed(self):
-        sender = self.sender()
-        for tab in self._portfolio_tabs.values():
-            if tab is not sender:
-                tab.reload_from_store()
-
-    # ---- Admin: view another user's portfolio ----
-
-    def _open_view_user_portfolio(self):
-        if not self._store.is_admin:
-            QMessageBox.information(self, "Admin Only", "Only admin accounts can view other users' portfolios.")
-            return
-        # Accept FallbackDataStore when it's currently connected to the server
-        _remote_ok = (
-            isinstance(self._store, RemoteDataStore) or
-            (isinstance(self._store, FallbackDataStore) and self._store._is_online)
-        )
-        if not _remote_ok:
-            QMessageBox.information(
-                self, "Server Required",
-                "Viewing other users requires a server connection."
-                "The app is currently in offline mode — reconnect to the server first."
-            )
-            return
-        try:
-            users = self._store.list_users()
+            self._store.save_account_trades(account_name, trades)
         except Exception as exc:
-            QMessageBox.warning(self, "Error", f"Could not fetch user list: {exc}")
+            QMessageBox.warning(self, "Save Failed", str(exc))
             return
+        self._app.refresh_all_accounts()
 
-        dlg = SelectUserDialog(users, self._store.user_info["user_id"], self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        user = dlg.selected_user()
-        if user is None:
-            return
+    def _safe_run(self, fn, *args, **kwargs) -> None:
+        """Run `fn` on the next event-loop iteration, catching any exception.
 
-        user_id = user["id"]
-        # Reuse existing window if open
-        if user_id in self._viewer_windows:
-            w = self._viewer_windows[user_id]
-            w.raise_(); w.activateWindow(); return
+        Used by QML-triggered slots that open modal dialogs or context menus.
+        Deferring via QTimer.singleShot(0, …) lets the QML callback unwind
+        before the dialog opens — without this, the nested event loops
+        (QML render → Qt slot → QMenu.exec → QDialog.exec) can crash on
+        Windows when the QQuickWidget tries to repaint between them.
+        """
 
-        user_store = self._store.store_for_user(user_id, user["username"])
-        viewer = UserPortfolioViewer(user_store, user["username"], self._qsettings(), parent=None)
-        # Do NOT set WA_DeleteOnClose — the marks timer can still fire into a
-        # C++-deleted object and crash the main window on the next click.
-        # closeEvent on the viewer handles cleanup; Python GC owns the lifetime.
-        viewer.closed.connect(lambda uid=user_id: self._viewer_windows.pop(uid, None))
-        self._viewer_windows[user_id] = viewer
-        viewer.show()
+        def _wrap():
+            try:
+                fn(*args, **kwargs)
+            except Exception as exc:
+                get_logger("ui").exception("dialog/menu handler failed")
+                try:
+                    QMessageBox.warning(self, "Error", str(exc))
+                except Exception:
+                    pass
 
-    # ---- UI ----
+        QTimer.singleShot(0, _wrap)
 
-    def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root_layout = QVBoxLayout(central)
+    def _trade_default_quantity(self) -> int:
+        try:
+            return max(1, int(self._qsettings().value("trade_defaults/default_quantity", 1) or 1))
+        except Exception:
+            return 1
 
+    def _trade_quantity_increment(self) -> int:
+        try:
+            return max(1, int(self._qsettings().value("trade_defaults/quantity_increment", 1) or 1))
+        except Exception:
+            return 1
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _build_menus(self) -> None:
+        file_menu = self.menuBar().addMenu("&File")
+        act_settings = file_menu.addAction("Settings")
+        act_settings.setShortcut("Ctrl+,")
+        act_settings.triggered.connect(self._open_settings_dialog)
+        file_menu.addAction("User Account").triggered.connect(self._open_user_account_dialog)
+        file_menu.addSeparator()
+        file_menu.addAction("Check for Updates…").triggered.connect(self._check_for_updates)
+        file_menu.addSeparator()
+        file_menu.addAction("Quit").triggered.connect(self.close)
+
+        view_menu = self.menuBar().addMenu("&View")
+        view_menu.addAction("Trade History Settings").triggered.connect(self._on_open_trade_history_options)
+        view_menu.addAction("Goal Dashboard Options").triggered.connect(self._on_open_goal_options)
+
+        admin_menu = self.menuBar().addMenu("&Admin")
+        self.act_view_user_portfolio = admin_menu.addAction("View User Portfolio…")
+        self.act_view_user_portfolio.triggered.connect(self._open_view_user_portfolio)
+        self.act_view_user_portfolio.setVisible(self._store.is_admin)
+
+        # F5 refresh shortcut (works anywhere in the window).
+        act = QAction("Refresh Marks (F5)", self)
+        act.setShortcut(QKeySequence("F5"))
+        act.triggered.connect(self._level1_tick)
+        self.addAction(act)
+
+    def _build_status_corner(self) -> None:
         self.spinner = SpinnerLabel()
         self.spinner.setFixedWidth(14)
         self.lbl_updating = QLabel("")
@@ -637,116 +568,491 @@ class MainWindow(QMainWindow):
         self.progress.setFixedWidth(120)
         self.progress.setVisible(False)
 
-        # ---- Menus ----
-        file_menu = self.menuBar().addMenu("&File")
-        act_settings = file_menu.addAction("Settings")
-        act_settings.setShortcut("Ctrl+,")
-        act_settings.triggered.connect(self._open_settings_dialog)
-        file_menu.addAction("User Account").triggered.connect(self._open_user_account_dialog)
-        file_menu.addSeparator()
-        act_check_updates = file_menu.addAction("Check for Updates…")
-        act_check_updates.triggered.connect(self._check_for_updates)
-        file_menu.addSeparator()
-        file_menu.addAction("Quit").triggered.connect(self.close)
-
-        view_menu = self.menuBar().addMenu("&View")
-        self.act_toggle_sidebar = view_menu.addAction("Toggle Sidebar")
-        self.act_toggle_sidebar.setCheckable(True)
-        self.act_toggle_sidebar.setShortcut(QKeySequence("Ctrl+B"))
-        self.act_toggle_sidebar.triggered.connect(self._toggle_sidebar)
-        view_menu.addAction("Trade History Settings").triggered.connect(self._open_trade_history_columns)
-        view_menu.addAction("Goal Dashboard Options").triggered.connect(self._open_goal_dashboard_options)
-
-        # Admin menu (always built; items shown/hidden based on role)
-        admin_menu = self.menuBar().addMenu("&Admin")
-        self.act_view_user_portfolio = admin_menu.addAction("View User Portfolio...")
-        self.act_view_user_portfolio.triggered.connect(self._open_view_user_portfolio)
-        self.act_view_user_portfolio.setVisible(self._store.is_admin)
-
-        # Status corner
         status_corner = QWidget(self)
         status_corner.setObjectName("menuStatusCorner")
         sr = QHBoxLayout(status_corner)
-        sr.setContentsMargins(8, 2, 8, 3); sr.setSpacing(8)
+        sr.setContentsMargins(8, 2, 8, 3);
+        sr.setSpacing(8)
         self.lbl_updating.setObjectName("menuUpdatingLabel")
         self.lbl_status.setObjectName("menuOnlineLabel")
-        sr.addWidget(self.spinner); sr.addWidget(self.lbl_updating)
-        sr.addWidget(self.lbl_status); sr.addWidget(self.progress)
+        sr.addWidget(self.spinner);
+        sr.addWidget(self.lbl_updating)
+        sr.addWidget(self.lbl_status);
+        sr.addWidget(self.progress)
         status_corner.adjustSize()
         self.menuBar().setCornerWidget(status_corner, Qt.Corner.TopRightCorner)
-
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.setHandleWidth(7)
-        self.splitter.splitterMoved.connect(self._remember_sidebar_size)
-        root_layout.addWidget(self.splitter)
-
-        # Left: Watchlist
-        left_container = QWidget()
-        left_outer = QVBoxLayout(left_container)
-        left_outer.setContentsMargins(0, 0, 8, 0)
-        left_outer.setSpacing(0)
-        left_wrap = QFrame()
-        left_wrap.setObjectName("leftPane")
-        left_layout = QVBoxLayout(left_wrap)
-        left_layout.setContentsMargins(10, 10, 10, 10)
-        left_layout.setSpacing(10)
-        title_row = QHBoxLayout()
-        title_row.setSpacing(8)
-        lbl = QLabel("Watchlist"); lbl.setObjectName("leftTitle")
-        title_row.addWidget(lbl); title_row.addStretch(1)
-        left_layout.addLayout(title_row)
-        self.watch = WatchTable(self)
-        self.watch.set_sort_mode(self._watch_sort_mode)
-        self.watch.renameRequested.connect(self._ctx_rename_selected)
-        self.watch.moveRequested.connect(self._ctx_move_row)
-        self.watch.sortRequested.connect(self._on_sort_mode_changed)
-        watch_card = QFrame()
-        watch_card.setObjectName("watchTableCard")
-        watch_card_layout = QVBoxLayout(watch_card)
-        watch_card_layout.setContentsMargins(0, 0, 0, 0)
-        watch_card_layout.setSpacing(0)
-        watch_card_layout.addWidget(self.watch)
-        left_layout.addWidget(watch_card, stretch=1)
-        wl_btns = QHBoxLayout()
-        wl_btns.setSpacing(8)
-        self.add_btn = QPushButton("+ Add"); self.add_btn.clicked.connect(self._on_add_ticker)
-        self.remove_btn = QPushButton("- Remove"); self.remove_btn.clicked.connect(self._on_remove_ticker)
-        wl_btns.addWidget(self.add_btn); wl_btns.addWidget(self.remove_btn)
-        left_layout.addLayout(wl_btns)
-        left_outer.addWidget(left_wrap)
-        self.splitter.addWidget(left_container)
-        self.splitter.setStretchFactor(0, 0)
-
-        # Right: per-account tabs
-        right_container = QWidget()
-        right_outer = QVBoxLayout(right_container)
-        right_outer.setContentsMargins(8, 0, 0, 0)
-        right_outer.setSpacing(0)
-        right_wrap = QWidget()
-        right_layout = QVBoxLayout(right_wrap)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        self.tabs = QTabWidget()
-        right_layout.addWidget(self.tabs)
-        self._build_portfolio_tabs()
-        right_outer.addWidget(right_wrap)
-        self.splitter.addWidget(right_container)
-        self.splitter.setStretchFactor(1, 1)
-
         self.statusBar().hide()
 
-    # ---- View menu ----
+    def _build_qml_host(self) -> None:
+        self.qml_widget = QQuickWidget()
+        self.qml_widget.engine().rootContext().setContextProperty("app", self._app)
+        self.qml_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        # Make the QQuickWidget see-through so the QMainWindow palette shows
+        # at the borders during a resize (no white flicker).
+        self.qml_widget.setClearColor(QColor(0, 0, 0, 0))
 
-    def _open_trade_history_columns(self):
-        tab = self._current_portfolio_tab()
-        if tab: tab.open_trade_history_view_settings()
+        qml_main = _QML_DIR / "Main.qml"
+        self.qml_widget.setSource(QUrl.fromLocalFile(str(qml_main)))
 
-    def _open_goal_dashboard_options(self):
-        tab = self._current_portfolio_tab()
-        if tab: tab.open_goal_dashboard_options_dialog()
+        if self.qml_widget.status() == QQuickWidget.Status.Error:
+            errors = "\n".join(str(e) for e in self.qml_widget.errors())
+            get_logger("qml").error("QML failed to load:\n%s", errors)
 
-    # ---- Timers ----
+        self.setCentralWidget(self.qml_widget)
 
-    def _init_timers(self):
+    # ------------------------------------------------------------------
+    # Watchlist persistence + slots wired from QML
+    # ------------------------------------------------------------------
+
+    def _load_watchlist(self) -> None:
+        try:
+            symbols = self._store.get_watchlist()
+        except Exception:
+            symbols = []
+        if not symbols:
+            raw = self._qsettings().value("watchlist/items", [])
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = []
+            if isinstance(raw, list) and raw:
+                symbols = [str(t).upper() for t in raw if str(t).strip()]
+            if not symbols:
+                symbols = list(self.DEFAULT_WATCHLIST)
+        self._app.set_watchlist([str(s).upper() for s in symbols])
+
+    def _save_watchlist(self) -> None:
+        symbols = self._app.watchlist_symbols()
+        try:
+            self._store.save_watchlist(symbols)
+        except Exception:
+            pass
+        s = self._qsettings()
+        s.setValue("watchlist/items", symbols)
+        s.sync()
+
+    def _on_add_ticker(self) -> None:
+        text, ok = QInputDialog.getText(self, "Add ticker", "Symbol:")
+        if not ok or not text.strip():
+            return
+        sym = text.strip().upper()
+        if not all(ch.isalnum() or ch in ".-" for ch in sym):
+            QMessageBox.warning(self, "Invalid symbol", "Use letters, numbers, dot or dash only.")
+            return
+        symbols = self._app.watchlist_symbols()
+        if sym in symbols:
+            return
+        symbols.append(sym)
+        self._app.set_watchlist(symbols)
+        self._save_watchlist()
+        self._level1_tick()
+
+    def _on_remove_ticker(self, row: int) -> None:
+        symbols = self._app.watchlist_symbols()
+        if not (0 <= row < len(symbols)):
+            return
+        sym = symbols[row]
+        if QMessageBox.question(self, "Remove", f"Remove {sym} from watchlist?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        del symbols[row]
+        self._app.set_watchlist(symbols)
+        self._save_watchlist()
+
+    def _on_rename_ticker(self, row: int, new_symbol: str) -> None:
+        symbols = self._app.watchlist_symbols()
+        if not (0 <= row < len(symbols)):
+            return
+        sym = (new_symbol or "").strip().upper()
+        if not sym or not all(ch.isalnum() or ch in ".-" for ch in sym):
+            QMessageBox.warning(self, "Invalid symbol", "Use letters, numbers, dot or dash only.")
+            return
+        if sym in symbols:
+            QMessageBox.information(self, "Duplicate", f"{sym} is already in the list.")
+            return
+        symbols[row] = sym
+        self._app.set_watchlist(symbols)
+        self._save_watchlist()
+
+    # ------------------------------------------------------------------
+    # Trade CRUD slots wired from QML
+    # ------------------------------------------------------------------
+
+    def _on_add_trade(self) -> None:
+        account = self._app.currentAccount
+        if account is None:
+            return
+        dlg = TradeEditDialog(
+            watchlist_symbols=self._app.watchlist_symbols(),
+            default_quantity=self._trade_default_quantity(),
+            quantity_increment=self._trade_quantity_increment(),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        trade = dlg.to_trade()
+        trade.account = account.name
+        all_trades = self._all_trades()
+        all_trades.append(trade)
+        self._save_account(account.name, self._account_trades(account.name, all_trades))
+
+    def _on_edit_trade(self, source_index: int) -> None:
+        account = self._app.currentAccount
+        if account is None:
+            return
+        account_trades = self._account_trades(account.name, self._all_trades())
+        if not (0 <= source_index < len(account_trades)):
+            return
+        trade = account_trades[source_index]
+        dlg = TradeEditDialog(
+            trade,
+            watchlist_symbols=self._app.watchlist_symbols(),
+            default_quantity=self._trade_default_quantity(),
+            quantity_increment=self._trade_quantity_increment(),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        updated = dlg.to_trade()
+        updated.account = (trade.account or account.name).strip() or account.name
+        account_trades[source_index] = updated
+        self._save_account(updated.account, account_trades)
+
+    def _on_delete_trade(self, source_index: int) -> None:
+        account = self._app.currentAccount
+        if account is None:
+            return
+        account_trades = self._account_trades(account.name, self._all_trades())
+        if not (0 <= source_index < len(account_trades)):
+            return
+        trade = account_trades[source_index]
+        if QMessageBox.question(
+                self, "Delete trade",
+                f"Delete {trade.normalized_instrument()} trade for {trade.share_count:,d} shares?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        del account_trades[source_index]
+        self._save_account(account.name, account_trades)
+
+    def _on_set_goal_target(self, value: float) -> None:
+        account = self._app.currentAccount
+        if account is None:
+            return
+        try:
+            shared, _ = self._store.get_goal_group()
+            shared_set = set(shared)
+        except Exception:
+            shared_set = set()
+        try:
+            if account.name in shared_set:
+                for name in shared_set:
+                    self._store.set_goal_target(name, float(value))
+            else:
+                self._store.set_goal_target(account.name, float(value))
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Failed", str(exc))
+            return
+        self._app.refresh_all_accounts()
+
+    # ------------------------------------------------------------------
+    # Goal options dialog
+    # ------------------------------------------------------------------
+
+    def _on_open_goal_options(self) -> None:
+        try:
+            accounts = self._store.get_account_names()
+            shared_names, _shared_goal = self._store.get_goal_group()
+        except Exception:
+            return
+        goal_targets: Dict[str, float] = {}
+        preset_values: Dict[str, List[float]] = {}
+        for a in accounts:
+            try:
+                goal_targets[a] = self._store.get_goal_target(a)
+                preset_values[a] = self._store.get_goal_presets(a)
+            except Exception:
+                goal_targets[a] = 500_000.0
+                preset_values[a] = [250_000.0, 500_000.0, 1_000_000.0]
+        dlg = GoalDashboardOptionsDialog(accounts, shared_names, goal_targets, preset_values, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self._store.set_goal_group(
+                dlg.selected_accounts(),
+                dlg.shared_goal(),
+                dlg.individual_goals(),
+                dlg.all_preset_values(),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Failed", str(exc))
+            return
+        self._app.refresh_all_accounts()
+
+    def _on_open_trade_history_options(self) -> None:
+        QMessageBox.information(
+            self, "Trade History Settings",
+            "In the new view, the Trade History columns are fixed and "
+            "sorting is via header click.\n\n"
+            "Use the filter box and the status dropdown to narrow the rows.",
+        )
+
+    # ------------------------------------------------------------------
+    # Context menus driven by QML right-clicks
+    # ------------------------------------------------------------------
+
+    def _on_holdings_menu(self, instrument: str) -> None:
+        account = self._app.currentAccount
+        if account is None or not instrument:
+            return
+        account_trades = self._account_trades(account.name, self._all_trades())
+        open_long = [t for t in account_trades
+                     if not t.is_closed and not t.is_pending and not t.is_short
+                     and t.normalized_instrument() == instrument]
+        open_short = [t for t in account_trades
+                      if not t.is_closed and not t.is_pending and t.is_short
+                      and t.normalized_instrument() == instrument]
+        if not open_long and not open_short:
+            return
+        is_short = bool(open_short) and not open_long
+
+        menu = QMenu(self)
+        # All action handlers are deferred via _safe_run so the dialog they
+        # open is created in a fresh event-loop tick AFTER the QMenu's exec
+        # loop has fully unwound. Opening a QDialog directly from a QMenu
+        # action lambda triggers a 3-deep nested event loop (QML → menu →
+        # dialog) which crashes intermittently on Windows.
+        if is_short:
+            menu.addAction("Buy to Cover").triggered.connect(
+                lambda: self._safe_run(self._close_position, instrument, account.name, account_trades, True))
+        else:
+            menu.addAction("Close Holdings").triggered.connect(
+                lambda: self._safe_run(self._close_position, instrument, account.name, account_trades, False))
+            menu.addAction("Mark Down").triggered.connect(
+                lambda: self._safe_run(self._mark_down, instrument, account.name, account_trades))
+            menu.addAction("Double Down").triggered.connect(
+                lambda: self._safe_run(self._double_down, instrument, account.name, account_trades))
+        menu.exec(QCursor.pos())
+
+    def _close_position(self, instrument: str, account_name: str,
+                        account_trades: List[Trade], is_short: bool) -> None:
+        matching = [t for t in account_trades
+                    if not t.is_closed and not t.is_pending
+                    and t.is_short == is_short
+                    and t.normalized_instrument() == instrument]
+        if not matching:
+            return
+        total_qty = sum(int(t.share_count) for t in matching)
+        total_cost = sum(float(t.buy_price) * int(t.share_count) for t in matching)
+        oldest = min((t.open_date for t in matching if t.open_date), default=date.today())
+        notes = " | ".join(t.notes for t in matching if t.notes)
+        avg_cost = (total_cost / total_qty) if total_qty > 0 else 0.0
+        combined = Trade(
+            instrument=instrument, share_count=total_qty, buy_price=avg_cost,
+            sell_price=None, open_date=oldest, close_date=None, notes=notes,
+            is_short=is_short,
+        )
+        dlg = TradeEditDialog(
+            trade=combined, watchlist_symbols=self._app.watchlist_symbols(),
+            default_quantity=self._trade_default_quantity(),
+            quantity_increment=self._trade_quantity_increment(),
+            close_holdings_mode=not is_short,
+            cover_mode=is_short,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        closing = dlg.to_trade()
+        if closing.sell_price is None or closing.close_date is None:
+            return
+        for t in matching:
+            t.sell_price = float(closing.sell_price)
+            t.close_date = closing.close_date
+        self._save_account(account_name, account_trades)
+
+    def _mark_down(self, instrument: str, account_name: str,
+                   account_trades: List[Trade]) -> None:
+        matching = [t for t in account_trades
+                    if not t.is_closed and not t.is_pending and not t.is_short
+                    and t.normalized_instrument() == instrument]
+        if not matching:
+            return
+        total_qty = sum(int(t.share_count) for t in matching)
+        total_cost = sum(float(t.buy_price) * int(t.share_count) for t in matching)
+        if total_qty <= 0:
+            return
+        holding = Holding(instrument=instrument, qty=total_qty,
+                          avg_cost=total_cost / total_qty, notes="")
+        dlg = MarkDownDialog(
+            holding=holding,
+            default_quantity=self._trade_default_quantity(),
+            quantity_increment=self._trade_quantity_increment(),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        trade = dlg.to_trade()
+        trade.account = account_name
+        account_trades.append(trade)
+        self._save_account(account_name, account_trades)
+
+    def _double_down(self, instrument: str, account_name: str,
+                     account_trades: List[Trade]) -> None:
+        matching = [t for t in account_trades
+                    if not t.is_closed and not t.is_pending and not t.is_short
+                    and t.normalized_instrument() == instrument]
+        if not matching:
+            return
+        total_qty = sum(int(t.share_count) for t in matching)
+        total_cost = sum(float(t.buy_price) * int(t.share_count) for t in matching)
+        if total_qty <= 0:
+            return
+        holding = Holding(instrument=instrument, qty=total_qty,
+                          avg_cost=total_cost / total_qty, notes="")
+        marks = self._app._marks_by_symbol.get(instrument, {})
+        current_mark = float(marks["price"]) if marks.get("price") is not None else None
+        dlg = DoubleDownDialog(
+            holding=holding, current_mark=current_mark,
+            quantity_increment=self._trade_quantity_increment(), parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        trade = dlg.to_trade()
+        trade.account = account_name
+        account_trades.append(trade)
+        self._save_account(account_name, account_trades)
+
+    def _on_trade_menu(self, source_index: int) -> None:
+        account = self._app.currentAccount
+        if account is None:
+            return
+        account_trades = self._account_trades(account.name, self._all_trades())
+        if not (0 <= source_index < len(account_trades)):
+            return
+        trade = account_trades[source_index]
+        menu = QMenu(self)
+        # Defer dialog opens via _safe_run — see _on_holdings_menu for why.
+        if trade.is_pending:
+            menu.addAction("Mark as Fulfilled").triggered.connect(
+                lambda: self._safe_run(self._fulfill_pending, source_index))
+            menu.addSeparator()
+        menu.addAction("Edit Trade").triggered.connect(
+            lambda: self._safe_run(self._on_edit_trade, source_index))
+        menu.addAction("Delete Trade").triggered.connect(
+            lambda: self._safe_run(self._on_delete_trade, source_index))
+        menu.exec(QCursor.pos())
+
+    def _fulfill_pending(self, source_index: int) -> None:
+        account = self._app.currentAccount
+        if account is None:
+            return
+        account_trades = self._account_trades(account.name, self._all_trades())
+        if not (0 <= source_index < len(account_trades)):
+            return
+        trade = account_trades[source_index]
+        if not trade.is_pending:
+            QMessageBox.information(self, "Not pending", "This trade is not a pending order.")
+            return
+        dlg = FulfillOrderDialog(trade, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        trade.is_pending = False
+        trade.open_date = dlg.get_fill_date()
+        trade.buy_price = dlg.get_fill_price()
+        self._save_account(account.name, account_trades)
+
+    # ------------------------------------------------------------------
+    # Settings / updates / user account dialogs
+    # ------------------------------------------------------------------
+
+    def _open_settings_dialog(self) -> None:
+        from .settings_dialog import SettingsDialog
+        s = self._qsettings()
+        cv = {
+            "L1_INTERVAL": self.L1_INTERVAL, "NET_INTERVAL": self.NET_INTERVAL,
+            "L1_ENABLED": self.L1_ENABLED,
+            "THEME_OVERRIDE": s.value("ui/THEME_OVERRIDE", getattr(self.theme, "override_mode", "System")),
+            "MATCH_SYSTEM_ACCENT": s.value("ui/MATCH_SYSTEM_ACCENT",
+                                            getattr(self.theme, "match_system_accent", True), type=bool),
+            "THEME_NAME": s.value("ui/THEME_NAME", getattr(self.theme, "theme_name", "Default")),
+            "FONT_SIZE": s.value("ui/FONT_SIZE", getattr(self.theme, "font_size_label", "Normal")),
+            "TRADE_DEFAULT_QUANTITY": int(s.value("trade_defaults/default_quantity", 1) or 1),
+            "TRADE_QUANTITY_INCREMENT": int(s.value("trade_defaults/quantity_increment", 1) or 1),
+        }
+        dlg = SettingsDialog(self, s, cv)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        vals = dlg.get_values()
+        self.L1_INTERVAL = int(vals["L1_INTERVAL"])
+        self.NET_INTERVAL = int(vals["NET_INTERVAL"])
+        self.L1_ENABLED = bool(vals["L1_ENABLED"])
+        self.theme.set_override_mode(vals["THEME_OVERRIDE"])
+        self.theme.set_match_system_accent(vals["MATCH_SYSTEM_ACCENT"])
+        self.theme.set_theme(vals.get("THEME_NAME", "Default"))
+        self.theme.set_font_size(vals.get("FONT_SIZE", "Normal"))
+        s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
+        s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
+        s.setValue("ui/THEME_NAME", self.theme.theme_name)
+        s.setValue("ui/FONT_SIZE", self.theme.font_size_label)
+        s.setValue("trade_defaults/default_quantity", int(vals["TRADE_DEFAULT_QUANTITY"]))
+        s.setValue("trade_defaults/quantity_increment", int(vals["TRADE_QUANTITY_INCREMENT"]))
+        s.sync()
+        self.timer_l1.setInterval(self.L1_INTERVAL)
+        self.timer_net.setInterval(self.NET_INTERVAL)
+        self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
+
+    def _check_for_updates(self) -> None:
+        from .update_checker import check_for_updates
+        check_for_updates(parent=self, silent_if_current=False)
+
+    def _open_user_account_dialog(self) -> None:
+        UserAccountDialog(self._store, self).exec()
+        # Account list may have changed.
+        self._app.rebuild_accounts()
+        self._app.refresh_all_accounts()
+
+    def _open_view_user_portfolio(self) -> None:
+        if not self._store.is_admin:
+            QMessageBox.information(self, "Admin Only",
+                                    "Only admin accounts can view other users' portfolios.")
+            return
+        _remote_ok = (
+            isinstance(self._store, RemoteDataStore) or
+            (isinstance(self._store, FallbackDataStore) and self._store._is_online)
+        )
+        if not _remote_ok:
+            QMessageBox.information(
+                self, "Server Required",
+                "Viewing other users requires a server connection. "
+                "The app is currently in offline mode — reconnect first.",
+            )
+            return
+        try:
+            users = self._store.list_users()
+        except Exception as exc:
+            QMessageBox.warning(self, "Error", f"Could not fetch user list: {exc}")
+            return
+        dlg = SelectUserDialog(users, self._store.user_info["user_id"], self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        user = dlg.selected_user()
+        if user is None:
+            return
+        user_id = user["id"]
+        if user_id in self._viewer_windows:
+            w = self._viewer_windows[user_id]
+            w.raise_(); w.activateWindow(); return
+        user_store = self._store.store_for_user(user_id, user["username"])
+        viewer = UserPortfolioViewer(user_store, user["username"], self._qsettings(), parent=None)
+        viewer.closed.connect(lambda uid=user_id: self._viewer_windows.pop(uid, None))
+        self._viewer_windows[user_id] = viewer
+        viewer.show()
+
+    # ------------------------------------------------------------------
+    # Background timers + worker threads
+    # ------------------------------------------------------------------
+
+    def _init_timers(self) -> None:
         self.timer_l1 = QTimer(self)
         self.timer_l1.setInterval(self.L1_INTERVAL)
         self.timer_l1.timeout.connect(self._level1_tick)
@@ -755,18 +1061,76 @@ class MainWindow(QMainWindow):
         self.timer_net.timeout.connect(self._kick_netcheck)
         self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
         self.timer_net.start()
-        # Defer the first tick so MainWindow.show() has returned and the
-        # event loop is live before we start a QThread. Running these
-        # synchronously from __init__ can crash on Windows (0xC0000005)
-        # because the child thread's lifetime starts before the parent
-        # QMainWindow is fully installed in the parent/child tree.
+        # Defer first tick — avoids spawning a QThread before the QML scene
+        # has finished mounting (Windows access-violation guard).
         QTimer.singleShot(250, self._kick_netcheck)
         QTimer.singleShot(500, self._level1_tick)
 
     def _thread_running(self, thread: Optional[QThread]) -> bool:
         return thread is not None and thread.isRunning()
 
-    def _kick_netcheck(self):
+    def _busy_enter(self) -> None:
+        self._busy_ops += 1
+        if self._busy_ops == 1:
+            self.spinner.start(90);
+            self.lbl_updating.setText("Updating...")
+
+    def _busy_leave(self) -> None:
+        self._busy_ops = max(0, self._busy_ops - 1)
+        if self._busy_ops == 0:
+            self.spinner.stop();
+            self.lbl_updating.setText("")
+
+    def _level1_tick(self) -> None:
+        if self._closing or self._thread_running(self._marks_thread):
+            return
+        # Watchlist + every account's open holdings.
+        tickers = list(self._app.watchlist_symbols())
+        for account in self._app.accounts:
+            try:
+                for h in account.holdings._rows:
+                    sym = h.get("instrument")
+                    if sym and sym not in tickers:
+                        tickers.append(sym)
+            except Exception:
+                pass
+        tickers = [t for t in dict.fromkeys(tickers) if t]
+        if not tickers:
+            return
+        self._busy_enter()
+        worker = MarksWorker(tickers)
+        thread = QThread(self)
+        self._marks_worker = worker
+        self._marks_thread = thread
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_marks)
+        worker.error.connect(self._on_marks_error)
+        worker.done.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_marks_thread)
+        thread.start()
+
+    def _cleanup_marks_thread(self) -> None:
+        self._marks_thread = None
+        self._marks_worker = None
+        if not self._closing:
+            self._busy_leave()
+
+    def _on_marks(self, data: dict) -> None:
+        if self._closing:
+            return
+        self._app.apply_marks(data)
+
+    def _on_marks_error(self, _msg: str) -> None:
+        if self._closing:
+            return
+        self.lbl_status.setText("● Offline")
+        self.lbl_status.setStyleSheet("color: #ef4444;")
+
+    def _kick_netcheck(self) -> None:
         if self._closing or self._thread_running(self._netcheck_thread):
             return
         worker = NetCheckWorker()
@@ -777,45 +1141,35 @@ class MainWindow(QMainWindow):
         thread.started.connect(worker.run)
         worker.done.connect(self._on_net_status)
         worker.done.connect(thread.quit)
-        # Delete worker + thread only AFTER the thread's event loop has
-        # exited — prevents an access violation when the worker's C++
-        # object is torn down while its thread is still spinning.
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._cleanup_netcheck_thread)
         thread.start()
 
-    def _cleanup_netcheck_thread(self):
+    def _cleanup_netcheck_thread(self) -> None:
         self._netcheck_thread = None
         self._netcheck_worker = None
-        # The corresponding `worker.deleteLater` slot ran already; clear our
-        # Python ref so the wrapper does not outlive the C++ object.
 
-    def _on_net_status(self, ok: bool):
+    def _on_net_status(self, ok: bool) -> None:
         if self._closing:
             return
         self._online = ok
         if not ok:
-            # No network at all → red
             self.lbl_status.setText("● Offline")
             self.lbl_status.setStyleSheet("color: #ef4444;")
         elif isinstance(self._store, FallbackDataStore) and not self._store._is_online:
-            # Internet up but server unreachable → yellow
             n = self._store.pending_sync_count
             suffix = f" — {n} change{'s' if n != 1 else ''} queued" if n else " — server unreachable"
             self.lbl_status.setText(f"● Online{suffix}")
             self.lbl_status.setStyleSheet("color: #f59e0b;")
         elif not isinstance(self._store, (RemoteDataStore, FallbackDataStore)):
-            # Working offline (LocalDataStore) but internet available → yellow
             self.lbl_status.setText("● Online — working offline")
             self.lbl_status.setStyleSheet("color: #f59e0b;")
         else:
-            # Server reachable → green
             self.lbl_status.setText("● Online")
             self.lbl_status.setStyleSheet("color: #22c55e;")
 
-    def _init_reconnect_timer(self):
-        """Start a 30-second reconnect timer if we are using FallbackDataStore."""
+    def _init_reconnect_timer(self) -> None:
         if not isinstance(self._store, FallbackDataStore):
             return
         self._reconnect_timer_obj = QTimer(self)
@@ -823,12 +1177,11 @@ class MainWindow(QMainWindow):
         self._reconnect_timer_obj.timeout.connect(self._attempt_reconnect)
         self._reconnect_timer_obj.start()
 
-    def _attempt_reconnect(self):
-        """Try to re-establish server connection and flush queued writes."""
+    def _attempt_reconnect(self) -> None:
         if not isinstance(self._store, FallbackDataStore):
             return
         if self._closing or self._store._is_online or self._thread_running(self._reconnect_thread):
-            return   # already online, nothing to do
+            return
         serial_debug("Attempting reconnect to server...")
         worker = ReconnectWorker(self._store)
         thread = QThread(self)
@@ -843,16 +1196,15 @@ class MainWindow(QMainWindow):
         thread.finished.connect(self._cleanup_reconnect_thread)
         thread.start()
 
-    def _cleanup_reconnect_thread(self):
+    def _cleanup_reconnect_thread(self) -> None:
         self._reconnect_thread = None
         self._reconnect_worker = None
 
-    def _on_reconnect_finished(self, ok: bool):
+    def _on_reconnect_finished(self, ok: bool) -> None:
         if ok and not self._closing:
             self._on_reconnected()
 
-    def _on_reconnected(self):
-        """Called on main thread after successful reconnect."""
+    def _on_reconnected(self) -> None:
         if self._closing:
             return
         pending = self._store.pending_sync_count
@@ -861,249 +1213,43 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_status.setText("● Online — syncing...")
         self.lbl_status.setStyleSheet("color: #22c55e;")
-        # Reload all tabs so they get fresh server data
-        for tab in self._portfolio_tabs.values():
-            tab.reload_from_store()
+        self._app.refresh_all_accounts()
 
-    def _set_offline_status(self, n_pending: int):
-        """Called by FallbackDataStore when a write fails and is queued."""
+    def _set_offline_status(self, n_pending: int) -> None:
         self.lbl_status.setText(f"● Offline — {n_pending} change{'s' if n_pending != 1 else ''} queued")
-        self.lbl_status.setStyleSheet("color: #f59e0b;")   # amber
+        self.lbl_status.setStyleSheet("color: #f59e0b;")
 
-    def _set_synced_status(self, synced_count: int):
-        """Called by FallbackDataStore after successfully flushing queued writes."""
+    def _set_synced_status(self, synced_count: int) -> None:
         if synced_count > 0:
             self.lbl_status.setText(f"● Online — synced {synced_count} change{'s' if synced_count != 1 else ''}")
         else:
             self.lbl_status.setText("● Online")
         self.lbl_status.setStyleSheet("color: #22c55e;")
 
-    def _busy_enter(self):
-        self._busy_ops += 1
-        if self._busy_ops == 1:
-            self.spinner.start(90); self.lbl_updating.setText("Updating...")
+    # ------------------------------------------------------------------
+    # Save / close
+    # ------------------------------------------------------------------
 
-    def _busy_leave(self):
-        self._busy_ops = max(0, self._busy_ops - 1)
-        if self._busy_ops == 0:
-            self.spinner.stop(); self.lbl_updating.setText("")
-
-    def _level1_tick(self):
-        if self._closing or self._thread_running(self._marks_thread):
-            return
-        tickers = [self.watch.item(r, 0).text() for r in range(self.watch.rowCount())]
-        for tab in self._portfolio_tabs.values():
-            tickers.extend(tab.holdings_symbols())
-        tickers = list(dict.fromkeys([t for t in tickers if t]))
-        if not tickers:
-            return
-        self._busy_enter()
-        worker = MarksWorker(tickers)
-        thread = QThread(self)
-        self._marks_worker = worker
-        self._marks_thread = thread
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.done.connect(self._on_marks)
-        worker.error.connect(self._on_marks_error)
-        worker.done.connect(thread.quit)
-        worker.error.connect(thread.quit)
-        # Delete worker + thread only AFTER the thread's event loop has
-        # exited — prevents an access violation when the worker's C++
-        # object is torn down while its thread is still spinning.
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_marks_thread)
-        thread.start()
-
-    def _cleanup_marks_thread(self):
-        self._marks_thread = None
-        self._marks_worker = None
-        if not self._closing:
-            self._busy_leave()
-
-    def _on_marks(self, data: dict):
-        if self._closing:
-            return
-        for tab in self._portfolio_tabs.values():
-            tab.update_marks(data)
-        for r in range(self.watch.rowCount()):
-            sym = self.watch.item(r, 0).text()
-            row = data.get(sym, {})
-            cell = self.watch.item(r, 1)
-            if cell is None:
-                cell = QTableWidgetItem("--"); self.watch.setItem(r, 1, cell)
-            if row.get("price") is not None:
-                cell.setText(f"{row['price']:.2f}")
-
-    def _on_marks_error(self, msg: str):
-        if self._closing:
-            return
-        self.lbl_status.setText("● Offline"); self.lbl_status.setStyleSheet("color: #ef4444;")
-
-    def _bind_shortcuts(self):
-        act = QAction("Refresh Marks (F5)", self)
-        act.setShortcut(QKeySequence("F5"))
-        act.triggered.connect(self._level1_tick)
-        self.addAction(act)
-
-    # ---- Sidebar ----
-
-    def _is_sidebar_visible(self): return self.splitter.sizes()[0] > 0
-
-    def _remember_sidebar_size(self, pos: int, index: int):
-        if index == 1:
-            return
-        sizes = self.splitter.sizes()
-        if sizes and sizes[0] > 0:
-            self._last_sidebar_size = sizes[0]
-
-    def _set_sidebar_visible(self, visible: bool, apply_sizes: bool = True):
-        sizes = self.splitter.sizes()
-        total = sum(sizes) if sizes else 1000
-        if visible:
-            left = getattr(self, "_last_sidebar_size", 240) or 240
-            if apply_sizes: self.splitter.setSizes([left, max(1, total - left)])
-            self.act_toggle_sidebar.setChecked(True)
-        else:
-            if sizes and sizes[0] > 0: self._last_sidebar_size = sizes[0]
-            if apply_sizes: self.splitter.setSizes([0, total])
-            self.act_toggle_sidebar.setChecked(False)
-
-    def _toggle_sidebar(self): self._set_sidebar_visible(not self._is_sidebar_visible())
-
-    def resizeEvent(self, event):
-        old_sizes = self.splitter.sizes() if hasattr(self, "splitter") else []
-        old_left = old_sizes[0] if old_sizes else 0
-        super().resizeEvent(event)
-        if not hasattr(self, "splitter") or not self._is_sidebar_visible():
-            return
-        total = sum(self.splitter.sizes())
-        if old_left <= 0 or total <= 0:
-            return
-        self.splitter.setSizes([old_left, max(1, total - old_left)])
-
-    # ---- Watchlist ----
-
-    def _add_watch_row(self, sym: str, mark: str = "--"):
-        r = self.watch.rowCount()
-        self.watch.insertRow(r)
-        it0 = QTableWidgetItem(sym.upper())
-        f = it0.font(); f.setBold(True); it0.setFont(f)
-        it0.setFlags(it0.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        it1 = QTableWidgetItem(mark)
-        it1.setFlags(it1.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        it1.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.watch.setItem(r, 0, it0); self.watch.setItem(r, 1, it1)
-        if hasattr(self.watch, "_size_columns"):
-            self.watch._size_columns()
-
-    def _watch_current_row(self) -> int: return self.watch.currentRow()
-
-    def _on_add_ticker(self):
-        text, ok = QInputDialog.getText(self, "Add ticker", "Symbol:")
-        if not ok or not text.strip(): return
-        sym = text.strip().upper()
-        if not all(ch.isalnum() or ch in ".-" for ch in sym):
-            QMessageBox.warning(self, "Invalid symbol", "Use letters, numbers, dot or dash only."); return
-        for r in range(self.watch.rowCount()):
-            if self.watch.item(r, 0).text() == sym:
-                self.watch.selectRow(r); return
-        self._add_watch_row(sym)
-        self.watch.selectRow(self.watch.rowCount() - 1)
-        if self._watch_sort_mode == self.SORT_DEFAULT: self._save_settings()
-
-    def _on_remove_ticker(self):
-        r = self._watch_current_row()
-        if r < 0:
-            QMessageBox.information(self, "Select item", "Pick a ticker to remove."); return
-        sym = self.watch.item(r, 0).text()
-        if QMessageBox.question(self, "Remove", f"Remove {sym} from watchlist?") \
-                != QMessageBox.StandardButton.Yes: return
-        self.watch.removeRow(r)
-        if self._watch_sort_mode == self.SORT_DEFAULT: self._save_settings()
-
-    def _ctx_rename_selected(self):
-        r = self._watch_current_row()
-        if r < 0: return
-        old = self.watch.item(r, 0).text()
-        text, ok = QInputDialog.getText(self, "Rename ticker", "Symbol:", text=old)
-        if not ok or not text.strip(): return
-        sym = text.strip().upper()
-        if not all(ch.isalnum() or ch in ".-" for ch in sym):
-            QMessageBox.warning(self, "Invalid symbol", "Use letters, numbers, dot or dash only."); return
-        for rr in range(self.watch.rowCount()):
-            if rr != r and self.watch.item(rr, 0).text() == sym:
-                QMessageBox.information(self, "Duplicate", f"{sym} is already in the list."); return
-        self.watch.item(r, 0).setText(sym)
-
-    def _ctx_move_row(self, delta: int):
-        if self._watch_sort_mode != self.SORT_DEFAULT:
-            QMessageBox.information(self, "Reorder disabled", "Switch to Default (custom) sort to reorder."); return
-        r = self._watch_current_row()
-        if r < 0: return
-        new_r = r + delta
-        if not (0 <= new_r < self.watch.rowCount()): return
-        data = [self.watch.item(r, c).text() for c in range(self.watch.columnCount())]
-        self.watch.removeRow(r)
-        self.watch.insertRow(new_r)
-        for c, text in enumerate(data):
-            item = QTableWidgetItem(text)
-            if c == 0:
-                f = item.font(); f.setBold(True); item.setFont(f)
-            elif c == 1:
-                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.watch.setItem(new_r, c, item)
-        self.watch.selectRow(new_r)
-        self._save_settings()
-
-    def _on_sort_mode_changed(self, mode: str):
-        self._watch_sort_mode = mode
-        self.watch.set_sort_mode(mode)
-        if mode == self.SORT_DEFAULT:
-            self.watch.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-            self.watch.setSortingEnabled(False)
-            try:
-                items = self._store.get_watchlist()
-            except Exception:
-                items = []
-            if not items:
-                items = self._qsettings().value("watchlist/items", []) or []
-            self.watch.setRowCount(0)
-            for sym in items: self._add_watch_row(str(sym).upper())
-        elif mode == self.SORT_ALPHA: self._apply_sort_by_column(0, True, False)
-        elif mode == self.SORT_PRICE: self._apply_sort_by_column(1, False, True)
-
-    def _apply_sort_by_column(self, col: int, case_insensitive: bool, numeric: bool):
-        self.watch.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
-        self.watch.setSortingEnabled(False)
-        rows = []
-        for r in range(self.watch.rowCount()):
-            rows.append([
-                self.watch.item(r, c).text() if self.watch.item(r, c) else ""
-                for c in range(self.watch.columnCount())
-            ])
-
-        def key(row):
-            v = row[col]
-            if numeric:
-                try: return float(v.replace(",", "")) if v not in ("", "--") else float("-inf")
-                except Exception: return float("-inf")
-            return v.lower() if case_insensitive else v
-
-        rows.sort(key=key)
-        self.watch.setRowCount(0)
-        for sym, mark in rows:
-            self._add_watch_row(sym, mark)
-        if self.watch.rowCount() > 0: self.watch.selectRow(0)
+    def _save_settings(self) -> None:
+        s = self._qsettings()
+        symbols = self._app.watchlist_symbols()
+        try:
+            self._store.save_watchlist(symbols)
+        except Exception:
+            pass
+        s.setValue("watchlist/items", symbols)
+        s.setValue("intervals/L1_INTERVAL", self.L1_INTERVAL)
+        s.setValue("intervals/NET_INTERVAL", self.NET_INTERVAL)
+        s.setValue("intervals/L1_ENABLED", self.L1_ENABLED)
+        s.setValue("ui/THEME_OVERRIDE", self.theme.override_mode)
+        s.setValue("ui/MATCH_SYSTEM_ACCENT", self.theme.match_system_accent)
+        s.setValue("ui/THEME_NAME", self.theme.theme_name)
+        s.setValue("ui/FONT_SIZE", self.theme.font_size_label)
+        s.sync()
 
     def closeEvent(self, event):
         self._closing = True
         self._save_settings()
-
-        # Stop the theme poll timer first — it can otherwise fire a full
-        # repaint while widgets are being torn down (Windows access violation).
         try:
             self.theme.stop_watching()
         except Exception:
@@ -1125,10 +1271,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # Quit and wait — but do NOT disconnect signals: the
-        # `thread.finished -> worker.deleteLater` chain wired in
-        # `_level1_tick` etc. still has to fire so the C++ worker
-        # objects are torn down before the QThread itself disappears.
         for thread_name in ("_marks_thread", "_netcheck_thread", "_reconnect_thread"):
             thread = getattr(self, thread_name, None)
             if thread is None:
@@ -1140,10 +1282,10 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        self._marks_thread = None
+        self._marks_thread = None;
         self._marks_worker = None
-        self._netcheck_thread = None
+        self._netcheck_thread = None;
         self._netcheck_worker = None
-        self._reconnect_thread = None
+        self._reconnect_thread = None;
         self._reconnect_worker = None
         super().closeEvent(event)

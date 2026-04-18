@@ -11,6 +11,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Direct runtime imports ───────────────────────────────────────────────────
+# PySide6 ships QtQuick / QtQuickWidgets / QtQuickControls2 / QtQml inside
+# PySide6-Essentials (auto-installed with PySide6), so a plain install of
+# PySide6 is sufficient — no separate Qt Quick package needed.
 PySide6>=6.6,<7
 requests>=2.31
 yfinance>=0.2.40

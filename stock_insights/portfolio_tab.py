@@ -5,7 +5,7 @@ from datetime import date
 from functools import cmp_to_key
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDate, QPoint, QSettings, Qt, Signal
+from PySide6.QtCore import QDate, QPoint, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -344,12 +344,11 @@ class TradeEditDialog(QDialog):
 
     Close fields (sell price, close date, profit preview) live in a collapsible
     QWidget so the dialog shrinks when status is OPEN and expands when CLOSED.
+    Sizing is driven by the layout system (no setFixedHeight) — calling
+    setFixedHeight() multiple times during init while the dialog is parented
+    to a QMainWindow whose central widget is a QQuickWidget has triggered
+    intermittent crashes on Windows.
     """
-
-    # Dialog heights for each state
-    _HEIGHT_PENDING = 255   # pending: core fields only
-    _HEIGHT_OPEN    = 330   # confirmed + open: adds open date + status
-    _HEIGHT_CLOSED  = 440   # confirmed + closed: adds close fields too
 
     def __init__(
         self,
@@ -362,6 +361,13 @@ class TradeEditDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
+        # Block input to the rest of the app while the dialog is up — without
+        # this the QQuickWidget can re-render under the modal and steal the
+        # focus / mouse events the dialog expects.
+        self.setModal(True)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setMinimumWidth(420)
+
         self._editing = trade
         self._watchlist_symbols = [str(s).strip().upper() for s in (watchlist_symbols or []) if str(s).strip()]
         self._default_quantity = max(1, int(default_quantity or 1))
@@ -378,12 +384,14 @@ class TradeEditDialog(QDialog):
         self.setWindowTitle(title)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
 
         # ---- Always-visible core fields ----
         form = QFormLayout()
-        form.setSpacing(8)
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.type_combo = QComboBox()
         self.type_combo.addItems(["Long (Buy)", "Short (Sell Short)"])
@@ -435,7 +443,9 @@ class TradeEditDialog(QDialog):
         self._open_section = QWidget()
         open_form = QFormLayout(self._open_section)
         open_form.setContentsMargins(0, 4, 0, 0)
-        open_form.setSpacing(8)
+        open_form.setSpacing(10)
+        open_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        open_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.open_date_edit = QDateEdit()
         self.open_date_edit.setCalendarPopup(True)
@@ -452,7 +462,9 @@ class TradeEditDialog(QDialog):
         self._close_section = QWidget()
         close_form = QFormLayout(self._close_section)
         close_form.setContentsMargins(0, 4, 0, 0)
-        close_form.setSpacing(8)
+        close_form.setSpacing(10)
+        close_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        close_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.sell_price_spin = QDoubleSpinBox()
         self.sell_price_spin.setRange(0.0, 1_000_000_000.0)
@@ -563,20 +575,31 @@ class TradeEditDialog(QDialog):
             # Force OPEN so close section also hides; reset status when un-pending
             self.status_combo.setCurrentText("OPEN")
             self._close_section.setVisible(False)
-            self.setFixedHeight(self._HEIGHT_PENDING)
         else:
             # Re-apply status visibility now that open section is shown again
             self._sync_status(self.status_combo.currentText())
         self._update_preview()
+        self._resize_to_content()
 
     def _sync_status(self, status: str):
-        """Show/hide close section and resize based on status."""
+        """Show/hide close section based on status."""
         closed = status == "CLOSED"
         self._close_section.setVisible(closed)
-        self.setFixedHeight(
-            self._HEIGHT_CLOSED if closed else self._HEIGHT_OPEN
-        )
         self._update_preview()
+        self._resize_to_content()
+
+    def _resize_to_content(self):
+        """Re-size the dialog to fit the currently visible sections.
+
+        Replaces the previous setFixedHeight() approach which fired
+        repeatedly during init and triggered crashes when the dialog was
+        parented to a window hosting a QQuickWidget. adjustSize() respects
+        the layout's sizeHint, so the dialog naturally grows/shrinks as
+        sections become visible/invisible.
+        """
+        # Defer until the next event-loop tick so all visibility changes
+        # in the current call chain have settled before we re-size.
+        QTimer.singleShot(0, self.adjustSize)
 
     def _update_preview(self):
         if self.status_combo.currentText() != "CLOSED":

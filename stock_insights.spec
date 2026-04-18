@@ -24,6 +24,7 @@
 # ────────────────────────────────────────────────────────────────────────────
 
 import sys
+from pathlib import Path
 from PyInstaller.building.api import EXE, PYZ
 from PyInstaller.building.build_main import Analysis
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -43,6 +44,13 @@ pandas_datas,     pandas_binaries,     pandas_hiddenimports     = collect_all("p
 certifi_datas,    certifi_binaries,    certifi_hiddenimports    = collect_all("certifi")
 requests_datas,   requests_binaries,   requests_hiddenimports   = collect_all("requests")
 
+# ── Bundle our own QML scene + reusable components ───────────────────────────
+qml_files = [
+    (str(p), "stock_insights/qml")
+    for p in Path("stock_insights/qml").glob("*")
+    if p.is_file()
+]
+
 # ── Combine everything ────────────────────────────────────────────────────────
 all_datas = (
     pyside6_datas
@@ -50,6 +58,7 @@ all_datas = (
     + pandas_datas
     + certifi_datas
     + requests_datas
+    + qml_files
 )
 
 all_binaries = (
@@ -77,6 +86,16 @@ all_hiddenimports = (
         "PySide6.QtPrintSupport",
         "PySide6.QtSvg",
         "PySide6.QtXml",
+        # QML / Qt Quick runtime — required by the QQuickWidget central area
+        "PySide6.QtQml",
+        "PySide6.QtQmlModels",
+        "PySide6.QtQmlWorkerScript",
+        "PySide6.QtQuick",
+        "PySide6.QtQuickWidgets",
+        "PySide6.QtQuickControls2",
+        "PySide6.QtQuickLayouts",
+        "PySide6.QtQuickTemplates2",
+        "PySide6.QtOpenGL",
 
         # yfinance internals loaded at runtime
         "yfinance",
@@ -112,6 +131,7 @@ all_hiddenimports = (
         "stock_insights.main_window",
         "stock_insights.portfolio",
         "stock_insights.portfolio_tab",
+        "stock_insights.qml_bridge",
         "stock_insights.settings_dialog",
         "stock_insights.sync_queue",
         "stock_insights.theme",
@@ -156,9 +176,9 @@ a = Analysis(
         "PySide6.QtMultimediaWidgets",
         "PySide6.QtNfc",
         "PySide6.QtPositioning",
-        "PySide6.QtQuick",
+        # NOTE: PySide6.QtQuick / QtQuickWidgets are required by the QML
+        # main scene — must NOT be excluded.  QtQuick3D is fine to drop.
         "PySide6.QtQuick3D",
-        "PySide6.QtQuickWidgets",
         "PySide6.QtRemoteObjects",
         "PySide6.QtScxml",
         "PySide6.QtSensors",

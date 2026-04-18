@@ -1,0 +1,13 @@
+module StockInsights
+Card 1.0 Card.qml
+Metric 1.0 Metric.qml
+Pill 1.0 Pill.qml
+SectionTitle 1.0 SectionTitle.qml
+ToolButton2 1.0 ToolButton2.qml
+WatchlistPane 1.0 WatchlistPane.qml
+PortfolioPane 1.0 PortfolioPane.qml
+PortfolioView 1.0 PortfolioView.qml
+GoalDashboard 1.0 GoalDashboard.qml
+AnalyticsPanel 1.0 AnalyticsPanel.qml
+HoldingsTable 1.0 HoldingsTable.qml
+TradesTable 1.0 TradesTable.qml
