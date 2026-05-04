@@ -602,17 +602,29 @@ def update_watchlist(
 # Quotes  (live prices for the mobile / web client)
 # ---------------------------------------------------------------------------
 #
-# yfinance is already a dependency of the desktop client; the server reuses
-# it here so the PWA doesn't need to talk to Yahoo directly (which CORS
-# blocks anyway). Results are cached in-process for QUOTE_TTL seconds so
-# rapid-fire polling from a phone screen doesn't spam Yahoo.
+# Primary source: Stooq. Free, unauthenticated, reliable, and crucially —
+# not Yahoo, which has been actively breaking yfinance for the past year.
+# Stooq returns CSV directly, so we hit them once with all symbols and
+# parse the result. yfinance is kept as a fallback for any symbol Stooq
+# couldn't price (e.g. very new IPOs, foreign exchanges).
+#
+# Results are cached in-process for QUOTE_TTL seconds so rapid-fire
+# polling from the PWA doesn't spam either upstream.
 
+import csv
+import io
 import time
 from threading import Lock
 
 try:
-    import yfinance as _yf
+    import requests as _requests
 
+    _REQ_OK = True
+except ImportError:
+    _REQ_OK = False
+
+try:
+    import yfinance as _yf
     _YF_OK = True
 except ImportError:
     _YF_OK = False
@@ -621,39 +633,103 @@ _QUOTE_CACHE: Dict[str, tuple] = {}  # symbol -> (price, fetched_at)
 _QUOTE_LOCK = Lock()
 QUOTE_TTL = 20.0  # seconds
 
+_STOOQ_URL = "https://stooq.com/q/l/"
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
-def _fetch_one_quote(symbol: str):
-    """Best-effort single-symbol price fetch. Returns float or None."""
+
+def _fetch_quotes_stooq(symbols: List[str]) -> Dict[str, Optional[float]]:
+    """Batch-fetch latest prices from Stooq. Returns {symbol: price_or_None}.
+    Stooq lists US equities with a `.us` suffix; we strip it on the way back."""
+    out: Dict[str, Optional[float]] = {s: None for s in symbols}
+    if not symbols or not _REQ_OK:
+        return out
+
+    params = {
+        "s": ",".join(f"{s.lower()}.us" for s in symbols),
+        "f": "sd2t2ohlcv",
+        "h": "",
+        "e": "csv",
+    }
     try:
-        fi = _yf.Ticker(symbol).fast_info
-        last = fi.get("last_price")
-        if last is not None:
-            return float(last)
-    except Exception:
-        pass
+        resp = _requests.get(
+            _STOOQ_URL, params=params,
+            headers={"User-Agent": _UA},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        text = resp.text
+    except Exception as exc:
+        print(f"[quotes] Stooq fetch failed: {exc}")
+        return out
+
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        # Map normalized symbol -> original casing supplied by caller
+        original_for = {s.upper(): s for s in symbols}
+        for row in reader:
+            # Stooq returns "NVDA.US" — strip the suffix
+            raw = (row.get("Symbol") or "").upper().split(".")[0]
+            sym = original_for.get(raw)
+            if not sym:
+                continue
+            close = (row.get("Close") or "").strip()
+            if not close or close.upper() == "N/D":
+                continue
+            try:
+                out[sym] = float(close)
+            except ValueError:
+                pass
+    except Exception as exc:
+        print(f"[quotes] Stooq CSV parse failed: {exc}")
+
+    missing = [s for s, v in out.items() if v is None]
+    if missing:
+        print(f"[quotes] Stooq missing: {missing}")
+    return out
+
+
+def _fetch_quotes_yfinance(symbols: List[str]) -> Dict[str, Optional[float]]:
+    """Fallback fetcher — yfinance batch download. Returns {sym: price_or_None}.
+    Only called for symbols Stooq couldn't price."""
+    out: Dict[str, Optional[float]] = {s: None for s in symbols}
+    if not symbols or not _YF_OK:
+        return out
     try:
         df = _yf.download(
-            tickers=symbol, period="1d", interval="1m",
+            tickers=symbols,
+            interval="1m", period="1d",
+            group_by="ticker",
             progress=False, threads=False,
         )
-        if df is not None and "Close" in df:
-            close = df["Close"].dropna()
+    except Exception as exc:
+        print(f"[quotes] yfinance batch failed: {exc}")
+        return out
+
+    for sym in symbols:
+        try:
+            sub = df[sym] if (len(symbols) > 1 and sym in df) else df
+            close = sub["Close"].dropna()
             if len(close):
-                return float(close.iloc[-1])
-    except Exception:
-        pass
-    return None
+                out[sym] = float(close.iloc[-1])
+        except Exception:
+            pass
+    return out
 
 
 @app.get("/quotes")
 def get_quotes(symbols: str = "", user: dict = Depends(current_user)):
     """Return {symbol: price_or_null} for a comma-separated symbol list.
 
-    Auth-gated so anonymous traffic can't drive up our yfinance usage.
-    Cached in-process for QUOTE_TTL seconds per symbol.
+    Auth-gated so anonymous traffic can't drive up our upstream usage.
+    Cached in-process for QUOTE_TTL seconds per symbol. Tries Stooq first,
+    then falls back to yfinance for anything Stooq couldn't price.
     """
-    if not _YF_OK:
-        raise HTTPException(503, "yfinance not installed on server")
+    if not _REQ_OK and not _YF_OK:
+        raise HTTPException(503, "Neither requests nor yfinance is installed")
 
     requested = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     requested = list(dict.fromkeys(requested))  # de-dupe, preserve order
@@ -672,10 +748,18 @@ def get_quotes(symbols: str = "", user: dict = Depends(current_user)):
             else:
                 to_fetch.append(sym)
 
-    # Fetch fresh ones outside the lock so concurrent requests don't block.
+    # Fetch outside the lock so concurrent requests don't block on one another.
     fresh: Dict[str, Optional[float]] = {}
-    for sym in to_fetch:
-        fresh[sym] = _fetch_one_quote(sym)
+    if to_fetch:
+        # Primary: Stooq
+        fresh = _fetch_quotes_stooq(to_fetch)
+        # Fallback: yfinance for any symbol Stooq couldn't price
+        still_missing = [s for s, v in fresh.items() if v is None]
+        if still_missing and _YF_OK:
+            yf_results = _fetch_quotes_yfinance(still_missing)
+            for sym, price in yf_results.items():
+                if price is not None:
+                    fresh[sym] = price
 
     with _QUOTE_LOCK:
         for sym, price in fresh.items():
