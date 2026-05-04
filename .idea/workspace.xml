@@ -4,26 +4,22 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="UI rework v2">
-      <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="UI rework v3">
+      <change afterPath="$PROJECT_DIR$/pwa/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/icons/icon-192.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/icons/icon-512.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/icons/icon-maskable-512.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/index.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/js/api.js" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/js/app.js" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/js/portfolio.js" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/make_icons.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/manifest.webmanifest" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/server_quotes_patch.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/styles.css" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pwa/sw.js" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/AnalyticsPanel.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/AnalyticsPanel.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/GoalDashboard.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/GoalDashboard.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/HoldingsTable.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/HoldingsTable.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/Metric.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/Metric.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/Pill.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/Pill.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/PortfolioPane.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/PortfolioPane.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/PortfolioView.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/PortfolioView.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/SectionTitle.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/SectionTitle.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/ToolButton2.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/ToolButton2.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/TradesTable.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/TradesTable.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/WatchlistPane.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/WatchlistPane.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/qmldir" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/qmldir" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml_bridge.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml_bridge.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/settings_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/settings_dialog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/theme.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/theme.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/misc_helpers/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/server/server.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -93,7 +89,7 @@
     &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
     &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
     &quot;git-widget-placeholder&quot;: &quot;Portfolio&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/Joshb/OneDrive/Documents/Code/PycharmProjects/StockInsights&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/Joshb/OneDrive/Documents/Code/PycharmProjects/StockInsights/pwa&quot;,
     &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
     &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
@@ -106,13 +102,14 @@
 }</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\pwa" />
+      <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\misc_helpers" />
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights" />
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\stock_insights" />
-      <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\misc_helpers" />
       <recent name="C:\Users\Joshb\PycharmProjects\PythonProject" />
-      <recent name="C:\Users\Joshb\PycharmProjects\PythonProject\.venv" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\server" />
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\misc" />
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights" />
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\stock_insights" />
@@ -204,7 +201,7 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-b63d5a1f7c97-b61e75351b1f-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.22158.340" />
+        <option value="bundled-python-sdk-024ed6589d45-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.23567.174" />
       </set>
     </attachedChunks>
   </component>
@@ -405,7 +402,15 @@
       <option name="project" value="LOCAL" />
       <updated>1776521314202</updated>
     </task>
-    <option name="localTasksCounter" value="24" />
+    <task id="LOCAL-00024" summary="UI rework v3">
+      <option name="closed" value="true" />
+      <created>1776535241895</created>
+      <option name="number" value="00024" />
+      <option name="presentableId" value="LOCAL-00024" />
+      <option name="project" value="LOCAL" />
+      <updated>1776535241895</updated>
+    </task>
+    <option name="localTasksCounter" value="25" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -445,7 +450,8 @@
     <MESSAGE value="claude optimizations" />
     <MESSAGE value="UI rework" />
     <MESSAGE value="UI rework v2" />
-    <option name="LAST_COMMIT_MESSAGE" value="UI rework v2" />
+    <MESSAGE value="UI rework v3" />
+    <option name="LAST_COMMIT_MESSAGE" value="UI rework v3" />
     <option name="OPTIMIZE_IMPORTS_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REFORMAT_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REARRANGE_BEFORE_PROJECT_COMMIT" value="true" />

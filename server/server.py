@@ -26,11 +26,17 @@ exposed externally; only port 8742 does.
 import argparse
 import hashlib
 import json
+import mimetypes
 import os
+import pathlib
 import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+
+# Python's mimetypes db doesn't know .webmanifest by default; some browsers
+# refuse to install a PWA without the right Content-Type. Register it once.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -46,6 +52,7 @@ try:
     import uvicorn
     from fastapi import Depends, FastAPI, HTTPException, Request, status
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError as _e:
     print(f"\nMissing dependency: {_e}")
@@ -592,6 +599,122 @@ def update_watchlist(
 
 
 # ---------------------------------------------------------------------------
+# Quotes  (live prices for the mobile / web client)
+# ---------------------------------------------------------------------------
+#
+# yfinance is already a dependency of the desktop client; the server reuses
+# it here so the PWA doesn't need to talk to Yahoo directly (which CORS
+# blocks anyway). Results are cached in-process for QUOTE_TTL seconds so
+# rapid-fire polling from a phone screen doesn't spam Yahoo.
+
+import time
+from threading import Lock
+
+try:
+    import yfinance as _yf
+
+    _YF_OK = True
+except ImportError:
+    _YF_OK = False
+
+_QUOTE_CACHE: Dict[str, tuple] = {}  # symbol -> (price, fetched_at)
+_QUOTE_LOCK = Lock()
+QUOTE_TTL = 20.0  # seconds
+
+
+def _fetch_one_quote(symbol: str):
+    """Best-effort single-symbol price fetch. Returns float or None."""
+    try:
+        fi = _yf.Ticker(symbol).fast_info
+        last = fi.get("last_price")
+        if last is not None:
+            return float(last)
+    except Exception:
+        pass
+    try:
+        df = _yf.download(
+            tickers=symbol, period="1d", interval="1m",
+            progress=False, threads=False,
+        )
+        if df is not None and "Close" in df:
+            close = df["Close"].dropna()
+            if len(close):
+                return float(close.iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
+@app.get("/quotes")
+def get_quotes(symbols: str = "", user: dict = Depends(current_user)):
+    """Return {symbol: price_or_null} for a comma-separated symbol list.
+
+    Auth-gated so anonymous traffic can't drive up our yfinance usage.
+    Cached in-process for QUOTE_TTL seconds per symbol.
+    """
+    if not _YF_OK:
+        raise HTTPException(503, "yfinance not installed on server")
+
+    requested = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    requested = list(dict.fromkeys(requested))  # de-dupe, preserve order
+    if not requested:
+        return {}
+
+    now = time.time()
+    out: Dict[str, Optional[float]] = {}
+    to_fetch: List[str] = []
+
+    with _QUOTE_LOCK:
+        for sym in requested:
+            cached = _QUOTE_CACHE.get(sym)
+            if cached and (now - cached[1]) < QUOTE_TTL:
+                out[sym] = cached[0]
+            else:
+                to_fetch.append(sym)
+
+    # Fetch fresh ones outside the lock so concurrent requests don't block.
+    fresh: Dict[str, Optional[float]] = {}
+    for sym in to_fetch:
+        fresh[sym] = _fetch_one_quote(sym)
+
+    with _QUOTE_LOCK:
+        for sym, price in fresh.items():
+            if price is not None:
+                _QUOTE_CACHE[sym] = (price, now)
+            out[sym] = price
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Static files — serve the mobile PWA from the same origin
+# ---------------------------------------------------------------------------
+#
+# Layout assumed:
+#     StockInsights/
+#         server/server.py    (this file)
+#         pwa/                (mobile PWA — index.html, js/, etc.)
+#
+# Override with PORTFOLIO_PWA_DIR if your layout differs. The mount is
+# conditional — if the directory doesn't exist, the API still works, you
+# just won't be able to load the PWA from this server.
+#
+# IMPORTANT: this mount MUST be the last route registered. StaticFiles
+# at "/" catches every path that hasn't already matched, so anything
+# below it would be unreachable.
+
+_PWA_DIR = pathlib.Path(os.environ.get(
+    "PORTFOLIO_PWA_DIR",
+    str(pathlib.Path(__file__).resolve().parent.parent / "pwa"),
+))
+_PWA_MOUNTED = False
+if _PWA_DIR.is_dir():
+    # html=True makes "/" serve "/index.html" automatically.
+    app.mount("/", StaticFiles(directory=str(_PWA_DIR), html=True), name="pwa")
+    _PWA_MOUNTED = True
+
+
+# ---------------------------------------------------------------------------
 # Connection test (called at startup)
 # ---------------------------------------------------------------------------
 
@@ -656,6 +779,10 @@ if __name__ == "__main__":
         print(f"SQL Server : {SQL_SERVER}  /  {SQL_DATABASE}")
         print(f"Listening  : http://{args.host}:{args.port}")
         print(f"API docs   : http://localhost:{args.port}/docs")
+        if _PWA_MOUNTED:
+            print(f"Mobile PWA : http://localhost:{args.port}/   (from {_PWA_DIR})")
+        else:
+            print(f"Mobile PWA : NOT MOUNTED — directory not found at {_PWA_DIR}")
         print(f"Users      : {user_count} registered\n")
 
         if user_count == 0:
