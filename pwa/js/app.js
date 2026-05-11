@@ -34,6 +34,15 @@ const State = {
     // Persisted to localStorage so the filter "sticks" across reloads
     // (matches the desktop's per-account persistence intent).
     dateRangeKey: localStorage.getItem("date_range_key") || "all",
+    // Equity-curve resampling mode — "trades" or "daily". Persisted
+    // alongside dateRangeKey so refreshing keeps the user's preferred
+    // view of dense histories.
+    equityCurveMode: localStorage.getItem("equity_curve_mode") || "trades",
+    // Strategy-tag filter (e.g. "swing"). Empty string = "all tags".
+    // Mirrors AccountController.tagFilter on the desktop. NOT persisted
+    // — most users don't filter by tag long-term, and resetting on
+    // refresh avoids confusion about why fresh trades are "missing".
+    tagFilter: "",
 };
 
 // Human-friendly labels for the date-range keys. Mirrors
@@ -54,6 +63,34 @@ function setDateRange(key) {
     // Re-render the active view; analytics on the portfolio tab and
     // the trade list on the trades tab both consume this state.
     renderView();
+}
+
+// Equity-curve resampling mode (matches AccountController.equityCurveMode
+// on desktop). "trades" = per-close-trade fidelity; "daily" = end-of-day
+// buckets for less noise on dense histories.
+function setEquityCurveMode(mode) {
+    if (mode !== "trades" && mode !== "daily") mode = "trades";
+    State.equityCurveMode = mode;
+    localStorage.setItem("equity_curve_mode", mode);
+    renderView();
+}
+
+// Strategy-tag filter (matches AccountController.tagFilter / setTagFilter
+// on desktop). "" = no restriction.
+function setTagFilter(tag) {
+    State.tagFilter = (tag || "").trim();
+    renderView();
+}
+
+// Returns the sorted list of unique non-empty tags across all of the
+// user's trades. Used to populate the tag-filter picker.
+function availableTags() {
+    const set = new Set();
+    for (const t of State.trades) {
+        const v = (t.tag || "").trim();
+        if (v) set.add(v);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
 }
 
 // ── Tiny DOM helpers ──────────────────────────────────────────────────
@@ -368,16 +405,27 @@ function viewPortfolio() {
     // below. Holdings stay unfiltered (above). Matches the desktop's
     // AnalyticsPanel layout, where the same combo box drives both the
     // analytics metrics and the Trade History list.
-    const rangedTrades = filterTradesByDateRange(trades, State.dateRangeKey);
+    let rangedTrades = filterTradesByDateRange(trades, State.dateRangeKey);
+    if (State.tagFilter) {
+        rangedTrades = rangedTrades.filter(t =>
+            (t.tag || "").trim() === State.tagFilter);
+    }
 
     wrap.appendChild(el("section", {class: "range-bar"}, [
         el("span", {class: "range-bar-caption"},
-            `Analytics window: ${DATE_RANGE_LABELS[State.dateRangeKey] || "All time"}`),
-        rangePicker(),
+            `Analytics window: ${DATE_RANGE_LABELS[State.dateRangeKey] || "All time"}`
+            + (State.tagFilter ? ` · tag “${State.tagFilter}”` : "")),
+        el("div", {class: "range-bar-controls"}, [
+            tagFilterPicker(),
+            rangePicker(),
+        ]),
     ]));
 
     // Equity curve — built from the date-filtered closed trades.
-    wrap.appendChild(equityCurveCard(buildEquityCurve(rangedTrades)));
+    // Resampling mode (per-trade vs daily) is persisted in State.
+    wrap.appendChild(
+        equityCurveCard(buildEquityCurve(rangedTrades, State.equityCurveMode))
+    );
 
     // Trade analytics — computed over the date-filtered set.
     const an = computeAnalytics(rangedTrades);
@@ -394,6 +442,15 @@ function viewPortfolio() {
             kvRow("Profit factor",
                 an.profit_factor === Infinity ? "∞"
                     : an.profit_factor == null ? "—" : an.profit_factor.toFixed(2)),
+            // Drawdown lives at the bottom of the analytics block — a
+            // negative-leaning metric (always "loss"-tinted when nonzero)
+            // visually pairs with the wins/losses above.
+            kvRow("Max drawdown",
+                an.max_drawdown == null ? "—"
+                    : el("span", {class: "loss"}, fmtMoney(an.max_drawdown))),
+            kvRow("Current drawdown",
+                an.current_drawdown == null || an.current_drawdown === 0 ? "—"
+                    : el("span", {class: "loss"}, fmtMoney(an.current_drawdown))),
         ]),
     ]));
 
@@ -427,6 +484,28 @@ function rangePicker() {
     }
     return el("label", {class: "range-picker-wrap"}, [
         el("span", {class: "range-picker-label"}, "Range"),
+        sel,
+    ]);
+}
+
+// ── Tag filter picker — only rendered when tags actually exist ────────
+// Returns null when no tags are in use, so the view's controls bar
+// stays clean for users who don't tag their trades.
+function tagFilterPicker() {
+    const tags = availableTags();
+    if (tags.length === 0) return null;
+    const sel = el("select", {
+        class: "range-picker",
+        onchange: e => setTagFilter(e.target.value),
+    });
+    sel.appendChild(el("option", {value: ""}, "All tags"));
+    for (const t of tags) {
+        const opt = el("option", {value: t}, t);
+        if (t === State.tagFilter) opt.selected = true;
+        sel.appendChild(opt);
+    }
+    return el("label", {class: "range-picker-wrap"}, [
+        el("span", {class: "range-picker-label"}, "Tag"),
         sel,
     ]);
 }
@@ -483,11 +562,33 @@ function equityCurveCard(curve) {
     // (length - 1) is the actual closed-trade count.
     const tradeCount = curve.length - 1;
 
-    return el("section", {class: "card equity-card"}, [
+    // Resampling toggle — pair of small pill buttons. Hidden when the
+    // toggle would have no effect (1-2 trades total), since "Daily" and
+    // "Per trade" produce identical curves in that case.
+    const showToggle = tradeCount >= 3;
+    const modeToggle = showToggle ? el("div", {class: "equity-mode-toggle"}, [
+        el("button", {
+            class: "equity-mode-btn" + (State.equityCurveMode === "trades" ? " active" : ""),
+            onclick: () => setEquityCurveMode("trades"),
+        }, "Per trade"),
+        el("button", {
+            class: "equity-mode-btn" + (State.equityCurveMode === "daily" ? " active" : ""),
+            onclick: () => setEquityCurveMode("daily"),
+        }, "Daily"),
+    ]) : null;
+
+    // Tooltip overlay — empty by default; populated on tap/hover by
+    // findNearestPoint(). Lives outside the SVG so we can position it
+    // with normal flexbox/absolute CSS rather than fighting SVG <text>
+    // baseline math.
+    const wrap = el("section", {class: "card equity-card"}, [
         el("div", {class: "card-head"}, [
             el("h3", {}, "Equity curve"),
-            el("span", {class: "card-meta"},
-                `${signed(realized)} · ${tradeCount} trade${tradeCount === 1 ? "" : "s"}`),
+            el("div", {class: "equity-head-right"}, [
+                el("span", {class: "card-meta"},
+                    `${signed(realized)} · ${tradeCount} trade${tradeCount === 1 ? "" : "s"}`),
+                modeToggle,
+            ]),
         ]),
         el("div", {
             class: "equity-svg-wrap",
@@ -495,9 +596,89 @@ function equityCurveCard(curve) {
                 ${zeroLine}
                 <polyline points="${points}" class="equity-line"/>
                 ${dot}
-            </svg>`,
+                <circle id="equity-marker" cx="0" cy="0" r="3" class="equity-marker" style="display:none"/>
+            </svg>
+            <div class="equity-tooltip" style="display:none"></div>`,
         }),
     ]);
+
+    // ── Tap / hover handler ──────────────────────────────────────────
+    // Finds the nearest curve point to the touch/cursor x and pops a
+    // floating label with date + cumulative value. Listens for both
+    // mouse (desktop browser preview) and touch (phones / tablets).
+    // Defer the wiring to the next animation frame so the DOM nodes
+    // we just inserted via `html:` are queryable.
+    requestAnimationFrame(() => {
+        const wrapEl = wrap.querySelector(".equity-svg-wrap");
+        const svg = wrapEl?.querySelector("svg");
+        const marker = wrapEl?.querySelector("#equity-marker");
+        const tip = wrapEl?.querySelector(".equity-tooltip");
+        if (!wrapEl || !svg || !marker || !tip) return;
+
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+        function showAt(clientX, clientY) {
+            // Convert client x into the SVG viewBox coordinate (0..W).
+            const r = svg.getBoundingClientRect();
+            const vbX = ((clientX - r.left) / r.width) * W;
+            // Find nearest point by index distance — curve points are
+            // already sorted by time, so a linear scan is plenty fast
+            // (we never have more than a few hundred points).
+            let bestIdx = 0, bestDist = Infinity;
+            for (let i = 0; i < curve.length; i++) {
+                const px = sx(curve[i].x);
+                const d = Math.abs(px - vbX);
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestIdx = i;
+                }
+            }
+            const p = curve[bestIdx];
+            const px = sx(p.x), py = sy(p.y);
+            // Position marker (in SVG viewBox coords)
+            marker.setAttribute("cx", px.toFixed(1));
+            marker.setAttribute("cy", py.toFixed(1));
+            marker.style.display = "block";
+            // Position tooltip (in CSS coords, relative to wrapper).
+            const wr = wrapEl.getBoundingClientRect();
+            const cssX = (px / W) * wr.width;
+            const cssY = (py / H) * wr.height;
+            const d = new Date(p.x);
+            const sign = p.y >= 0 ? "+" : "-";
+            tip.textContent =
+                `${months[d.getMonth()]} ${d.getDate()} · ${sign}$${Math.abs(p.y).toFixed(0)}`;
+            tip.style.display = "block";
+            // Clamp horizontally so the tooltip doesn't escape the card
+            // on narrow phone screens.
+            const tipW = tip.offsetWidth;
+            const left = Math.max(4, Math.min(wr.width - tipW - 4, cssX - tipW / 2));
+            tip.style.left = `${left}px`;
+            tip.style.top = `${Math.max(2, cssY - 28)}px`;
+        }
+
+        function hide() {
+            marker.style.display = "none";
+            tip.style.display = "none";
+        }
+
+        // Mouse (desktop preview / tablet with mouse). Touch handled
+        // separately so we can also dismiss on touchend.
+        wrapEl.addEventListener("mousemove",
+            e => showAt(e.clientX, e.clientY));
+        wrapEl.addEventListener("mouseleave", hide);
+        wrapEl.addEventListener("touchstart", e => {
+            const t = e.touches[0];
+            if (t) showAt(t.clientX, t.clientY);
+        }, {passive: true});
+        wrapEl.addEventListener("touchmove", e => {
+            const t = e.touches[0];
+            if (t) showAt(t.clientX, t.clientY);
+        }, {passive: true});
+        wrapEl.addEventListener("touchend", hide);
+    });
+
+    return wrap;
 }
 
 function holdingsTable(rows) {
@@ -543,9 +724,13 @@ function showHoldingDetail(r) {
 function viewTrades() {
     // Apply the date-range filter BEFORE reversing so the filter
     // semantics match the analytics on the portfolio view exactly
-    // (same set of trades, just displayed newest-first here).
+    // (same set of trades, just displayed newest-first here). Tag
+    // filter, when set, layers on top.
     const all = tradesForSelected();
-    const ranged = filterTradesByDateRange(all, State.dateRangeKey);
+    let ranged = filterTradesByDateRange(all, State.dateRangeKey);
+    if (State.tagFilter) {
+        ranged = ranged.filter(t => (t.tag || "").trim() === State.tagFilter);
+    }
     const trades = ranged.slice().reverse();  // newest first by id
 
     const wrap = el("div", {class: "stack"});
@@ -562,8 +747,12 @@ function viewTrades() {
     wrap.appendChild(el("section", {class: "range-bar"}, [
         el("span", {class: "range-bar-caption"},
             `${ranged.length} of ${all.length} ${all.length === 1 ? "trade" : "trades"}`
-            + ` · ${DATE_RANGE_LABELS[State.dateRangeKey] || "All time"}`),
-        rangePicker(),
+            + ` · ${DATE_RANGE_LABELS[State.dateRangeKey] || "All time"}`
+            + (State.tagFilter ? ` · tag “${State.tagFilter}”` : "")),
+        el("div", {class: "range-bar-controls"}, [
+            tagFilterPicker(),
+            rangePicker(),
+        ]),
     ]));
 
     if (trades.length === 0) {
@@ -586,6 +775,10 @@ function viewTrades() {
                 el("div", {class: "tr-sym"}, [
                     el("strong", {}, t.instrument || "—"),
                     el("span", {class: "tag tag-" + status.toLowerCase()}, status),
+                    // Tag chip — only rendered when a tag is set, so
+                    // the row doesn't gain visual weight for untagged
+                    // trades. Same visual language as the status chip.
+                    t.tag ? el("span", {class: "tag tag-strategy"}, t.tag) : null,
                 ]),
                 el("div", {class: "tr-meta"}, [
                     `${t.share_count} sh @ ${fmtNum(t.buy_price)}`,
@@ -615,7 +808,8 @@ function openTradeEditor(existing) {
         account: State.selectedAccount === "All" ? accountOptions[0] : State.selectedAccount,
         instrument: "", share_count: 0, buy_price: 0,
         sell_price: null, open_date: new Date().toISOString().slice(0, 10),
-        close_date: null, notes: "", is_pending: false, is_short: false,
+        close_date: null, notes: "", tag: "",
+        is_pending: false, is_short: false,
     };
 
     const form = el("form", {
@@ -679,10 +873,28 @@ function openTradeEditor(existing) {
             ]),
         ]),
 
+        // Strategy tag — short label used for filtering analytics +
+        // history. Free-form text; we surface a datalist of existing
+        // tags so the user can autocomplete past values (and avoid
+        // typo-fragmented tags like "swing" vs "Swing").
+        formRow("Tag", el("input", {
+            name: "tag", value: t.tag || "",
+            placeholder: "e.g. swing, earnings",
+            list: "tag-options", maxlength: 40,
+        })),
+
         formRow("Notes", el("textarea", {
             name: "notes", rows: 2,
             placeholder: "Optional",
         }, t.notes || "")),
+
+        // Datalist sourced from existing tags. Lives in the form so it
+        // tears down when the modal closes; cheaper than a global.
+        (() => {
+            const all = new Set(State.trades.map(x => (x.tag || "").trim()).filter(Boolean));
+            return el("datalist", {id: "tag-options"},
+                [...all].sort().map(v => el("option", {value: v})));
+        })(),
 
         el("div", {class: "form-actions"}, [
             existing
@@ -709,6 +921,8 @@ async function saveTradeFromForm(existing, form) {
         open_date: fd.get("open_date") || null,
         close_date: fd.get("close_date") || null,
         notes: String(fd.get("notes") || ""),
+        // Trim + cap tag length to mirror the desktop's 40-char input.
+        tag: String(fd.get("tag") || "").trim().slice(0, 40),
         is_pending: fd.get("is_pending") === "on",
         is_short: fd.get("is_short") === "on",
     };
@@ -880,25 +1094,248 @@ function viewWatchlist() {
     if (State.watchlist.length === 0) {
         wrap.appendChild(el("p", {class: "empty card"},
             "Your watchlist is empty."));
-        return wrap;
+    } else {
+        const list = el("div", {class: "watch-list"});
+        for (const sym of State.watchlist) {
+            const price = State.marks[sym];
+            list.appendChild(el("div", {class: "watch-row"}, [
+                el("div", {class: "watch-sym"}, sym),
+                el("div", {class: "watch-price"},
+                    price == null ? el("span", {class: "muted"}, "—") : fmtNum(price)),
+                el("button", {
+                    class: "icon-btn small",
+                    title: "Remove",
+                    onclick: async () => removeWatchSymbol(sym),
+                }, "✕"),
+            ]));
+        }
+        wrap.appendChild(list);
     }
 
-    const list = el("div", {class: "watch-list"});
-    for (const sym of State.watchlist) {
-        const price = State.marks[sym];
-        list.appendChild(el("div", {class: "watch-row"}, [
-            el("div", {class: "watch-sym"}, sym),
-            el("div", {class: "watch-price"},
-                price == null ? el("span", {class: "muted"}, "—") : fmtNum(price)),
+    // ── Backup / Restore ─────────────────────────────────────────────
+    // Lives at the bottom of Watchlist because that's the closest
+    // mobile gets to a "settings" view. Same JSON format the desktop
+    // produces (schema_version=1) so backups round-trip across clients.
+    wrap.appendChild(el("section", {class: "card backup-card"}, [
+        el("div", {class: "card-head"}, [
+            el("h3", {}, "Backup & restore"),
+        ]),
+        el("p", {class: "muted"},
+            "Same JSON format as the desktop — backups created here can "
+            + "be restored on any client, and vice versa."),
+        el("div", {class: "form-actions"}, [
             el("button", {
-                class: "icon-btn small",
-                title: "Remove",
-                onclick: async () => removeWatchSymbol(sym),
-            }, "✕"),
-        ]));
-    }
-    wrap.appendChild(list);
+                type: "button", class: "btn-primary",
+                onclick: downloadBackup,
+            }, "Download backup"),
+            el("button", {
+                type: "button", class: "btn-secondary",
+                onclick: pickBackupFile,
+            }, "Restore from file…"),
+        ]),
+    ]));
+
     return wrap;
+}
+
+// ── Backup / Restore ─────────────────────────────────────────────────
+//
+// Same JSON format as desktop io_utils.py (schema_version=1) so backups
+// round-trip across clients. The PWA can't write goal targets (no API
+// endpoint exposed yet — see README "Known limitations"), so those
+// fields are SHIPPED in the backup but SKIPPED on restore here. A
+// backup made on mobile and restored on desktop is fully fidelity;
+// the reverse is "trades + watchlist + accounts" only.
+
+const BACKUP_SCHEMA_VERSION = 1;
+
+function buildBackupSnapshot() {
+    return {
+        schema_version: BACKUP_SCHEMA_VERSION,
+        exported_at: new Date().toISOString(),
+        username: (Api.getUser() || {}).username || "",
+        accounts: State.accounts.map(a => a.name),
+        // Per-account goal targets + presets — shipped for completeness
+        // even though mobile can't restore them. Desktop will pick
+        // them up on its end of a cross-client round-trip.
+        goal_targets: Object.fromEntries(
+            State.accounts.map(a => [a.name, Number(a.goal_target) || 0])),
+        goal_presets: Object.fromEntries(
+            State.accounts.map(a => [a.name, (a.goal_presets || []).map(Number)])),
+        goal_group: State.goalGroup
+            ? {
+                shared_accounts: State.goalGroup.account_names || [],
+                shared_goal: Number(State.goalGroup.shared_goal) || 0,
+            }
+            : {shared_accounts: [], shared_goal: 0},
+        watchlist: [...State.watchlist],
+        // Strip the client-only `id` field — the desktop's restore will
+        // assign new IDs. Keeps the payload aligned with what desktop
+        // emits via `trade_to_dict`.
+        trades: State.trades.map(t => ({
+            instrument: t.instrument,
+            share_count: t.share_count,
+            buy_price: t.buy_price,
+            sell_price: t.sell_price,
+            open_date: t.open_date,
+            close_date: t.close_date,
+            notes: t.notes || "",
+            account: t.account || "",
+            is_pending: !!t.is_pending,
+            is_short: !!t.is_short,
+            tag: (t.tag || "").trim(),
+        })),
+    };
+}
+
+function downloadBackup() {
+    const snap = buildBackupSnapshot();
+    const blob = new Blob([JSON.stringify(snap, null, 2)],
+        {type: "application/json"});
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const a = el("a", {
+        href: url,
+        download: `stock_insights_backup_${stamp}.json`,
+    });
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast("Backup downloaded", "ok");
+}
+
+function pickBackupFile() {
+    // Hidden <input type=file> we trigger programmatically — keeps the
+    // visible button matching the rest of the UI's button styling.
+    const input = el("input", {
+        type: "file",
+        accept: "application/json,.json",
+        style: "display:none",
+    });
+    input.addEventListener("change", async () => {
+        const f = input.files && input.files[0];
+        document.body.removeChild(input);
+        if (!f) return;
+        try {
+            const text = await f.text();
+            const snap = JSON.parse(text);
+            const errors = validateBackupShape(snap);
+            if (errors.length) {
+                alert("Backup failed validation:\n\n• " + errors.join("\n• "));
+                return;
+            }
+            const summary =
+                `This will OVERWRITE your current data with:\n\n`
+                + `• ${(snap.accounts || []).length} account(s)\n`
+                + `• ${(snap.trades || []).length} trade(s)\n`
+                + `• ${(snap.watchlist || []).length} watchlist symbol(s)\n`
+                + `• Backup exported at: ${snap.exported_at || "unknown"}\n\n`
+                + `Continue?`;
+            if (!confirm(summary)) return;
+            await applyBackupSnapshot(snap);
+            await loadAll();
+            renderView();
+            toast("Restore complete", "ok");
+        } catch (err) {
+            console.error(err);
+            alert("Restore failed: " + (err.message || err));
+        }
+    });
+    document.body.appendChild(input);
+    input.click();
+}
+
+// Mirrors stock_insights/io_utils.py::validate_backup. Conservative —
+// would rather block a quirky-but-recoverable backup than half-restore
+// one and leave the user with corrupt state.
+function validateBackupShape(snap) {
+    const errs = [];
+    if (!snap || typeof snap !== "object" || Array.isArray(snap)) {
+        return ["Backup is not a JSON object."];
+    }
+    const numeric = v => typeof v === "number" && !Number.isNaN(v);
+    const required = [
+        ["schema_version", "number"],
+        ["accounts", "array"],
+        ["watchlist", "array"],
+        ["trades", "array"],
+    ];
+    for (const [k, kind] of required) {
+        if (!(k in snap)) {
+            errs.push(`Missing required field: "${k}"`);
+            continue;
+        }
+        const v = snap[k];
+        if (kind === "number" && !numeric(v)) errs.push(`Field "${k}" not a number`);
+        if (kind === "array" && !Array.isArray(v)) errs.push(`Field "${k}" not an array`);
+    }
+    if (errs.length) return errs;
+    if (snap.schema_version !== BACKUP_SCHEMA_VERSION) {
+        errs.push(`Backup schema version ${snap.schema_version} `
+            + `(expected ${BACKUP_SCHEMA_VERSION})`);
+    }
+    snap.trades.forEach((t, i) => {
+        if (!t || typeof t !== "object") {
+            errs.push(`Trade #${i} is not an object`);
+            return;
+        }
+        if (!t.instrument || typeof t.instrument !== "string"
+            || !t.instrument.trim()) {
+            errs.push(`Trade #${i} has no instrument`);
+        }
+        if (!numeric(t.share_count)) errs.push(`Trade #${i} share_count not numeric`);
+        if (!numeric(t.buy_price)) errs.push(`Trade #${i} buy_price not numeric`);
+    });
+    return errs;
+}
+
+async function applyBackupSnapshot(snap) {
+    // 1. Accounts (just the names — goal targets aren't writable from PWA)
+    if (Array.isArray(snap.accounts) && snap.accounts.length) {
+        try {
+            await Api.saveAccounts(snap.accounts);
+        } catch (err) {
+            // Soft-fail accounts — older server versions or permissions
+            // may reject this. We still try the trade restore below.
+            console.warn("saveAccounts failed:", err);
+        }
+    }
+
+    // 2. Watchlist
+    if (Array.isArray(snap.watchlist)) {
+        try {
+            await Api.setWatchlist(snap.watchlist);
+        } catch (err) {
+            console.warn("setWatchlist failed:", err);
+        }
+    }
+
+    // 3. Trades — group by account and PUT each slice atomically.
+    const byAccount = new Map();
+    for (const t of (snap.trades || [])) {
+        const acct = (t.account || "").trim() || (snap.accounts || [])[0] || "Default";
+        if (!byAccount.has(acct)) byAccount.set(acct, []);
+        byAccount.get(acct).push(t);
+    }
+    for (const [acct, ts] of byAccount.entries()) {
+        try {
+            await Api.replaceAccountTrades(acct, ts);
+        } catch (err) {
+            console.warn(`replaceAccountTrades(${acct}) failed:`, err);
+        }
+    }
+
+    // 4. Shared goal group (if API + data allow)
+    const gg = snap.goal_group;
+    if (gg && Array.isArray(gg.shared_accounts)) {
+        try {
+            await Api.setGoalGroup(gg.shared_accounts,
+                Number(gg.shared_goal) || 0);
+        } catch (err) {
+            console.warn("setGoalGroup failed:", err);
+        }
+    }
 }
 
 async function addWatchSymbol() {

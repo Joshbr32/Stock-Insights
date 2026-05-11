@@ -241,6 +241,29 @@ button {
     font-size: 12px;
 }
 
+/* Secondary/outline button — pairs with btn-primary in 2-button rows
+   like the Backup & Restore card on the watchlist view. Same shape +
+   typography as btn-primary, just inverted colors so it reads as
+   "destructive-ish" without being shouty. */
+.btn-secondary {
+    height: 48px;
+    padding: 0 20px;
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--ink);
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-radius: var(--radius);
+    transition: background 0.15s, color 0.15s;
+}
+
+.btn-secondary:hover {
+    background: var(--ink);
+    color: var(--bg);
+}
+
 .btn-danger {
     height: 36px;
     padding: 0 14px;
@@ -1110,6 +1133,29 @@ button {
     justify-content: space-between;
     gap: 12px;
     padding: 6px 2px 2px;
+    /* Wrap on narrow phones so the tag picker doesn't crash into the
+       caption text. */
+    flex-wrap: wrap;
+}
+
+/* Wrapper around the two pickers (tag + range) so they stay grouped
+   visually and wrap together on narrow screens. */
+.range-bar-controls {
+    display: inline-flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+/* Strategy-tag chip rendered on each trade row + alongside the status
+   chip. Uses a softer accent so it doesn't compete with the status
+   color (which carries OPEN / CLOSED / SHORT semantics). */
+.tag-strategy {
+    background: var(--paper);
+    color: var(--ink-soft);
+    border: 1px solid var(--hairline);
+    /* Match the existing `.tag` font + padding by inheriting; this
+       rule only overrides the colors. */
 }
 
 .range-bar-caption {
@@ -1201,4 +1247,84 @@ button {
     stroke: var(--hairline);
     stroke-width: 1;
     stroke-dasharray: 2 3;
+}
+
+/* Hover/tap marker — small circle that follows the nearest curve point
+   while the user drags a finger / mouse across the chart. */
+.equity-marker {
+    fill: var(--accent);
+    stroke: var(--paper);
+    stroke-width: 1.5;
+    pointer-events: none;
+}
+
+/* Floating tooltip rendered as an HTML element on top of the SVG so we
+   can use real text rendering + clamp it to the wrapper bounds. The
+   wrapper itself is `position: relative` (no override needed because
+   the .equity-svg-wrap default flow already creates a containing
+   block for the absolute child). */
+.equity-svg-wrap {
+    position: relative;
+}
+
+.equity-tooltip {
+    position: absolute;
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    padding: 3px 7px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: var(--shadow-sm);
+    /* Sit above the SVG visually without ever capturing taps that
+       were aimed at the SVG underneath. */
+    z-index: 2;
+}
+
+/* ── Equity card head — title + meta + per-trade/daily toggle ────────── */
+
+.equity-head-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    /* Wrap toggle below meta on very narrow screens (~340 px). */
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.equity-mode-toggle {
+    display: inline-flex;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    overflow: hidden;
+    /* Tiny — meant to fit alongside the meta label without dominating. */
+    height: 22px;
+}
+
+.equity-mode-btn {
+    background: transparent;
+    border: none;
+    color: var(--ink-soft);
+    font-size: 11px;
+    padding: 0 8px;
+    cursor: pointer;
+    /* No left border on the second button — the toggle wrapper provides
+       the outer 1-px border, and the divider between the two buttons is
+       drawn via border-left below. */
+}
+
+.equity-mode-btn + .equity-mode-btn {
+    border-left: 1px solid var(--hairline);
+}
+
+.equity-mode-btn.active {
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.equity-mode-btn:not(.active):hover {
+    background: var(--paper);
 }

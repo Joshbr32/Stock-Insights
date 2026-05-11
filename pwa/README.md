@@ -148,6 +148,28 @@ single account, last-write-wins.
 
 ---
 
+## Updating the PWA — `sw.js` cache busting
+
+The service worker caches the app shell (HTML/CSS/JS) under a versioned
+key — phones keep serving the cached files until the version changes.
+**After editing any shell file you MUST bump `VERSION` in `pwa/sw.js`**
+(e.g. `si-shell-v3` → `si-shell-v4`), otherwise deployed updates never
+reach installed PWAs.
+
+The repo ships a pre-commit hook that enforces this for you. Install
+it once per checkout:
+
+```sh
+bash scripts/install-git-hooks.sh
+```
+
+After install, any commit that touches `pwa/js/app.js`, `pwa/js/api.js`,
+`pwa/js/portfolio.js`, `pwa/styles.css`, or `pwa/index.html` without
+also touching `pwa/sw.js` is blocked with a reminder. Bypass for
+non-deploy commits with `git commit --no-verify`.
+
+---
+
 ## Customizing
 
 - **Colors / fonts** — all design tokens are CSS variables at the top of

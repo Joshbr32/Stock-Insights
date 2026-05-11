@@ -617,6 +617,13 @@ class MainWindow(QMainWindow):
         # QSettings and is fast enough to do synchronously here.
         self._app.refresh_all_accounts()
 
+        # Safety net — defer a launch snapshot to ~/.stock_insights/auto_backups/
+        # to QTimer so it runs after the UI is up (doesn't block startup).
+        # Prunes to the last AUTO_BACKUP_KEEP files automatically, so even
+        # 100 launches doesn't fill the home directory. Best-effort: a
+        # disk-full / permission failure here is silently swallowed.
+        QTimer.singleShot(0, self._write_launch_snapshot)
+
         self._build_menus()
         self._build_status_corner()
         self._build_qml_host()
@@ -651,11 +658,12 @@ class MainWindow(QMainWindow):
     # Vertical budget at Normal font, summed top → bottom:
     #   menubar (~26) + SplitView margins (20) + PortfolioPane tab bar
     #   (42) + PortfolioView margins (24) + sum of card minimums
-    #   [260 + 210 + 220 + 300] + 3× layout spacing (36) = ~1138.
-    # 1160 leaves ~22 px of slack for font-metric variation and the
+    #   [270 + 210 + 220 + 300] + 3× layout spacing (36) = ~1148.
+    # 1170 leaves ~22 px of slack for font-metric variation and the
     # window decoration line drawn just above the menubar on some Qt
-    # styles.
-    _BASE_MIN_HEIGHT = 1160
+    # styles. (Top-row min was 260, now 270 after the Drawdown row was
+    # added to AnalyticsPanel.)
+    _BASE_MIN_HEIGHT = 1170
     # Drop when the user hides the equity curve (View menu →
     # "Hide Equity Curve"). The curve contributes 210 px of card
     # minimum + 12 px of ColumnLayout spacing = 222 px reclaimed.
@@ -1061,6 +1069,20 @@ class MainWindow(QMainWindow):
         self._app.refresh_all_accounts()
 
     # ------------------------------------------------------------------
+    # Auto-snapshot (defensive, disk-based)
+    # ------------------------------------------------------------------
+
+    def _write_launch_snapshot(self) -> None:
+        """Write a defensive backup of current store contents to the
+        auto_backups folder, so a sudden bug or accidental wipe can be
+        rolled back from a recent launch state.
+
+        Best-effort — failures are swallowed (see io_utils.write_auto_snapshot).
+        """
+        from .io_utils import write_auto_snapshot
+        write_auto_snapshot(self._store, kind="launch")
+
+    # ------------------------------------------------------------------
     # View-menu toggles
     # ------------------------------------------------------------------
 
@@ -1421,11 +1443,19 @@ class MainWindow(QMainWindow):
 
     def _on_restore(self) -> None:
         """File → Restore From Backup — picks a JSON file and overwrites
-        the current user's data with its contents. Confirms first because
-        this is destructive."""
+        the current user's data with its contents.
+
+        Two-phase: PARSE + VALIDATE the snapshot end-to-end before
+        running `apply_backup`. This means a corrupt or partially-
+        truncated backup is caught BEFORE any data is wiped — the
+        previous one-shot flow could leave the store half-restored if
+        validation hit a bad row mid-way through.
+        """
         from pathlib import Path
         from PySide6.QtWidgets import QFileDialog
-        from .io_utils import apply_backup, read_backup
+        from .io_utils import (
+            apply_backup, read_backup, validate_backup, write_auto_snapshot,
+        )
 
         path, _ = QFileDialog.getOpenFileName(
             self, "Restore From Backup",
@@ -1434,13 +1464,31 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+
+        # ── Phase 1: parse ─────────────────────────────────────────────
         try:
             snapshot = read_backup(Path(path))
         except Exception as exc:
             QMessageBox.warning(self, "Invalid Backup", str(exc))
             return
 
-        # Pre-flight summary so the user knows what they're about to overwrite.
+        # ── Phase 2: structurally validate (still read-only) ──────────
+        # Surface every problem at once so the user sees the full picture,
+        # not just the first error. Truncate to the first 10 because beyond
+        # that the dialog turns into a wall of text and ceases to be useful.
+        errors = validate_backup(snapshot)
+        if errors:
+            shown = "\n".join(f"  • {e}" for e in errors[:10])
+            more = (f"\n  ... and {len(errors) - 10} more error(s)"
+                    if len(errors) > 10 else "")
+            QMessageBox.warning(
+                self, "Invalid Backup",
+                "Backup failed validation. Nothing was changed.\n\n"
+                f"{shown}{more}",
+            )
+            return
+
+        # ── Phase 3: confirm with summary ─────────────────────────────
         summary_msg = (
             f"This will <b>overwrite</b> your current data with:<br><br>"
             f"  • {len(snapshot.get('accounts', []))} portfolio(s)<br>"
@@ -1454,6 +1502,13 @@ class MainWindow(QMainWindow):
                 != QMessageBox.StandardButton.Yes:
             return
 
+        # ── Phase 4: defensive auto-snapshot of EXISTING data ─────────
+        # Best-effort; if it fails (disk full, perms, etc.) we still let
+        # the restore proceed. Written to ~/.stock_insights/auto_backups/
+        # so the user can recover if the restore turns out wrong.
+        write_auto_snapshot(self._store, kind="pre-restore")
+
+        # ── Phase 5: apply (destructive) ──────────────────────────────
         try:
             result = apply_backup(self._store, snapshot)
         except Exception as exc:

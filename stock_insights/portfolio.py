@@ -54,6 +54,11 @@ class Trade:
     account: str = ""
     is_pending: bool = False  # True = unconfirmed/waiting order (excluded from calcs)
     is_short: bool = False    # True = short position (sell first, buy to cover)
+    # Optional free-form strategy tag — "swing", "earnings", "news", etc.
+    # Used for filtering analytics & history by strategy. Empty string =
+    # "no tag set". Schema-compatible with old backups: trade_from_dict
+    # defaults missing values to "" so v1 backups load cleanly.
+    tag: str = ""
 
     def normalized_instrument(self) -> str:
         return (self.instrument or "").strip().upper()
@@ -97,6 +102,7 @@ class TradeRow:
     close_date: Optional[date]
     days_to_close: Optional[int]
     avg_daily_return: Optional[float]
+    tag: str = ""  # strategy tag — empty when not set
 
 
 @dataclass
@@ -158,6 +164,16 @@ class TradeAnalytics:
     best_trade: Optional[float] = None  # max single-trade profit
     worst_trade: Optional[float] = None  # min single-trade profit (most negative)
     profit_factor: Optional[float] = None  # Σ wins / |Σ losses|; >1 = net profitable
+    # Drawdown — peak-to-trough decline along the cumulative-realized
+    # curve. The single most-watched risk metric in trading. Both are in
+    # dollars, mirroring everything else in this dataclass; a UI can
+    # divide by peak to get a percentage if needed.
+    #   • max_drawdown      — worst peak-to-trough drop ever observed
+    #   • current_drawdown  — distance from the all-time peak to the
+    #                         most-recent cumulative value (zero if
+    #                         the curve is sitting at a new high)
+    max_drawdown: Optional[float] = None
+    current_drawdown: Optional[float] = None
 
 
 @dataclass
@@ -231,6 +247,61 @@ def _weeks_remaining(today: date) -> int:
 # ---------- Trade serialization ----------
 
 
+VALID_DATE_RANGE_KEYS = ("all", "week", "month", "30d", "ytd")
+
+
+def filter_trades_by_date_range_with_orig_index(
+        trades: List["Trade"],
+        range_key: str,
+        today: Optional[date] = None,
+) -> List[tuple]:
+    """Pure version of AccountController._date_filtered_with_orig_index.
+
+    Returns a list of `(original_index, trade)` pairs for trades that fall
+    inside the specified date range. The index preservation is critical:
+    edit/delete/move handlers in MainWindow look up trades by their
+    position in the unfiltered `account_trades` list, so a filter that
+    rewrites positions would silently corrupt those operations. Tests
+    pin this invariant explicitly.
+
+    Filter semantics — must match `pwa/js/portfolio.js::tradeInRange`:
+      • "all"   — no filter
+      • "week"  — Monday of the current week (today.weekday() == 0)
+      • "month" — first day of the current calendar month
+      • "30d"   — today minus 30 days, inclusive
+      • "ytd"   — January 1 of the current year
+      • unknown keys fall back to "all" (no filter)
+
+    "Date" for filtering = close_date if closed, else open_date.
+    Pending trades (no fill date yet) ALWAYS pass through — hiding them
+    would mask the orders the user is waiting on.
+    """
+    from datetime import timedelta
+
+    if range_key == "all" or range_key not in VALID_DATE_RANGE_KEYS:
+        return list(enumerate(trades))
+
+    today = today or date.today()
+    if range_key == "week":
+        start = today - timedelta(days=today.weekday())
+    elif range_key == "month":
+        start = date(today.year, today.month, 1)
+    elif range_key == "30d":
+        start = today - timedelta(days=30)
+    else:  # "ytd" — only remaining valid key
+        start = date(today.year, 1, 1)
+
+    kept: List[tuple] = []
+    for orig_idx, t in enumerate(trades):
+        if t.is_pending:
+            kept.append((orig_idx, t))  # always show pending
+            continue
+        d = t.close_date or t.open_date
+        if d is None or d >= start:
+            kept.append((orig_idx, t))
+    return kept
+
+
 def trade_to_dict(trade: Trade) -> dict:
     return {
         "instrument": trade.normalized_instrument(),
@@ -243,6 +314,9 @@ def trade_to_dict(trade: Trade) -> dict:
         "account": (trade.account or "").strip(),
         "is_pending": bool(trade.is_pending),
         "is_short": bool(trade.is_short),
+        # `tag` is optional — old backups (without this field) deserialize
+        # to an empty string via trade_from_dict's defaulting.
+        "tag": (trade.tag or "").strip(),
     }
 
 
@@ -268,6 +342,9 @@ def trade_from_dict(data: dict) -> Optional[Trade]:
             account=str(data.get("account", "") or "").strip(),
             is_pending=bool(data.get("is_pending", False)),
             is_short=bool(data.get("is_short", False)),
+            # `tag` is new (added with strategy filter); old persisted
+            # trades default to "" — full forward-compat with v1 backups.
+            tag=str(data.get("tag", "") or "").strip(),
         )
     except Exception:
         return None
@@ -332,6 +409,7 @@ def compute_trade_rows(trades: Iterable[Trade]) -> List[TradeRow]:
                 close_date=trade.close_date,
                 days_to_close=days,
                 avg_daily_return=avg_daily,
+                tag=(getattr(trade, "tag", "") or "").strip(),
             )
         )
     return rows
@@ -502,6 +580,33 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
     else:
         profit_factor = None
 
+    # ── Drawdown — walk the cumulative-realized curve ────────────────
+    # Sort closed trades by close_date so the cumulative sum reflects
+    # actual chronology, not whatever order the trades happened to be
+    # stored in. A peak/trough analysis on out-of-order points would
+    # produce nonsense numbers.
+    if closed:
+        sorted_closed = sorted(
+            closed,
+            key=lambda t: t.close_date or date.min,
+        )
+        running = 0.0
+        peak = 0.0  # the curve starts at zero before the first close
+        max_dd = 0.0
+        for t in sorted_closed:
+            running += float(t.trade_profit or 0.0)
+            if running > peak:
+                peak = running
+            dd = peak - running  # always >= 0
+            if dd > max_dd:
+                max_dd = dd
+        max_drawdown = max_dd
+        # current_drawdown = peak - latest_running (also always >= 0)
+        current_drawdown = peak - running
+    else:
+        max_drawdown = None
+        current_drawdown = None
+
     return TradeAnalytics(
         realized_profit=realized_profit,
         closed_trades=len(closed),
@@ -518,6 +623,8 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
         best_trade=best_trade,
         worst_trade=worst_trade,
         profit_factor=profit_factor,
+        max_drawdown=max_drawdown,
+        current_drawdown=current_drawdown,
     )
 
 

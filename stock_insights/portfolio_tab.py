@@ -435,10 +435,18 @@ class TradeEditDialog(QDialog):
         self.notes_edit = QLineEdit()
         self.notes_edit.setPlaceholderText("Optional notes")
 
+        # Strategy tag — short free-form label ("swing", "earnings",
+        # "news") used to filter analytics + history. Optional; left
+        # blank for unclassified trades.
+        self.tag_edit = QLineEdit()
+        self.tag_edit.setPlaceholderText("e.g. swing, earnings, news")
+        self.tag_edit.setMaxLength(40)
+
         form.addRow("Instrument", self.instrument_edit)
         form.addRow("Share count", self.share_count_spin)
         self.buy_price_lbl = QLabel("Buy Price")
         form.addRow(self.buy_price_lbl, self.buy_price_spin)
+        form.addRow("Tag", self.tag_edit)
         form.addRow("Notes", self.notes_edit)
         root.addWidget(details_grp)
 
@@ -546,6 +554,7 @@ class TradeEditDialog(QDialog):
         self.open_date_edit.setDate(QDate(open_date.year, open_date.month, open_date.day))
         self.close_date_edit.setDate(QDate(close_date.year, close_date.month, close_date.day))
         self.notes_edit.setText(trade.notes if trade else "")
+        self.tag_edit.setText(getattr(trade, "tag", "") if trade else "")
 
     def _apply_mode_constraints(self):
         if self._close_holdings_mode or self._cover_mode:
@@ -650,6 +659,7 @@ class TradeEditDialog(QDialog):
             notes=self.notes_edit.text().strip(),
             is_pending=pending,
             is_short=is_short,
+            tag=self.tag_edit.text().strip(),
         )
 
 

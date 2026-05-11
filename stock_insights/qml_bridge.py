@@ -361,6 +361,15 @@ class AccountController(QObject):
         # account tabs preserves each tab's selected range.
         # Valid keys: "all" / "week" / "month" / "30d" / "ytd"
         self._date_range: str = "all"
+        # Equity-curve resampling mode. "trades" = one point per closed
+        # trade (default; matches how the curve was originally built);
+        # "daily" = bucket cumulative-realized at end-of-day, smoothing
+        # out clusters of same-day closes. Per-account state.
+        self._equity_curve_mode: str = "trades"
+        # Strategy-tag filter applied alongside the date-range filter.
+        # Empty string = "show all tags". When set, analytics + the
+        # trade list are restricted to trades whose `tag` matches.
+        self._tag_filter: str = ""
         # Last computed inputs (full trade list + marks) — used so that
         # changing the date range only requires re-filtering, not a fresh
         # store round-trip.
@@ -481,6 +490,52 @@ class AccountController(QObject):
             # depends on the date-filtered set, so this isn't just a re-render.
             self._recompute_with_current_filter()
 
+    # ── Strategy-tag filter ──────────────────────────────────────────────
+    # Empty string = "all tags". When set, analytics + the trade list
+    # narrow to trades whose `.tag` matches. UI populates the combo
+    # from `availableTags`.
+    @Property(str, notify=filterChanged)
+    def tagFilter(self) -> str:
+        return self._tag_filter
+
+    @Slot(str)
+    def setTagFilter(self, tag: str) -> None:
+        new = (tag or "").strip()
+        if new != self._tag_filter:
+            self._tag_filter = new
+            self.filterChanged.emit()
+            self._recompute_with_current_filter()
+
+    # List of distinct non-empty tags present in the cached trades,
+    # sorted alphabetically. Used to populate the tag-filter combo.
+    @Property("QVariantList", notify=metricsChanged)
+    def availableTags(self) -> List[str]:
+        tags = set()
+        for t in self._last_trades:
+            v = (getattr(t, "tag", "") or "").strip()
+            if v:
+                tags.add(v)
+        return sorted(tags, key=str.lower)
+
+    # ── Equity-curve resampling mode ─────────────────────────────────────
+    # "trades" = one point per closed trade (highest fidelity, can look
+    # noisy with 100+ trades). "daily" = bucket by date, end-of-day
+    # cumulative — smoother, easier to read in dense histories.
+    @Property(str, notify=metricsChanged)
+    def equityCurveMode(self) -> str:
+        return self._equity_curve_mode
+
+    @Slot(str)
+    def setEquityCurveMode(self, mode: str) -> None:
+        new = (mode or "trades").strip().lower()
+        if new not in ("trades", "daily"):
+            new = "trades"
+        if new != self._equity_curve_mode:
+            self._equity_curve_mode = new
+            # Only the curve depends on this — recompute everything is
+            # fine and keeps the wiring simple.
+            self._recompute_with_current_filter()
+
     @Slot(str)
     def setTextFilter(self, text: str) -> None:
         new = (text or "").strip()
@@ -504,8 +559,14 @@ class AccountController(QObject):
         Only closed trades contribute. The curve always starts at zero on
         the first close date so the line visually rises from the origin
         rather than appearing to start mid-air.
+
+        Two modes, controlled by `self._equity_curve_mode`:
+          • "trades" (default) — one point per closed trade.
+          • "daily" — collapse same-day closes into a single end-of-day
+            cumulative point. Better for dense trade histories where the
+            per-trade zigzag becomes unreadable.
         """
-        from datetime import datetime, time
+        from datetime import datetime, time, timedelta
 
         closed = [
             t for t in trades
@@ -519,57 +580,47 @@ class AccountController(QObject):
 
         # Seed with a zero point one day before the first close, so the
         # line clearly starts on the x-axis and then climbs.
-        from datetime import timedelta
         first_close = closed[0].close_date
         seed_date = first_close - timedelta(days=1)
         seed_ms = int(datetime.combine(seed_date, time(0, 0)).timestamp() * 1000)
         points: List[Dict[str, float]] = [{"x": float(seed_ms), "y": 0.0}]
 
-        running = 0.0
-        for t in closed:
-            running += float(t.trade_profit or 0.0)
-            ms = int(datetime.combine(t.close_date, time(16, 0)).timestamp() * 1000)
-            points.append({"x": float(ms), "y": float(running)})
+        if self._equity_curve_mode == "daily":
+            # Group profits by close_date, sum within each day, then
+            # emit one point per unique day at end-of-trading.
+            from collections import defaultdict
+            daily_pl: Dict[date, float] = defaultdict(float)
+            for t in closed:
+                daily_pl[t.close_date] += float(t.trade_profit or 0.0)
+            running = 0.0
+            for d in sorted(daily_pl.keys()):
+                running += daily_pl[d]
+                ms = int(datetime.combine(d, time(16, 0)).timestamp() * 1000)
+                points.append({"x": float(ms), "y": float(running)})
+        else:
+            # "trades" — one point per closed trade
+            running = 0.0
+            for t in closed:
+                running += float(t.trade_profit or 0.0)
+                ms = int(datetime.combine(t.close_date, time(16, 0)).timestamp() * 1000)
+                points.append({"x": float(ms), "y": float(running)})
         return points
 
     def _date_filtered_with_orig_index(
             self, trades: List[Trade],
     ) -> List[tuple[int, Trade]]:
-        """Return (original_index, trade) pairs for trades that fall in
-        the current date range.
+        """Thin wrapper around the pure helper in portfolio.py — the
+        actual filter logic lives there so it can be unit-tested without
+        instantiating the Qt event loop / AccountController.
 
-        "Date" for a trade = close_date if closed, else open_date. Pending
-        trades (no fill date yet) are always kept — filtering them out
-        would hide what the user is waiting on.
+        Index preservation is the critical invariant tested in
+        `tests/test_portfolio.py::TestDateRangeFilter` — see that suite
+        for the full spec of what this filter is supposed to guarantee.
         """
-        from datetime import date as _date_cls, timedelta
-
-        rng = self._date_range
-        if rng == "all":
-            return list(enumerate(trades))
-
-        today = _date_cls.today()
-        if rng == "week":
-            # Week-to-date: from Monday of the current week.
-            start = today - timedelta(days=today.weekday())
-        elif rng == "month":
-            start = _date_cls(today.year, today.month, 1)
-        elif rng == "30d":
-            start = today - timedelta(days=30)
-        elif rng == "ytd":
-            start = _date_cls(today.year, 1, 1)
-        else:
-            return list(enumerate(trades))
-
-        kept: List[tuple[int, Trade]] = []
-        for orig_idx, t in enumerate(trades):
-            if t.is_pending:
-                kept.append((orig_idx, t))  # always show pending
-                continue
-            d = t.close_date or t.open_date
-            if d is None or d >= start:
-                kept.append((orig_idx, t))
-        return kept
+        from .portfolio import filter_trades_by_date_range_with_orig_index
+        return filter_trades_by_date_range_with_orig_index(
+            trades, self._date_range,
+        )
 
     def _reapply_filter(self) -> None:
         rows = self._all_trade_rows
@@ -585,6 +636,7 @@ class AccountController(QObject):
                         r.get("instrument", ""),
                         r.get("status", ""),
                         r.get("notes", ""),
+                        r.get("tag", ""),
                     )).lower()
                     if text not in haystack:
                         continue
@@ -635,6 +687,14 @@ class AccountController(QObject):
         # to QML must be the original-list index, not the position in
         # the filtered subset.
         ranged_with_idx = self._date_filtered_with_orig_index(account_trades)
+        # Layer the tag filter on top of the date filter. Empty string =
+        # "no tag restriction", so most users see no behavior change.
+        if self._tag_filter:
+            target = self._tag_filter
+            ranged_with_idx = [
+                (i, t) for (i, t) in ranged_with_idx
+                if (getattr(t, "tag", "") or "").strip() == target
+            ]
         ranged_trades = [t for _, t in ranged_with_idx]
         orig_indices = [i for i, _ in ranged_with_idx]
 
@@ -676,6 +736,7 @@ class AccountController(QObject):
                 "days": _int(r.days_to_close),
                 "avg_daily": _money(r.avg_daily_return),
                 "notes": source.notes or "",
+                "tag": r.tag or "",
                 "source_index": original_index,
                 "is_pending": bool(source.is_pending),
                 "is_short": bool(source.is_short),
@@ -761,6 +822,16 @@ class AccountController(QObject):
             "avgDailyReturnSign": _sign(analytics.avg_daily_closed_profit),
             "estYearly": _money(analytics.est_yearly_profit),
             "estYearlySign": _sign(analytics.est_yearly_profit),
+            # Drawdown — peak-to-trough decline along the realized
+            # equity curve. Always reported as a positive dollar
+            # amount; the sign field flips negative so the AnalyticsPanel
+            # tints these red (drawdown is by definition a "bad" metric).
+            "maxDrawdown": _money(analytics.max_drawdown),
+            "maxDrawdownSign": -1 if analytics.max_drawdown else 0,
+            "currentDrawdown": _money(analytics.current_drawdown),
+            "currentDrawdownSign": (
+                -1 if (analytics.current_drawdown or 0) > 0 else 0
+            ),
         }
         self._summary = {
             "marketValue": _money(summary.market_value),

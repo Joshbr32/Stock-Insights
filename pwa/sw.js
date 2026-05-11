@@ -12,7 +12,9 @@
 // keep serving the previous app.js / portfolio.js / styles.css from
 // disk regardless of what the server hands out.
 // v3 (May 2026): date-range filter + equity-curve card
-const VERSION = "si-shell-v3";
+// v4 (May 2026): drawdown metrics, hover/tap tooltip, daily resampling,
+//                trade tags, mobile backup/restore
+const VERSION = "si-shell-v4";
 const SHELL = [
   "./",
   "./index.html",

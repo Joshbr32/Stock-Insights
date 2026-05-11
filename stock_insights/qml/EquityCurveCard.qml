@@ -15,12 +15,41 @@ Card {
     readonly property bool isEmpty: !account || !account.equityCurve
                                      || account.equityCurve.length === 0
 
-    SectionTitle {
-        title: "Equity Curve"
-        subtitle: account && account.equityCurve && account.equityCurve.length > 0
-            ? "cumulative realized P/L  •   " + (account.equityCurve.length - 1)
-                + (account.equityCurve.length === 2 ? " trade" : " trades")
-            : ""
+    // Header — title on the left + resampling toggle on the right.
+    // The toggle stays out of the way (small, low-contrast text) but
+    // is always reachable: dense histories with 100+ trades benefit
+    // hugely from daily bucketing, while a fresh account is more
+    // readable per-trade.
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: 8
+        SectionTitle {
+            title: "Equity Curve"
+            Layout.fillWidth: true
+            subtitle: account && account.equityCurve && account.equityCurve.length > 0
+                ? "cumulative realized P/L  •   " + (account.equityCurve.length - 1)
+                    + (account.equityCurve.length === 2 ? " trade" : " trades")
+                : ""
+        }
+        // Per-trade / Daily switcher — bound to AccountController.equityCurveMode.
+        // Hidden when the curve is empty; nothing to resample yet.
+        ThemedComboBox {
+            id: modeCombo
+            visible: !root.isEmpty
+            Layout.preferredWidth: 100
+            Layout.preferredHeight: 26
+            font.pointSize: 8 * app.theme.fontScale
+            model: ["Per trade", "Daily"]
+            property var keys: ["trades", "daily"]
+            currentIndex: {
+                if (!account) return 0
+                var i = keys.indexOf(account.equityCurveMode || "trades")
+                return i >= 0 ? i : 0
+            }
+            onActivated: function(index) {
+                if (account) account.setEquityCurveMode(keys[index])
+            }
+        }
     }
 
     Rectangle {
@@ -115,6 +144,13 @@ Card {
                 axisY: yAxis
                 width: 2
                 color: app.theme.primary
+                // Emit hovered signals so the floating tooltip below
+                // can show the date + cumulative value at the hovered
+                // point. `pointsVisible: true` would also draw a marker
+                // dot on every point but tends to crowd the chart on
+                // dense histories — we rely on the moving tooltip
+                // instead.
+                onHovered: (point, state) => root._onSeriesHover(point, state)
                 // Bind the series content to the account's equity curve
                 // via a property binding rather than Connections.
                 //
@@ -152,5 +188,69 @@ Card {
             color: app.theme.textMuted
             font.pointSize: 10 * app.theme.fontScale
         }
+
+        // ── Floating hover tooltip ────────────────────────────────────
+        // Driven by LineSeries.onHovered (state=true on enter, false on
+        // exit). Positioned just above-and-right of the cursor; clamps
+        // to the wrapper so it never overflows the card edge.
+        Rectangle {
+            id: tooltip
+            visible: root._tipVisible && !root.isEmpty
+            // Resize to fit the label automatically, plus a 6 px margin
+            // each side and 4 px top/bottom — feels right at 8–9 pt text.
+            width: tipLabel.implicitWidth + 12
+            height: tipLabel.implicitHeight + 8
+            x: Math.max(0, Math.min(parent.width - width,  root._tipX + 12))
+            y: Math.max(0, Math.min(parent.height - height, root._tipY - height - 8))
+            color: app.theme.cardAlt
+            border.color: app.theme.border
+            border.width: 1
+            radius: 4
+            antialiasing: true
+
+            Label {
+                id: tipLabel
+                anchors.centerIn: parent
+                text: root._tipText
+                color: app.theme.text
+                font.pointSize: 8 * app.theme.fontScale
+            }
+        }
+    }
+
+    // ── Tooltip state ────────────────────────────────────────────────
+    // Backing properties for the floating hover tooltip. Kept on the
+    // root (Card) so they survive ChartView's child-rebuild cycles and
+    // can be bound from the LineSeries hover callback below.
+    property bool _tipVisible: false
+    property real _tipX: 0
+    property real _tipY: 0
+    property string _tipText: ""
+
+    // Hover handler — receives plot-area coordinates from LineSeries.
+    // Translates the data-space point into pixel coordinates relative
+    // to the chart wrapper, then formats a short "MMM d · $1,234" line
+    // matching the axis labels.
+    function _onSeriesHover(point, state) {
+        if (!state || !chart) {
+            root._tipVisible = false
+            return
+        }
+        // mapToPosition returns a point in chart's local coordinates.
+        // Since chart anchors.fill the wrapper, those coordinates are
+        // already what the tooltip wants — no further translation needed.
+        var pt = chart.mapToPosition(point, series)
+        root._tipX = pt.x
+        root._tipY = pt.y
+        // point.x is ms-since-epoch (DateTimeAxis); format same as axis.
+        var d = new Date(point.x)
+        var months = ["Jan","Feb","Mar","Apr","May","Jun",
+                      "Jul","Aug","Sep","Oct","Nov","Dec"]
+        var dollars = (point.y >= 0 ? "+$" : "-$")
+                       + Math.abs(point.y).toFixed(0).replace(
+                              /\B(?=(\d{3})+(?!\d))/g, ",")
+        root._tipText = months[d.getMonth()] + " " + d.getDate()
+                       + "  ·  " + dollars
+        root._tipVisible = true
     }
 }

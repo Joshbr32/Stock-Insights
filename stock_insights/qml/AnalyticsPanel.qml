@@ -26,6 +26,34 @@ Card {
             title: "Performance Analytics"
             Layout.fillWidth: true
         }
+        // Strategy-tag filter — narrows analytics + trade history to one
+        // tag (e.g. "swing"). Empty option = "all tags". Hidden when no
+        // tags exist anywhere in the trade list, so brand-new accounts
+        // don't see a useless control.
+        ThemedComboBox {
+            id: tagCombo
+            visible: account && account.availableTags && account.availableTags.length > 0
+            Layout.preferredWidth: 110
+            Layout.preferredHeight: 30
+            font.pointSize: 8 * app.theme.fontScale
+            // Build the model from "All tags" + the dynamic list of
+            // available tags. "" represents the "no tag filter" state.
+            model: ["All tags"].concat(
+                (account && account.availableTags) ? account.availableTags : [])
+            currentIndex: {
+                if (!account) return 0
+                var t = account.tagFilter || ""
+                if (!t) return 0
+                var tags = account.availableTags || []
+                var i = tags.indexOf(t)
+                return i >= 0 ? i + 1 : 0
+            }
+            onActivated: function(index) {
+                if (!account) return
+                var tags = account.availableTags || []
+                account.setTagFilter(index === 0 ? "" : tags[index - 1])
+            }
+        }
         ThemedComboBox {
             id: rangeCombo
             Layout.preferredWidth: 130
@@ -85,6 +113,16 @@ Card {
                  sign: metricSign("avgRoi") }
         Metric { Layout.fillWidth: true; label: "Avg Daily Return";   value: metric("avgDailyReturn");
                  sign: metricSign("avgDailyReturn") }
+
+        // ── Drawdown — risk side of the analytics block ──────────────
+        // Max DD = worst peak-to-trough drop ever observed on the
+        // realized equity curve. Current DD = distance from the latest
+        // value back to the all-time peak (zero when sitting at a new
+        // high). Both tint red (sign = -1) when nonzero.
+        Metric { Layout.fillWidth: true; label: "Max Drawdown";       value: metric("maxDrawdown");
+                 sign: metricSign("maxDrawdown") }
+        Metric { Layout.fillWidth: true; label: "Current Drawdown";   value: metric("currentDrawdown");
+                 sign: metricSign("currentDrawdown") }
     }
 
     // ── Est. Yearly Profit — featured "marquee" metric. Spans both

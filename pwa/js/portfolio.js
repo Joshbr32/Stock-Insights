@@ -22,6 +22,9 @@ export function normalizeTrade(t) {
         notes: t.notes || "",
         is_pending: !!t.is_pending,
         is_short: !!t.is_short,
+        // Strategy tag — empty string when unset (matches portfolio.py
+        // default). Mirrors Trade.tag on the desktop.
+        tag: (t.tag || "").trim(),
     };
 }
 
@@ -261,7 +264,7 @@ export function filterTradesByDateRange(trades, key, today = new Date()) {
 // the line visually rises from the x-axis rather than starting
 // mid-air.
 
-export function buildEquityCurve(trades) {
+export function buildEquityCurve(trades, mode = "trades") {
     const closed = trades.filter(
         t => isClosed(t) && !t.is_pending && t.close_date && tradeProfit(t) != null
     );
@@ -275,14 +278,37 @@ export function buildEquityCurve(trades) {
     seed.setDate(seed.getDate() - 1);
     const pts = [{x: seed.getTime(), y: 0}];
 
-    let running = 0;
-    for (const t of closed) {
-        running += tradeProfit(t) || 0;
-        // 16:00 (= NYSE close-of-day) on close_date so the line lands
-        // at end-of-trading on the relevant day, matching the desktop.
-        const d = parseISODate(t.close_date);
-        d.setHours(16, 0, 0, 0);
-        pts.push({x: d.getTime(), y: running});
+    if (mode === "daily") {
+        // Bucket profits by close_date, then emit one end-of-day point
+        // per unique day. Mirrors the desktop's "daily" resampling mode
+        // (qml_bridge.py::_build_equity_curve when _equity_curve_mode
+        // == "daily"). Smoother than per-trade for dense histories.
+        const dailyPL = new Map();
+        for (const t of closed) {
+            dailyPL.set(t.close_date,
+                (dailyPL.get(t.close_date) || 0) + (tradeProfit(t) || 0));
+        }
+        let running = 0;
+        // ISO date strings sort lexicographically the same as
+        // chronologically, so a plain `.sort()` works.
+        const sortedDays = [...dailyPL.keys()].sort();
+        for (const day of sortedDays) {
+            running += dailyPL.get(day);
+            const d = parseISODate(day);
+            d.setHours(16, 0, 0, 0);
+            pts.push({x: d.getTime(), y: running});
+        }
+    } else {
+        // "trades" — one point per closed trade
+        let running = 0;
+        for (const t of closed) {
+            running += tradeProfit(t) || 0;
+            // 16:00 (= NYSE close-of-day) on close_date so the line
+            // lands at end-of-trading on the relevant day.
+            const d = parseISODate(t.close_date);
+            d.setHours(16, 0, 0, 0);
+            pts.push({x: d.getTime(), y: running});
+        }
     }
     return pts;
 }
@@ -299,6 +325,30 @@ export function computeAnalytics(trades) {
     const losses = profits.filter(p => p < 0);
     const sumLosses = Math.abs(losses.reduce((a, b) => a + b, 0));
 
+    // ── Drawdown — walk the cumulative-realized curve ────────────────
+    // Sort by close_date so the cumulative sum reflects real chronology
+    // (matches portfolio.py exactly). Returns nulls when there are no
+    // closed trades, so the UI can render "—".
+    let max_drawdown = null;
+    let current_drawdown = null;
+    if (closed.length > 0) {
+        const sorted = closed.slice().sort((a, b) =>
+            (a.close_date < b.close_date ? -1
+                : a.close_date > b.close_date ? 1 : 0)
+        );
+        let running = 0;
+        let peak = 0;
+        let maxDd = 0;
+        for (const t of sorted) {
+            running += tradeProfit(t) || 0;
+            if (running > peak) peak = running;
+            const dd = peak - running;
+            if (dd > maxDd) maxDd = dd;
+        }
+        max_drawdown = maxDd;
+        current_drawdown = peak - running;
+    }
+
     return {
         realized_profit: realized,
         closed_trades: closed.length,
@@ -312,5 +362,7 @@ export function computeAnalytics(trades) {
         profit_factor: sumLosses > 0
             ? wins.reduce((a, b) => a + b, 0) / sumLosses
             : (wins.length ? Infinity : null),
+        max_drawdown,
+        current_drawdown,
     };
 }

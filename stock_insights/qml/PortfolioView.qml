@@ -42,9 +42,11 @@ ColumnLayout {
             Layout.fillHeight: true
             Layout.preferredWidth: 1000
             Layout.minimumWidth: 220
-            // Section title + separator + 2×6 metrics (~120) + Est. Yearly
-            // featured row (52) + spacings + padding ≈ 240.
-            Layout.minimumHeight: 240
+            // Section title + separator + 2×7 metrics (~140) + Est. Yearly
+            // featured row (52) + spacings + padding ≈ 270. The "+1 row"
+            // vs. earlier comment is the Max/Current Drawdown pair added
+            // alongside the existing 12 metrics.
+            Layout.minimumHeight: 270
         }
     }
 

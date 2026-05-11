@@ -53,7 +53,13 @@
       "Bash(where npm *)",
       "Bash(git stash *)",
       "Bash(./.venv/Scripts/python.exe .tmp_balance_check.py)",
-      "Bash(./.venv/Scripts/python.exe -m compileall -q main.py stock_insights/ server/)"
+      "Bash(./.venv/Scripts/python.exe -m compileall -q main.py stock_insights/ server/)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_io_utils.py -v)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_io_utils.py -q)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_portfolio.py::TestDrawdown -v)",
+      "Bash(./.venv/Scripts/python.exe -c \"from stock_insights import qml_bridge; print\\('import OK'\\)\")",
+      "Bash(git add *)",
+      "Bash(bash scripts/pre-commit-pwa-version-check.sh)"
     ]
   }
 }
