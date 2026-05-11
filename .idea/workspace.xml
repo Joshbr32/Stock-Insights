@@ -4,25 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="replaced yfinance in server with stooq">
-      <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/misc_helpers/migrate_local_to_server.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/misc_helpers/migrate_raymond_account.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/pwa/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pwa/js/app.js" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/js/app.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pwa/js/portfolio.js" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/js/portfolio.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pwa/styles.css" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/styles.css" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pwa/sw.js" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/sw.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/server/server.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/AnalyticsPanel.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/AnalyticsPanel.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/PortfolioPane.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/PortfolioPane.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/PortfolioView.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/PortfolioView.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/TradesTable.qml" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/TradesTable.qml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml/qmldir" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml/qmldir" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/qml_bridge.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/qml_bridge.py" afterDir="false" />
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="claude enhancements v3">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -429,7 +412,31 @@
       <option name="project" value="LOCAL" />
       <updated>1777926763843</updated>
     </task>
-    <option name="localTasksCounter" value="27" />
+    <task id="LOCAL-00027" summary="claude enhancements">
+      <option name="closed" value="true" />
+      <created>1778535259029</created>
+      <option name="number" value="00027" />
+      <option name="presentableId" value="LOCAL-00027" />
+      <option name="project" value="LOCAL" />
+      <updated>1778535259029</updated>
+    </task>
+    <task id="LOCAL-00028" summary="claude enhancements v2">
+      <option name="closed" value="true" />
+      <created>1778535271888</created>
+      <option name="number" value="00028" />
+      <option name="presentableId" value="LOCAL-00028" />
+      <option name="project" value="LOCAL" />
+      <updated>1778535271888</updated>
+    </task>
+    <task id="LOCAL-00029" summary="claude enhancements v3">
+      <option name="closed" value="true" />
+      <created>1778541594316</created>
+      <option name="number" value="00029" />
+      <option name="presentableId" value="LOCAL-00029" />
+      <option name="project" value="LOCAL" />
+      <updated>1778541594316</updated>
+    </task>
+    <option name="localTasksCounter" value="30" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -447,9 +454,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Minor Files" />
-    <MESSAGE value="UI Changes to theme.py and goals" />
-    <MESSAGE value="UI Changes to Trade Defaults" />
     <MESSAGE value="Revamped Open Holdings" />
     <MESSAGE value="+Trade History: Allow user to adjust which columns to show/ hide on trade history&#10;&#10;~Open Holdings: move Unrealized P/L between Mark and Market Value&#10;&#10;Performance Analytics:&#10;+Avg Trade Value: Avg market value of trades&#10;+Avg ROI %: Avg Profit / Avg Market Value of trades" />
     <MESSAGE value="UI updates for portfolio and settings" />
@@ -472,7 +476,10 @@
     <MESSAGE value="Merge remote-tracking branch 'origin/Portfolio' into Portfolio&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml&#10;#&#9;pwa/js/api.js&#10;#&#9;pwa/js/app.js&#10;#&#9;pwa/sw.js" />
     <MESSAGE value="Mobile Patch v2 - fixed manual url" />
     <MESSAGE value="replaced yfinance in server with stooq" />
-    <option name="LAST_COMMIT_MESSAGE" value="replaced yfinance in server with stooq" />
+    <MESSAGE value="claude enhancements" />
+    <MESSAGE value="claude enhancements v2" />
+    <MESSAGE value="claude enhancements v3" />
+    <option name="LAST_COMMIT_MESSAGE" value="claude enhancements v3" />
     <option name="OPTIMIZE_IMPORTS_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REFORMAT_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REARRANGE_BEFORE_PROJECT_COMMIT" value="true" />

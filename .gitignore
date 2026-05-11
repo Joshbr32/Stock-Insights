@@ -36,3 +36,4 @@ desktop.ini
 # ── Local scratch / temp ─────────────────────────────────────────────────────
 .tmp_*
 *.log
+/tests/
