@@ -43,8 +43,10 @@ idna>=3.4
 # if this package is missing, so it is safe to leave commented out. ──────────
 # pandas-market-calendars>=4.0
 
-# ── Server-only (not needed by the desktop client; install on the box that
-# runs misc_helpers/server.py only) ──────────────────────────────────────────
-# fastapi>=0.110
-# uvicorn>=0.27
-# pyodbc>=5.0
+# ── Server-only deps live in their own file ──────────────────────────────────
+# On the SERVER PC, install with:
+#     pip install -r server/requirements.txt
+# That file holds fastapi / uvicorn / pyodbc / python-dotenv and is kept
+# separate so the colonial-server box doesn't pull half a gigabyte of Qt
+# wheels it never uses, and so the desktop client doesn't need a SQL Server
+# ODBC driver just to launch.

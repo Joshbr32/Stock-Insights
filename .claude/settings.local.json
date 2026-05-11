@@ -52,7 +52,8 @@
       "Bash(where node *)",
       "Bash(where npm *)",
       "Bash(git stash *)",
-      "Bash(./.venv/Scripts/python.exe .tmp_balance_check.py)"
+      "Bash(./.venv/Scripts/python.exe .tmp_balance_check.py)",
+      "Bash(./.venv/Scripts/python.exe -m compileall -q main.py stock_insights/ server/)"
     ]
   }
 }

@@ -1,0 +1,38 @@
+# ── Secrets (never commit these) ─────────────────────────────────────────────
+# Real environment files with passwords / API keys. The committed template
+# lives next to them as `.env.example` for documentation.
+.env
+**/.env
+!**/.env.example
+
+# ── Python build / cache ─────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# ── Virtualenvs ──────────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── PyInstaller build output ─────────────────────────────────────────────────
+build/
+dist/
+*.spec.bak
+
+# ── IDE noise ────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── OS noise ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Local scratch / temp ─────────────────────────────────────────────────────
+.tmp_*
+*.log

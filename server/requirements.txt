@@ -1,0 +1,34 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Stock Insights — Server runtime dependencies
+#
+# Install from a clean venv on the SERVER PC with:
+#     pip install -r requirements.txt
+#
+# This is the FastAPI/SQL-Server side only. The desktop client lives in the
+# project's top-level requirements.txt (PySide6, yfinance, pandas, etc.) and
+# does NOT need anything here. Keep these two files separate so the
+# colonial-server box doesn't pull half a gigabyte of Qt wheels it never uses.
+#
+# Python 3.10 – 3.12 recommended. pyodbc binary wheels for 3.13/3.14 ship
+# slightly later than CPython itself, so if pip can't find a wheel on a
+# brand-new Python, install Python 3.12 from python.org and rebuild the venv.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Web framework ────────────────────────────────────────────────────────────
+fastapi>=0.110
+uvicorn[standard]>=0.27          # [standard] pulls in websockets + httptools
+
+# ── SQL Server driver ────────────────────────────────────────────────────────
+# pyodbc needs the Microsoft ODBC Driver for SQL Server installed on the
+# host (download from https://aka.ms/downloadmsodbcsql). The driver is the
+# C library; this package is the Python binding.
+pyodbc>=5.0
+
+# ── Pydantic v2 (transitive of fastapi, pinned for reproducibility) ──────────
+pydantic>=2.5
+
+# ── Loads server/.env into os.environ at startup, so you don't have to
+# `set PORTFOLIO_SQL_PASSWORD=...` on the shell every time. server.py
+# imports this defensively — if it's missing, .env is just ignored and
+# you fall back to real environment variables. ───────────────────────────────
+python-dotenv>=1.0

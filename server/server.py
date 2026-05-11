@@ -39,6 +39,31 @@ from typing import Any, Dict, List, Optional
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 # ---------------------------------------------------------------------------
+# Load .env (if present) BEFORE we read any PORTFOLIO_* env vars.
+#
+# python-dotenv is listed in server/requirements.txt — installing it is
+# the recommended setup so you can drop the SQL password into a local
+# .env file and forget about it. If it's not installed (e.g. someone is
+# poking at the script in isolation) we silently fall back to real env
+# vars; existing deployments that already export PORTFOLIO_SQL_PASSWORD
+# in the shell continue to work unchanged.
+# ---------------------------------------------------------------------------
+try:
+    from dotenv import load_dotenv
+
+    # Look for .env next to server.py (the canonical location), but don't
+    # walk up the tree — we don't want to accidentally pick up an unrelated
+    # .env from the project root or a parent folder.
+    _ENV_FILE = pathlib.Path(__file__).resolve().parent / ".env"
+    if _ENV_FILE.exists():
+        load_dotenv(_ENV_FILE, override=False)
+except ImportError:
+    # dotenv missing — keep going; either the user is running with shell
+    # env vars set manually, or the SQL_PASSWORD check below will fail
+    # with a clear error message that points at the right fix.
+    pass
+
+# ---------------------------------------------------------------------------
 # Optional dependency guards
 # ---------------------------------------------------------------------------
 try:
@@ -69,8 +94,13 @@ SQL_USER     = os.environ.get("PORTFOLIO_SQL_USER",      "sa")
 SQL_PASSWORD = os.environ.get("PORTFOLIO_SQL_PASSWORD")
 if not SQL_PASSWORD:
     raise SystemExit(
-        "PORTFOLIO_SQL_PASSWORD environment variable is required.\n"
-        "Set it before launching server.py:\n"
+        "PORTFOLIO_SQL_PASSWORD is not set.\n"
+        "\n"
+        "Recommended: create server/.env and put your password there:\n"
+        "    copy .env.example .env\n"
+        "    (then edit .env and fill in PORTFOLIO_SQL_PASSWORD=...)\n"
+        "\n"
+        "Or set it in your shell before launching:\n"
         "    set PORTFOLIO_SQL_PASSWORD=your_password           (cmd)\n"
         "    $env:PORTFOLIO_SQL_PASSWORD='your_password'        (PowerShell)"
     )
