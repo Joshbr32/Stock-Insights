@@ -16,7 +16,36 @@ Card {
             ? account.analytics[key + "Sign"] : 0
     }
 
-    SectionTitle { title: "Performance Analytics" }
+    // Header row: section title on the left + date range selector on the right.
+    // The chosen range applies to BOTH this card's metrics AND the
+    // Trade History below (single source of truth, set on AccountController).
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: 8
+        SectionTitle {
+            title: "Performance Analytics"
+            Layout.fillWidth: true
+        }
+        ThemedComboBox {
+            id: rangeCombo
+            Layout.preferredWidth: 130
+            Layout.preferredHeight: 30
+            font.pointSize: 8 * app.theme.fontScale
+            // Display label / internal key pairs. The combo's currentIndex
+            // is driven by account.dateRangeKey so switching tabs restores
+            // each account's saved range.
+            model: ["All time", "This week", "This month", "Last 30 days", "Year to date"]
+            property var keys: ["all", "week", "month", "30d", "ytd"]
+            currentIndex: {
+                if (!account) return 0
+                var i = keys.indexOf(account.dateRangeKey || "all")
+                return i >= 0 ? i : 0
+            }
+            onActivated: function(index) {
+                if (account) account.setDateRange(keys[index])
+            }
+        }
+    }
 
     Rectangle {
         Layout.fillWidth: true

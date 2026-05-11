@@ -25,6 +25,12 @@ from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# Importing QtCharts here is required even though we don't reference any
+# of its Python symbols — the import is what registers the `QtCharts`
+# QML module (ChartView, LineSeries, DateTimeAxis, ValueAxis used by
+# EquityCurveCard.qml). Without it the QML engine silently fails to
+# instantiate ChartView and the curve renders as a blank area.
+from PySide6 import QtCharts  # noqa: F401  (side-effect import)
 from PySide6.QtCore import Qt, QSettings, QTimer, QThread, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QCursor, QKeySequence
 from PySide6.QtQuickWidgets import QQuickWidget
@@ -375,6 +381,162 @@ class SelectUserDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# Admin: reset other users' passwords
+# ---------------------------------------------------------------------------
+
+# QGroupBox style mirrors GROUP_STYLE in portfolio_tab.py / settings_dialog.py
+# so this dialog matches the rest of the modal aesthetic.
+_GROUP_STYLE = (
+    "QGroupBox { margin-top: 8px; }"
+    "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 2px 8px; }"
+)
+
+
+class ManageUserPasswordsDialog(QDialog):
+    """Admin-only dialog for resetting any user's password.
+
+    Used by small-team / friends-only deployments where a proper
+    self-service "forgot password" email flow is overkill — admin types
+    the new password, communicates it to the user out-of-band, the user
+    can change it themselves later via File → User Account.
+    """
+
+    def __init__(self, store: DataStore, parent=None):
+        super().__init__(parent)
+        self._store = store
+        self.setWindowTitle("Manage User Passwords")
+        self.setModal(True)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setMinimumWidth(440)
+        self.resize(480, 400)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        # ── Section: Users ──────────────────────────────────────────────
+        users_grp = QGroupBox("Users")
+        users_grp.setStyleSheet(_GROUP_STYLE)
+        users_lay = QVBoxLayout(users_grp)
+        users_lay.setContentsMargins(14, 14, 14, 14)
+        users_lay.setSpacing(8)
+
+        self.users_list = QListWidget()
+        self.users_list.itemDoubleClicked.connect(lambda _: self._reset_selected())
+        try:
+            users = store.list_users()
+        except Exception as exc:
+            QMessageBox.warning(self, "Error", f"Could not fetch users: {exc}")
+            users = []
+        my_id = store.user_info.get("user_id", -1)
+        for u in users:
+            if u["id"] == my_id:
+                continue  # admin can self-reset via File > User Account
+            label = f"{'[Admin] ' if u.get('is_admin') else ''}{u['username']}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, u)
+            self.users_list.addItem(item)
+        users_lay.addWidget(self.users_list)
+
+        info = QLabel(
+            "Pick a user, then click <b>Reset Password</b>. The new password "
+            "is shown to you so you can pass it to them — they can change it "
+            "themselves later via File → User Account."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: gray; font-size: 11px;")
+        users_lay.addWidget(info)
+
+        btn_reset = QPushButton("Reset Password…")
+        btn_reset.clicked.connect(self._reset_selected)
+        users_lay.addWidget(btn_reset)
+
+        root.addWidget(users_grp)
+
+        # ── Close button ────────────────────────────────────────────────
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    # ------------------------------------------------------------------
+
+    def _remote_store(self) -> Optional[RemoteDataStore]:
+        if isinstance(self._store, RemoteDataStore):
+            return self._store
+        if isinstance(self._store, FallbackDataStore) and self._store._is_online:
+            return self._store._remote
+        return None
+
+    def _reset_selected(self) -> None:
+        item = self.users_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "Select user",
+                                    "Pick a user from the list first.")
+            return
+        user = item.data(Qt.ItemDataRole.UserRole) or {}
+        username = user.get("username", "")
+        user_id = user.get("id")
+        if not username or user_id is None:
+            return
+
+        remote = self._remote_store()
+        if remote is None:
+            QMessageBox.information(
+                self, "Offline",
+                "Resetting another user's password requires a server connection. "
+                "Reconnect and try again.",
+            )
+            return
+
+        # Plain-text input — admin will need to read the new password back
+        # to the user out-of-band, so masking it doesn't help here.
+        new_pw, ok = QInputDialog.getText(
+            self, "Reset Password",
+            f"New password for {username}:",
+            QLineEdit.EchoMode.Normal, "",
+        )
+        if not ok:
+            return
+        new_pw = new_pw.strip()
+        if not new_pw:
+            QMessageBox.warning(self, "Empty password",
+                                "Password cannot be empty.")
+            return
+        if len(new_pw) < 4:
+            QMessageBox.warning(self, "Too short",
+                                "Use at least 4 characters.")
+            return
+
+        if QMessageBox.question(
+                self, "Confirm Reset",
+                f"Reset password for <b>{username}</b> to:<br><br>"
+                f"&nbsp;&nbsp;<code>{new_pw}</code><br><br>Proceed?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            import requests
+            r = requests.put(
+                f"{remote._base}/users/{user_id}/password",
+                json={"new_password": new_pw},
+                headers=remote._headers(),
+                timeout=8,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Error", str(exc))
+            return
+
+        if r.ok:
+            QMessageBox.information(
+                self, "Password Reset",
+                f"Password reset for <b>{username}</b>.<br><br>"
+                f"They can log in with: <code>{new_pw}</code>",
+            )
+        else:
+            QMessageBox.warning(self, "Error", r.text)
+
+
+# ---------------------------------------------------------------------------
 # MainWindow
 # ---------------------------------------------------------------------------
 
@@ -425,6 +587,12 @@ class MainWindow(QMainWindow):
 
         # ── AppController bridges store + theme into QML ──
         self._app = AppController(self._store, self.theme, self)
+        # Apply view-menu preferences (e.g. "Hide Equity Curve") before
+        # QML mounts so the affected cards don't briefly flash visible
+        # then collapse. Default is "shown" if no setting saved yet.
+        self._app.set_equity_curve_visible(
+            s.value("view/EQUITY_CURVE_VISIBLE", True, type=bool)
+        )
         # All QML-triggered handlers that open modal QDialogs / QMenus run
         # through _safe_run so the QML callback unwinds before the dialog
         # opens (avoids nested-event-loop crashes on Windows + QQuickWidget).
@@ -476,10 +644,22 @@ class MainWindow(QMainWindow):
     # Base numbers are tuned so that at Normal font (11 pt → fontScale 1.0):
     #   • Watchlist shows section title + ≥ 3 rows + add/remove buttons.
     #   • Goal Dashboard + Analytics Panel both fit their hero + metrics.
+    #   • Equity Curve renders without the chart collapsing.
     #   • Holdings and Trades each show ≥ 3 body rows below their header.
     # Other font sizes scale linearly (Large × 1.18, X-Large × 1.45, etc.).
     _BASE_MIN_WIDTH = 900
-    _BASE_MIN_HEIGHT = 860
+    # Vertical budget at Normal font, summed top → bottom:
+    #   menubar (~26) + SplitView margins (20) + PortfolioPane tab bar
+    #   (42) + PortfolioView margins (24) + sum of card minimums
+    #   [260 + 210 + 220 + 300] + 3× layout spacing (36) = ~1138.
+    # 1160 leaves ~22 px of slack for font-metric variation and the
+    # window decoration line drawn just above the menubar on some Qt
+    # styles.
+    _BASE_MIN_HEIGHT = 1160
+    # Drop when the user hides the equity curve (View menu →
+    # "Hide Equity Curve"). The curve contributes 210 px of card
+    # minimum + 12 px of ColumnLayout spacing = 222 px reclaimed.
+    _EQUITY_CURVE_HEIGHT_COST = 222
 
     def _current_font_scale(self) -> float:
         try:
@@ -491,7 +671,13 @@ class MainWindow(QMainWindow):
     def _apply_minimum_window_size(self) -> None:
         scale = self._current_font_scale()
         w = int(self._BASE_MIN_WIDTH * scale)
-        h = int(self._BASE_MIN_HEIGHT * scale)
+        base_h = self._BASE_MIN_HEIGHT
+        # When the equity curve is hidden, the layout no longer reserves
+        # its slot — let the user shrink the window accordingly. We only
+        # rely on _app being set; this runs after AppController init.
+        if hasattr(self, "_app") and not self._app.equityCurveVisible:
+            base_h -= self._EQUITY_CURVE_HEIGHT_COST
+        h = int(base_h * scale)
         self.setMinimumSize(w, h)
         # If the window is already smaller than the new minimum (e.g. user
         # just picked X-Large font), enlarge it so all content fits.
@@ -568,11 +754,37 @@ class MainWindow(QMainWindow):
         act_settings.triggered.connect(self._open_settings_dialog)
         file_menu.addAction("User Account").triggered.connect(self._open_user_account_dialog)
         file_menu.addSeparator()
+
+        # ── Export / Backup ──────────────────────────────────────────────
+        act_export = file_menu.addAction("Export Trades to CSV…")
+        act_export.setShortcut("Ctrl+E")
+        act_export.triggered.connect(lambda: self._safe_run(self._on_export_csv))
+
+        act_backup = file_menu.addAction("Backup All Data…")
+        act_backup.triggered.connect(lambda: self._safe_run(self._on_backup))
+
+        act_restore = file_menu.addAction("Restore From Backup…")
+        act_restore.triggered.connect(lambda: self._safe_run(self._on_restore))
+
+        file_menu.addSeparator()
         file_menu.addAction("Check for Updates…").triggered.connect(self._check_for_updates)
         file_menu.addSeparator()
         file_menu.addAction("Quit").triggered.connect(self.close)
 
         view_menu = self.menuBar().addMenu("&View")
+
+        # Checkable toggle — checked = curve hidden, unchecked = visible.
+        # The label reads as the action the user is performing ("Hide
+        # Equity Curve"), so when the box is ticked the curve disappears
+        # and the menu item still says "Hide Equity Curve" (now ticked,
+        # indicating the hide is in effect). Unchecking re-shows it.
+        self.act_hide_equity_curve = QAction("Hide Equity Curve", self)
+        self.act_hide_equity_curve.setCheckable(True)
+        self.act_hide_equity_curve.setChecked(not self._app.equityCurveVisible)
+        self.act_hide_equity_curve.toggled.connect(self._on_toggle_hide_equity_curve)
+        view_menu.addAction(self.act_hide_equity_curve)
+        view_menu.addSeparator()
+
         view_menu.addAction("Trade History Settings").triggered.connect(self._on_open_trade_history_options)
         view_menu.addAction("Goal Dashboard Options").triggered.connect(self._on_open_goal_options)
 
@@ -580,6 +792,11 @@ class MainWindow(QMainWindow):
         self.act_view_user_portfolio = admin_menu.addAction("View User Portfolio…")
         self.act_view_user_portfolio.triggered.connect(self._open_view_user_portfolio)
         self.act_view_user_portfolio.setVisible(self._store.is_admin)
+
+        self.act_manage_passwords = admin_menu.addAction("Manage User Passwords…")
+        self.act_manage_passwords.triggered.connect(
+            lambda: self._safe_run(self._open_manage_passwords))
+        self.act_manage_passwords.setVisible(self._store.is_admin)
 
         # F5 refresh shortcut (works anywhere in the window).
         act = QAction("Refresh Marks (F5)", self)
@@ -770,6 +987,59 @@ class MainWindow(QMainWindow):
         del account_trades[source_index]
         self._save_account(account.name, account_trades)
 
+    def _on_move_trade(self, source_index: int, destination_account: str) -> None:
+        """Move a single trade from the current portfolio to another portfolio
+        within the same user. Triggered from the trade-history right-click menu.
+
+        The data store has no atomic multi-account write, so this does two
+        sequential `save_account_trades` calls — source first, then
+        destination. That order is important: if we saved destination first,
+        `LocalDataStore.save_account_trades` would still see the moved trade
+        on disk under its old account, leave it in `kept`, and then the new
+        save would add a second copy under the destination account, leaving
+        the trade duplicated.
+
+        For FallbackDataStore users, both writes go through the offline sync
+        queue, so a remote failure mid-move is recovered the next time the
+        server is reachable.
+        """
+        account = self._app.currentAccount
+        if account is None or destination_account == account.name:
+            return
+        all_trades = self._all_trades()
+        src_trades = self._account_trades(account.name, all_trades)
+        if not (0 <= source_index < len(src_trades)):
+            return
+        moved = src_trades[source_index]
+
+        if QMessageBox.question(
+                self, "Move Trade",
+                f"Move <b>{moved.normalized_instrument()}</b> "
+                f"({moved.share_count:,d} shares) from "
+                f"<b>{account.name}</b> to <b>{destination_account}</b>?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        # IMPORTANT: compute the destination slice BEFORE mutating
+        # moved.account, otherwise `_account_trades(destination, ...)` would
+        # match the mutated moved trade and we'd add it a second time below
+        # (yielding a duplicated entry on disk under the destination).
+        src_remaining = [t for t in src_trades if t is not moved]
+        dst_existing = self._account_trades(destination_account, all_trades)
+
+        # Now retag and build the destination slice.
+        moved.account = destination_account
+        dst_with_moved = dst_existing + [moved]
+
+        # Source first (drops the moved trade), then destination (adds it).
+        try:
+            self._store.save_account_trades(account.name, src_remaining)
+            self._store.save_account_trades(destination_account, dst_with_moved)
+        except Exception as exc:
+            QMessageBox.warning(self, "Move Failed", str(exc))
+            return
+        self._app.refresh_all_accounts()
+
     def _on_set_goal_target(self, value: float) -> None:
         account = self._app.currentAccount
         if account is None:
@@ -789,6 +1059,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Save Failed", str(exc))
             return
         self._app.refresh_all_accounts()
+
+    # ------------------------------------------------------------------
+    # View-menu toggles
+    # ------------------------------------------------------------------
+
+    def _on_toggle_hide_equity_curve(self, hide: bool) -> None:
+        """View menu → "Hide Equity Curve" checkbox.
+
+        `hide=True` means the user wants the curve gone, so the
+        AppController's `equityCurveVisible` flag flips to False. We
+        persist the inverted state under "view/EQUITY_CURVE_VISIBLE" so
+        existing settings semantics ("visible" = source of truth) stay
+        consistent in QSettings.
+        """
+        visible = not bool(hide)
+        self._app.set_equity_curve_visible(visible)
+        self._qsettings().setValue("view/EQUITY_CURVE_VISIBLE", visible)
+        # Re-evaluate the window minimum — hiding the curve reclaims
+        # ~222 px (210 minimumHeight + 12 spacing), letting the user
+        # shrink the window further.
+        self._apply_minimum_window_size()
 
     # ------------------------------------------------------------------
     # Goal options dialog
@@ -973,6 +1264,27 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
         menu.addAction("Edit Trade").triggered.connect(
             lambda: self._safe_run(self._on_edit_trade, source_index))
+
+        # ── Move to portfolio submenu ───────────────────────────────────
+        # Lists every other portfolio under the same user account; each
+        # entry moves this single trade over there. Skipped entirely if
+        # the user only has one portfolio.
+        try:
+            all_account_names = list(self._store.get_account_names())
+        except Exception:
+            all_account_names = [account.name]
+        other_accounts = [a for a in all_account_names if a != account.name]
+        if other_accounts:
+            move_menu = menu.addMenu("Move to portfolio")
+            for dest in other_accounts:
+                act = move_menu.addAction(dest)
+                # Default-arg `d=dest` snapshots the loop variable; without
+                # this every action would close over the LAST `dest` value.
+                act.triggered.connect(
+                    lambda _checked=False, d=dest:
+                    self._safe_run(self._on_move_trade, source_index, d))
+
+        menu.addSeparator()
         menu.addAction("Delete Trade").triggered.connect(
             lambda: self._safe_run(self._on_delete_trade, source_index))
         menu.exec(QCursor.pos())
@@ -1040,11 +1352,150 @@ class MainWindow(QMainWindow):
         from .update_checker import check_for_updates
         check_for_updates(parent=self, silent_if_current=False)
 
+    # ------------------------------------------------------------------
+    # Export / Backup / Restore
+    # ------------------------------------------------------------------
+
+    def _default_export_dir(self) -> str:
+        """~/Documents on Windows, ~ everywhere else — a sensible default
+        for save-as dialogs."""
+        from pathlib import Path
+        docs = Path.home() / "Documents"
+        return str(docs if docs.exists() else Path.home())
+
+    def _on_export_csv(self) -> None:
+        """File → Export Trades to CSV — saves every trade across every
+        portfolio for the current user."""
+        from datetime import datetime
+        from pathlib import Path
+        from PySide6.QtWidgets import QFileDialog
+        from .io_utils import export_trades_to_csv
+
+        default_name = f"stock_insights_trades_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        default_path = str(Path(self._default_export_dir()) / default_name)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Trades to CSV", default_path,
+            "CSV files (*.csv);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            count = export_trades_to_csv(self._all_trades(), Path(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Export Failed", str(exc))
+            return
+        QMessageBox.information(
+            self, "Export Complete",
+            f"Wrote <b>{count}</b> trade{'s' if count != 1 else ''} to:<br>"
+            f"<code>{path}</code>",
+        )
+
+    def _on_backup(self) -> None:
+        """File → Backup All Data — full JSON snapshot of trades + accounts
+        + watchlist + goal config. Restorable via 'Restore From Backup…'."""
+        from datetime import datetime
+        from pathlib import Path
+        from PySide6.QtWidgets import QFileDialog
+        from .io_utils import write_backup
+
+        default_name = f"stock_insights_backup_{datetime.now():%Y%m%d_%H%M%S}.json"
+        default_path = str(Path(self._default_export_dir()) / default_name)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Backup All Data", default_path,
+            "Backup files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            written = write_backup(self._store, Path(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Backup Failed", str(exc))
+            return
+        QMessageBox.information(
+            self, "Backup Saved",
+            f"Backup written to:<br><code>{written}</code><br><br>"
+            "Keep this file somewhere safe — Restore From Backup will "
+            "rebuild every trade, watchlist symbol, and goal setting "
+            "from its contents.",
+        )
+
+    def _on_restore(self) -> None:
+        """File → Restore From Backup — picks a JSON file and overwrites
+        the current user's data with its contents. Confirms first because
+        this is destructive."""
+        from pathlib import Path
+        from PySide6.QtWidgets import QFileDialog
+        from .io_utils import apply_backup, read_backup
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Restore From Backup",
+            self._default_export_dir(),
+            "Backup files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            snapshot = read_backup(Path(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid Backup", str(exc))
+            return
+
+        # Pre-flight summary so the user knows what they're about to overwrite.
+        summary_msg = (
+            f"This will <b>overwrite</b> your current data with:<br><br>"
+            f"  • {len(snapshot.get('accounts', []))} portfolio(s)<br>"
+            f"  • {len(snapshot.get('trades', []))} trade(s)<br>"
+            f"  • {len(snapshot.get('watchlist', []))} watchlist symbol(s)<br>"
+            f"  • Backup exported at: <code>"
+            f"{snapshot.get('exported_at', 'unknown')}</code><br><br>"
+            f"Continue?"
+        )
+        if QMessageBox.question(self, "Restore From Backup", summary_msg) \
+                != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            result = apply_backup(self._store, snapshot)
+        except Exception as exc:
+            QMessageBox.warning(self, "Restore Failed", str(exc))
+            return
+
+        # Rebuild the UI from the new data
+        self._app.rebuild_accounts()
+        self._load_watchlist()
+        self._app.refresh_all_accounts()
+
+        QMessageBox.information(
+            self, "Restore Complete",
+            f"Restored <b>{result['trades']}</b> trade(s) across "
+            f"<b>{result['accounts']}</b> portfolio(s).<br>"
+            f"Watchlist: <b>{result['watchlist']}</b> symbol(s).",
+        )
+
     def _open_user_account_dialog(self) -> None:
         UserAccountDialog(self._store, self).exec()
         # Account list may have changed.
         self._app.rebuild_accounts()
         self._app.refresh_all_accounts()
+
+    def _open_manage_passwords(self) -> None:
+        """Admin → Manage User Passwords… — opens the reset-password dialog."""
+        if not self._store.is_admin:
+            QMessageBox.information(self, "Admin Only",
+                                    "Only admin accounts can manage user passwords.")
+            return
+        _remote_ok = (
+                isinstance(self._store, RemoteDataStore) or
+                (isinstance(self._store, FallbackDataStore) and self._store._is_online)
+        )
+        if not _remote_ok:
+            QMessageBox.information(
+                self, "Server Required",
+                "Managing other users' passwords requires a server connection. "
+                "The app is currently in offline mode — reconnect first.",
+            )
+            return
+        ManageUserPasswordsDialog(self._store, self).exec()
 
     def _open_view_user_portfolio(self) -> None:
         if not self._store.is_admin:

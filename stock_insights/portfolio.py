@@ -473,9 +473,15 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
     total_trade_value = sum(trade_values) if trade_values else 0.0
     total_roi_pct = ((realized_profit / total_trade_value) * 100.0) if total_trade_value > 0 else None
 
-    avg_daily = (realized_profit / elapsed) if elapsed > 0 else None
-    # Pure-pace yearly projection: ~252 NYSE trading days per year.
-    est_yearly = (avg_daily * 252.0) if avg_daily is not None else None
+    # Avg daily / est-yearly are only meaningful once you've actually
+    # closed something — otherwise "0 closed × X days = 0 per day" would
+    # render "Est. Yearly Profit: $0.00" which is misleading vs "—".
+    if closed and elapsed > 0:
+        avg_daily = realized_profit / elapsed
+        est_yearly = avg_daily * 252.0  # ~252 NYSE trading days per year
+    else:
+        avg_daily = None
+        est_yearly = None
 
     # Trade-quality block — separate winners from losers and summarise both.
     wins = [p for p in profits if p > 0]

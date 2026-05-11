@@ -7,10 +7,12 @@
 
 import {Api} from "./api.js";
 import {
+    buildEquityCurve,
     computeAnalytics,
     computeGoalProgress,
     computeHoldings,
     computePortfolio,
+    filterTradesByDateRange,
     isClosed,
     normalizeTrade,
     realizedBySymbol,
@@ -27,7 +29,32 @@ const State = {
     marks: {},               // {symbol: price}
     selectedAccount: "All",  // 'All' | account name
     view: "portfolio",       // 'portfolio' | 'trades' | 'goals' | 'watchlist'
+    // Date-range filter — applied to the analytics card on the
+    // portfolio view and to the trade list on the trades view.
+    // Persisted to localStorage so the filter "sticks" across reloads
+    // (matches the desktop's per-account persistence intent).
+    dateRangeKey: localStorage.getItem("date_range_key") || "all",
 };
+
+// Human-friendly labels for the date-range keys. Mirrors
+// TradesTable.qml's _rangeLabel() on desktop so the on-screen wording
+// reads the same.
+const DATE_RANGE_LABELS = {
+    all: "All time",
+    week: "This week",
+    month: "This month",
+    "30d": "Last 30 days",
+    ytd: "Year to date",
+};
+
+function setDateRange(key) {
+    if (!DATE_RANGE_LABELS[key]) key = "all";
+    State.dateRangeKey = key;
+    localStorage.setItem("date_range_key", key);
+    // Re-render the active view; analytics on the portfolio tab and
+    // the trade list on the trades tab both consume this state.
+    renderView();
+}
 
 // ── Tiny DOM helpers ──────────────────────────────────────────────────
 const $ = sel => document.querySelector(sel);
@@ -323,7 +350,10 @@ function viewPortfolio() {
         statCard("Positions", String(summary.positions)),
     ]));
 
-    // Holdings table
+    // Holdings table (always shows ALL open positions — holdings are
+    // by-definition a "right now" snapshot, so the date-range filter
+    // deliberately doesn't touch them. Same intent as desktop's
+    // PortfolioView, where HoldingsTable ignores AccountController.dateRangeKey.)
     wrap.appendChild(el("section", {class: "card"}, [
         el("div", {class: "card-head"}, [
             el("h3", {}, "Holdings"),
@@ -334,8 +364,23 @@ function viewPortfolio() {
             : holdingsTable(rows),
     ]));
 
-    // Trade analytics
-    const an = computeAnalytics(trades);
+    // Date-range filter — applies to the equity curve + analytics
+    // below. Holdings stay unfiltered (above). Matches the desktop's
+    // AnalyticsPanel layout, where the same combo box drives both the
+    // analytics metrics and the Trade History list.
+    const rangedTrades = filterTradesByDateRange(trades, State.dateRangeKey);
+
+    wrap.appendChild(el("section", {class: "range-bar"}, [
+        el("span", {class: "range-bar-caption"},
+            `Analytics window: ${DATE_RANGE_LABELS[State.dateRangeKey] || "All time"}`),
+        rangePicker(),
+    ]));
+
+    // Equity curve — built from the date-filtered closed trades.
+    wrap.appendChild(equityCurveCard(buildEquityCurve(rangedTrades)));
+
+    // Trade analytics — computed over the date-filtered set.
+    const an = computeAnalytics(rangedTrades);
     wrap.appendChild(el("section", {class: "card"}, [
         el("div", {class: "card-head"}, [el("h3", {}, "Trade analytics")]),
         el("div", {class: "kv"}, [
@@ -366,6 +411,92 @@ function kvRow(label, value) {
     return el("div", {class: "kv-row"}, [
         el("span", {class: "kv-label"}, label),
         el("span", {class: "kv-value"}, value),
+    ]);
+}
+
+// ── Date-range picker (shared by viewPortfolio + viewTrades) ──────────
+function rangePicker() {
+    const sel = el("select", {
+        class: "range-picker",
+        onchange: e => setDateRange(e.target.value),
+    });
+    for (const [key, label] of Object.entries(DATE_RANGE_LABELS)) {
+        const opt = el("option", {value: key}, label);
+        if (key === State.dateRangeKey) opt.selected = true;
+        sel.appendChild(opt);
+    }
+    return el("label", {class: "range-picker-wrap"}, [
+        el("span", {class: "range-picker-label"}, "Range"),
+        sel,
+    ]);
+}
+
+// ── Equity-curve card ─────────────────────────────────────────────────
+//
+// Mirrors EquityCurveCard.qml on desktop. The chart is a hand-rolled
+// SVG (no Chart.js dep) — keeps the PWA payload tiny and the rendering
+// CSS-themable. Shape:
+//   • 320×140 viewBox, polyline auto-scaled to the data range
+//   • 5% vertical padding so the line never touches the top/bottom
+//   • horizontal mid-line through y = 0 when the curve crosses zero
+//   • points are spaced by their true close_date (epoch ms), so a
+//     trade cluster looks like a cluster — not evenly spaced ticks
+function equityCurveCard(curve) {
+    if (!curve || curve.length === 0) {
+        return el("section", {class: "card equity-card"}, [
+            el("div", {class: "card-head"}, [el("h3", {}, "Equity curve")]),
+            el("p", {class: "empty"},
+                "No closed trades yet — close a trade to see the curve."),
+        ]);
+    }
+
+    const xs = curve.map(p => p.x);
+    const ys = curve.map(p => p.y);
+    const xMin = Math.min(...xs), xMax = Math.max(...xs);
+    const yMin = Math.min(0, ...ys), yMax = Math.max(0, ...ys);
+    const ySpan = Math.max(1, yMax - yMin);
+    const xSpan = Math.max(1, xMax - xMin);
+
+    const W = 320, H = 140, PADX = 4, PADY = 8;
+    const usableW = W - PADX * 2, usableH = H - PADY * 2;
+    // Note `H - PADY` because SVG y grows downward; we invert so a
+    // higher P/L sits visually higher.
+    const sx = x => PADX + ((x - xMin) / xSpan) * usableW;
+    const sy = y => (H - PADY) - ((y - yMin) / ySpan) * usableH;
+
+    const points = curve.map(p => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
+
+    // Zero baseline — only drawn if the curve goes both positive and
+    // negative, otherwise it'd just sit at the bottom edge.
+    const zeroLine = (yMin < 0 && yMax > 0)
+        ? `<line x1="${PADX}" x2="${W - PADX}" y1="${sy(0)}" y2="${sy(0)}" class="equity-zero"/>`
+        : "";
+
+    // Final-point marker — small dot at the latest cumulative P/L so
+    // the most recent value is visually anchored.
+    const lastX = sx(xs[xs.length - 1]), lastY = sy(ys[ys.length - 1]);
+    const dot = `<circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="3.5" class="equity-dot"/>`;
+
+    const realized = ys[ys.length - 1];
+    // Reuse curve.length - 1 because the curve is seeded with a zero
+    // point one day before the first close (see buildEquityCurve), so
+    // (length - 1) is the actual closed-trade count.
+    const tradeCount = curve.length - 1;
+
+    return el("section", {class: "card equity-card"}, [
+        el("div", {class: "card-head"}, [
+            el("h3", {}, "Equity curve"),
+            el("span", {class: "card-meta"},
+                `${signed(realized)} · ${tradeCount} trade${tradeCount === 1 ? "" : "s"}`),
+        ]),
+        el("div", {
+            class: "equity-svg-wrap",
+            html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="equity-svg">
+                ${zeroLine}
+                <polyline points="${points}" class="equity-line"/>
+                ${dot}
+            </svg>`,
+        }),
     ]);
 }
 
@@ -410,7 +541,12 @@ function showHoldingDetail(r) {
 
 // ── View: Trades ──────────────────────────────────────────────────────
 function viewTrades() {
-    const trades = tradesForSelected().slice().reverse(); // newest first by id
+    // Apply the date-range filter BEFORE reversing so the filter
+    // semantics match the analytics on the portfolio view exactly
+    // (same set of trades, just displayed newest-first here).
+    const all = tradesForSelected();
+    const ranged = filterTradesByDateRange(all, State.dateRangeKey);
+    const trades = ranged.slice().reverse();  // newest first by id
 
     const wrap = el("div", {class: "stack"});
     wrap.appendChild(el("section", {class: "section-head"}, [
@@ -421,8 +557,20 @@ function viewTrades() {
         }, "+ New trade"),
     ]));
 
+    // Range picker — same control as on the portfolio view, sharing
+    // State.dateRangeKey, so toggling here also affects analytics there.
+    wrap.appendChild(el("section", {class: "range-bar"}, [
+        el("span", {class: "range-bar-caption"},
+            `${ranged.length} of ${all.length} ${all.length === 1 ? "trade" : "trades"}`
+            + ` · ${DATE_RANGE_LABELS[State.dateRangeKey] || "All time"}`),
+        rangePicker(),
+    ]));
+
     if (trades.length === 0) {
-        wrap.appendChild(el("p", {class: "empty card"}, "No trades yet."));
+        wrap.appendChild(el("p", {class: "empty card"},
+            State.dateRangeKey === "all"
+                ? "No trades yet."
+                : "No trades in the selected range."));
         return wrap;
     }
 

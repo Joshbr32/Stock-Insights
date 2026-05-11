@@ -13,3 +13,4 @@ GoalDashboard 1.0 GoalDashboard.qml
 AnalyticsPanel 1.0 AnalyticsPanel.qml
 HoldingsTable 1.0 HoldingsTable.qml
 TradesTable 1.0 TradesTable.qml
+EquityCurveCard 1.0 EquityCurveCard.qml

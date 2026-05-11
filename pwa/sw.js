@@ -7,7 +7,12 @@
 //   - Cache-first for the shell so the PWA opens instantly from the home
 //     screen, even on flaky reception.
 
-const VERSION = "si-shell-v2";
+// Bump this any time you change a file in the SHELL list below — the
+// service-worker cache is keyed on VERSION, so without a bump phones
+// keep serving the previous app.js / portfolio.js / styles.css from
+// disk regardless of what the server hands out.
+// v3 (May 2026): date-range filter + equity-curve card
+const VERSION = "si-shell-v3";
 const SHELL = [
   "./",
   "./index.html",

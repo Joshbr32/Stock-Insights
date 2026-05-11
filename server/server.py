@@ -66,7 +66,14 @@ except ImportError as _e:
 SQL_SERVER   = os.environ.get("PORTFOLIO_SQL_SERVER",   r"localhost\STOCKINSIGHTS")
 SQL_DATABASE = os.environ.get("PORTFOLIO_SQL_DATABASE",  "StockInsights")
 SQL_USER     = os.environ.get("PORTFOLIO_SQL_USER",      "sa")
-SQL_PASSWORD = os.environ.get("PORTFOLIO_SQL_PASSWORD",  "zYSW1955h5Zw")
+SQL_PASSWORD = os.environ.get("PORTFOLIO_SQL_PASSWORD")
+if not SQL_PASSWORD:
+    raise SystemExit(
+        "PORTFOLIO_SQL_PASSWORD environment variable is required.\n"
+        "Set it before launching server.py:\n"
+        "    set PORTFOLIO_SQL_PASSWORD=your_password           (cmd)\n"
+        "    $env:PORTFOLIO_SQL_PASSWORD='your_password'        (PowerShell)"
+    )
 HOST         = os.environ.get("PORTFOLIO_HOST",          "0.0.0.0")
 PORT         = int(os.environ.get("PORTFOLIO_PORT",      "8742"))
 TOKEN_DAYS   = 30

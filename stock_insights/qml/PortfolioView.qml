@@ -48,23 +48,50 @@ ColumnLayout {
         }
     }
 
-    // Holdings / Trades min heights: enough vertical space for the card
-    // chrome (section title, header, separator, action row, padding) PLUS
-    // at least 3 visible rows (≈ 96 px) so the user always sees real data
-    // at the minimum window size — per the "3 entries minimum" spec.
+    // Equity curve sits between the summary metrics above and the
+    // tables below — it tells the "running cumulative P/L" story that
+    // ties the analytics numbers to the per-trade list. minimumHeight
+    // accounts for: Card padding (32) + SectionTitle (~22) + divider
+    // (1) + 2× spacing (20) + chart wrapper min (120) = ~195. Round up
+    // to 210 for headroom at larger font scales.
+    EquityCurveCard {
+        account: root.account
+        // Toggled by View menu → "Hide Equity Curve". QtQuick.Layouts
+        // skips invisible children from sizing entirely (Layout doc:
+        // "items with visible: false are excluded from the layout"),
+        // so the surrounding cards expand to reclaim this slot
+        // automatically when the user hides the curve.
+        visible: app.equityCurveVisible
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.preferredHeight: 220
+        Layout.minimumHeight: 210
+    }
+
+    // Holdings / Trades min heights cover the card chrome (section
+    // title, header, separator, padding) PLUS at least 3 visible rows
+    // (≈ 96 px) so the user always sees real data at the minimum window
+    // size — per the "3 entries minimum" spec.
+    //
+    // Holdings stack at min: padding (32) + SectionTitle (~22) + header
+    // (28) + divider (1) + body (100) + 3× spacing (30) = ~213.
     HoldingsTable {
         account: root.account
         Layout.fillWidth: true
         Layout.fillHeight: true
-        Layout.preferredHeight: 220
-        Layout.minimumHeight: 200
+        Layout.preferredHeight: 240
+        Layout.minimumHeight: 220
     }
 
+    // Trades stack at min: padding (32) + SectionTitle (~22) + filter
+    // row (~30) + 2× divider (2) + header (28) + body (100) + 5×
+    // spacing (50) = ~264. Bumped to 300 so a couple extra rows are
+    // visible — Trade History is the card the user looks at most.
     TradesTable {
         account: root.account
         Layout.fillWidth: true
         Layout.fillHeight: true
-        Layout.preferredHeight: 320
-        Layout.minimumHeight: 260
+        Layout.preferredHeight: 340
+        Layout.minimumHeight: 300
     }
 }

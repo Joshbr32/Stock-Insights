@@ -86,6 +86,13 @@ ColumnLayout {
         border.color: app.theme.border
         border.width: 1
         radius: 12
+        // Defense in depth — if the inner cards' sum-of-minimums ever
+        // exceeds the available height (e.g. user shrank below the
+        // documented window minimum via Aero Snap, or a future font-scale
+        // pushes content past its Layout.minimumHeight), clip the
+        // overflow at the rounded border instead of letting it leak
+        // past the window's content area.
+        clip: true
 
         PortfolioView {
             anchors.fill: parent

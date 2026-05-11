@@ -28,7 +28,31 @@
       "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _all_fixes_test.py)",
       "Bash(rm _all_fixes_test.py _fixes_*.png)",
       "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _min_size_test.py)",
-      "Bash(rm _min_size_test.py _min_*.png)"
+      "Bash(rm _min_size_test.py _min_*.png)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _pwd_dialog_test.py)",
+      "Bash(rm _pwd_dialog_test.py _pwd_dialog.png)",
+      "Bash(PYTHONIOENCODING=utf-8 ./.venv/Scripts/python.exe _move_test.py)",
+      "Bash(rm _move_test.py)",
+      "Bash(rm misc_helpers/migrate_local_to_server.py misc_helpers/migrate_raymond_account.py)",
+      "Bash(rmdir misc_helpers)",
+      "Bash(./.venv/Scripts/python.exe -m pip install pytest --quiet)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -v)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(where python *)",
+      "Bash(python -m pip install pytest --quiet)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python -c \"from PySide6 import QtCharts; print\\('QtCharts OK:', QtCharts.__file__\\)\")",
+      "Bash(python -m pip list)",
+      "Bash(findstr /I \"PySide\")",
+      "Bash(./.venv/Scripts/python.exe -m compileall -q main.py stock_insights/)",
+      "Bash(./.venv/Scripts/python.exe -c \"from stock_insights import main_window; print\\('import OK'\\)\")",
+      "Bash(node --check pwa/js/portfolio.js)",
+      "Bash(node --check pwa/js/app.js)",
+      "Bash(where node *)",
+      "Bash(where npm *)",
+      "Bash(git stash *)",
+      "Bash(./.venv/Scripts/python.exe .tmp_balance_check.py)"
     ]
   }
 }

@@ -7,7 +7,10 @@ same data, same accounts, just optimized for a phone screen.
 ## What you get
 
 - 📈 **Portfolio** — combined or per-account market value, holdings table,
-  P/L stats, trade analytics
+  trade analytics, and an equity-curve chart of cumulative realized P/L
+- 🗓️ **Date-range filter** — All time / This week / This month / Last 30
+  days / YTD. Drives both the analytics card and the trade list, mirroring
+  the desktop app's filter (and persisting across reloads via localStorage)
 - 📒 **Trades** — list, add, edit, delete trades; supports long/short and
   pending orders
 - 🎯 **Goals** — shared and per-account goal dashboards with progress bars

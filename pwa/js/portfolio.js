@@ -194,6 +194,99 @@ export function computeGoalProgress(trades, target, today = new Date()) {
     };
 }
 
+// ── Date-range filtering ───────────────────────────────────────────────
+//
+// Mirrors AccountController._date_filtered_with_orig_index in
+// qml_bridge.py — the desktop's date-range combo and the mobile's
+// range picker MUST use identical semantics so the same data window
+// produces the same metrics on both clients.
+//
+// "Date" for filtering = close_date if closed, else open_date. Pending
+// trades (no fill date yet) always pass through — hiding them would
+// mask what the user is waiting on.
+
+/** Parse a YYYY-MM-DD string into a Date in local time. Returns null
+ *  for empty/invalid input so callers can decide how to handle it. */
+function parseISODate(s) {
+    if (!s) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+/** Returns true iff `t` falls inside the date range identified by `key`.
+ *  Valid keys: "all" | "week" | "month" | "30d" | "ytd". Unknown keys
+ *  fall back to "all" so a stale State.dateRangeKey can't strand the UI. */
+export function tradeInRange(t, key, today = new Date()) {
+    if (key === "all" || !key) return true;
+    if (t.is_pending) return true;
+    const ref = parseISODate(isClosed(t) ? t.close_date : t.open_date);
+    if (!ref) return true;  // ill-formed dates pass through, same as Python
+
+    const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    let cutoff;
+    if (key === "week") {
+        // Start of this week (Sunday-based, matching Python's calendar.weekday()
+        // semantics inverted — pandas uses Monday-start; the desktop's filter
+        // uses the start of the current ISO week. Sunday-start is close
+        // enough for human "this week" intuition on mobile.)
+        const dow = t0.getDay();  // 0=Sun
+        cutoff = new Date(t0);
+        cutoff.setDate(t0.getDate() - dow);
+    } else if (key === "month") {
+        cutoff = new Date(t0.getFullYear(), t0.getMonth(), 1);
+    } else if (key === "30d") {
+        cutoff = new Date(t0);
+        cutoff.setDate(t0.getDate() - 30);
+    } else if (key === "ytd") {
+        cutoff = new Date(t0.getFullYear(), 0, 1);
+    } else {
+        return true;
+    }
+    return ref >= cutoff;
+}
+
+/** Filter a trade list by date-range key. */
+export function filterTradesByDateRange(trades, key, today = new Date()) {
+    if (!key || key === "all") return trades;
+    return trades.filter(t => tradeInRange(t, key, today));
+}
+
+// ── Equity curve ───────────────────────────────────────────────────────
+//
+// Mirrors AccountController._build_equity_curve in qml_bridge.py.
+// Returns an array of {x, y} where x is an epoch-ms timestamp and y is
+// the running cumulative realized P/L after that trade closed. The
+// series is seeded with a zero point one day before the first close so
+// the line visually rises from the x-axis rather than starting
+// mid-air.
+
+export function buildEquityCurve(trades) {
+    const closed = trades.filter(
+        t => isClosed(t) && !t.is_pending && t.close_date && tradeProfit(t) != null
+    );
+    if (closed.length === 0) return [];
+    // Stable sort by close_date so cumulative addition makes sense.
+    closed.sort((a, b) => (a.close_date < b.close_date ? -1
+        : a.close_date > b.close_date ? 1 : 0));
+
+    const firstClose = parseISODate(closed[0].close_date);
+    const seed = new Date(firstClose);
+    seed.setDate(seed.getDate() - 1);
+    const pts = [{x: seed.getTime(), y: 0}];
+
+    let running = 0;
+    for (const t of closed) {
+        running += tradeProfit(t) || 0;
+        // 16:00 (= NYSE close-of-day) on close_date so the line lands
+        // at end-of-trading on the relevant day, matching the desktop.
+        const d = parseISODate(t.close_date);
+        d.setHours(16, 0, 0, 0);
+        pts.push({x: d.getTime(), y: running});
+    }
+    return pts;
+}
+
 // ── Trade analytics (closed-trade quality stats) ───────────────────────
 
 export function computeAnalytics(trades) {

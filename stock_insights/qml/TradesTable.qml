@@ -27,10 +27,22 @@ Card {
     // overlay sits in this gap rather than over the rightmost column.
     readonly property int scrollPad: 12
 
+    // Friendly label for the active date range, so the user always knows
+    // which window the metrics + this table are filtered to.
+    function _rangeLabel(key) {
+        if (key === "week")  return "this week"
+        if (key === "month") return "this month"
+        if (key === "30d")   return "last 30 days"
+        if (key === "ytd")   return "year to date"
+        return "all time"
+    }
+
     SectionTitle {
         title: "Trade History"
         subtitle: account && account.loaded
-            ? (account.totalTradeCount + (account.totalTradeCount === 1 ? " trade" : " trades"))
+            ? (account.totalTradeCount
+               + (account.totalTradeCount === 1 ? " trade" : " trades")
+               + "   •   " + _rangeLabel(account.dateRangeKey || "all"))
             : ""
     }
 

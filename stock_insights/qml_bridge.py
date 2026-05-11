@@ -348,11 +348,27 @@ class AccountController(QObject):
         self._realized_raw: float = 0.0
         self._goal_progress_pct: float = 0.0
         self._est_yearly_raw: Optional[float] = None
+        # Equity-curve points: list of {x, y} for QML's LineSeries. x is
+        # ms-since-epoch so QtCharts.DateTimeAxis can plot it directly.
+        self._equity_curve: List[Dict[str, float]] = []
         # Full unfiltered trade list — kept so we can re-apply filter without
         # round-tripping through the data store.
         self._all_trade_rows: List[Dict[str, Any]] = []
         self._text_filter: str = ""
         self._status_filter: str = ""
+        # Date-range filter applied to BOTH the trades table and the
+        # Performance Analytics metrics. Per-account state — switching
+        # account tabs preserves each tab's selected range.
+        # Valid keys: "all" / "week" / "month" / "30d" / "ytd"
+        self._date_range: str = "all"
+        # Last computed inputs (full trade list + marks) — used so that
+        # changing the date range only requires re-filtering, not a fresh
+        # store round-trip.
+        self._last_trades: List[Trade] = []
+        self._last_goal_trades: List[Trade] = []
+        self._last_marks: Dict[str, Optional[float]] = {}
+        self._last_goal_target: float = 500_000.0
+        self._last_presets: List[float] = []
         self._loaded: bool = False
 
     @Property(str, constant=True)
@@ -402,6 +418,26 @@ class AccountController(QObject):
     def estYearlyRaw(self) -> float:
         return 0.0 if self._est_yearly_raw is None else float(self._est_yearly_raw)
 
+    # ── Equity-curve points ───────────────────────────────────────────────
+    # List of {x: <ms-since-epoch>, y: <cumulative realized $>} dicts, one
+    # per closed trade in the current date range, ordered by close_date.
+    # QML's QtCharts.LineSeries can iterate this directly via an append loop.
+    @Property("QVariantList", notify=metricsChanged)
+    def equityCurve(self) -> List[Dict[str, float]]:
+        return list(self._equity_curve)
+
+    @Property(float, notify=metricsChanged)
+    def equityCurveMinY(self) -> float:
+        if not self._equity_curve:
+            return 0.0
+        return min(0.0, min(p["y"] for p in self._equity_curve))
+
+    @Property(float, notify=metricsChanged)
+    def equityCurveMaxY(self) -> float:
+        if not self._equity_curve:
+            return 0.0
+        return max(0.0, max(p["y"] for p in self._equity_curve))
+
     # Sign of the realized P/L — used by the Goal Dashboard's Realized
     # Profit hero to color the number green (profit), red (loss), or neutral.
     @Property(int, notify=metricsChanged)
@@ -428,6 +464,23 @@ class AccountController(QObject):
     def totalTradeCount(self) -> int:
         return len(self._all_trade_rows)
 
+    # ── Date-range filter ────────────────────────────────────────────────
+    @Property(str, notify=filterChanged)
+    def dateRangeKey(self) -> str:
+        return self._date_range
+
+    @Slot(str)
+    def setDateRange(self, key: str) -> None:
+        new = (key or "all").strip().lower()
+        if new not in ("all", "week", "month", "30d", "ytd"):
+            new = "all"
+        if new != self._date_range:
+            self._date_range = new
+            self.filterChanged.emit()
+            # Re-run the full recompute against cached inputs — analytics
+            # depends on the date-filtered set, so this isn't just a re-render.
+            self._recompute_with_current_filter()
+
     @Slot(str)
     def setTextFilter(self, text: str) -> None:
         new = (text or "").strip()
@@ -443,6 +496,80 @@ class AccountController(QObject):
             self._status_filter = new
             self.filterChanged.emit()
             self._reapply_filter()
+
+    def _build_equity_curve(self, trades: List[Trade]) -> List[Dict[str, float]]:
+        """Build (x: ms-since-epoch, y: cumulative realized $) points from
+        the date-filtered trade list.
+
+        Only closed trades contribute. The curve always starts at zero on
+        the first close date so the line visually rises from the origin
+        rather than appearing to start mid-air.
+        """
+        from datetime import datetime, time
+
+        closed = [
+            t for t in trades
+            if t.is_closed and t.close_date is not None
+               and t.trade_profit is not None and not t.is_pending
+        ]
+        if not closed:
+            return []
+        # Stable sort by close_date so cumulative addition makes sense.
+        closed.sort(key=lambda t: t.close_date)
+
+        # Seed with a zero point one day before the first close, so the
+        # line clearly starts on the x-axis and then climbs.
+        from datetime import timedelta
+        first_close = closed[0].close_date
+        seed_date = first_close - timedelta(days=1)
+        seed_ms = int(datetime.combine(seed_date, time(0, 0)).timestamp() * 1000)
+        points: List[Dict[str, float]] = [{"x": float(seed_ms), "y": 0.0}]
+
+        running = 0.0
+        for t in closed:
+            running += float(t.trade_profit or 0.0)
+            ms = int(datetime.combine(t.close_date, time(16, 0)).timestamp() * 1000)
+            points.append({"x": float(ms), "y": float(running)})
+        return points
+
+    def _date_filtered_with_orig_index(
+            self, trades: List[Trade],
+    ) -> List[tuple[int, Trade]]:
+        """Return (original_index, trade) pairs for trades that fall in
+        the current date range.
+
+        "Date" for a trade = close_date if closed, else open_date. Pending
+        trades (no fill date yet) are always kept — filtering them out
+        would hide what the user is waiting on.
+        """
+        from datetime import date as _date_cls, timedelta
+
+        rng = self._date_range
+        if rng == "all":
+            return list(enumerate(trades))
+
+        today = _date_cls.today()
+        if rng == "week":
+            # Week-to-date: from Monday of the current week.
+            start = today - timedelta(days=today.weekday())
+        elif rng == "month":
+            start = _date_cls(today.year, today.month, 1)
+        elif rng == "30d":
+            start = today - timedelta(days=30)
+        elif rng == "ytd":
+            start = _date_cls(today.year, 1, 1)
+        else:
+            return list(enumerate(trades))
+
+        kept: List[tuple[int, Trade]] = []
+        for orig_idx, t in enumerate(trades):
+            if t.is_pending:
+                kept.append((orig_idx, t))  # always show pending
+                continue
+            d = t.close_date or t.open_date
+            if d is None or d >= start:
+                kept.append((orig_idx, t))
+        return kept
 
     def _reapply_filter(self) -> None:
         rows = self._all_trade_rows
@@ -473,10 +600,53 @@ class AccountController(QObject):
             goal_target: float,
             presets: List[float],
     ) -> None:
-        holdings = compute_holdings_from_trades(account_trades)
-        realized = compute_realized_pl_by_symbol(account_trades)
+        # Cache the inputs so setDateRange can re-filter without going
+        # back to the data store.
+        self._last_trades = list(account_trades)
+        self._last_goal_trades = list(goal_trades)
+        self._last_marks = dict(marks)
+        self._last_goal_target = float(goal_target)
+        self._last_presets = list(presets)
+        self._recompute_with_current_filter()
+
+    def _recompute_with_current_filter(self) -> None:
+        """Recompute holdings / analytics / trade rows / goal from the
+        cached inputs, applying the current `_date_range` filter to the
+        sets that should respect it (analytics + trade history).
+
+        Holdings, the goal-group computation, and the goal dashboard's
+        annual target/progress are intentionally NOT date-filtered — they
+        are by-definition snapshots of "what you currently own" and
+        "your annual progress".
+        """
+        account_trades = self._last_trades
+        goal_trades = self._last_goal_trades
+        marks = self._last_marks
+        goal_target = self._last_goal_target
+        presets = self._last_presets
+
+        # Apply the date filter only to the trade list that feeds Trade
+        # History + Performance Analytics. Pending trades are kept
+        # regardless of range — they don't have a fillable date yet.
+        #
+        # Map preserves the ORIGINAL position of each surviving trade in
+        # `account_trades` — the edit/delete/move handlers identify
+        # trades by that index, so the in-filter `source_index` exposed
+        # to QML must be the original-list index, not the position in
+        # the filtered subset.
+        ranged_with_idx = self._date_filtered_with_orig_index(account_trades)
+        ranged_trades = [t for _, t in ranged_with_idx]
+        orig_indices = [i for i, _ in ranged_with_idx]
+
+        holdings = compute_holdings_from_trades(account_trades)  # NOT filtered
+        realized = compute_realized_pl_by_symbol(account_trades)  # NOT filtered
         holding_views, summary = compute_portfolio(holdings, marks, realized)
-        analytics = compute_trade_analytics(account_trades)
+        analytics = compute_trade_analytics(ranged_trades)  # filtered
+
+        # Equity curve — one point per closed trade in the date range,
+        # ordered by close_date, y = running cumulative realized P/L.
+        # x is ms-since-epoch so QML's QtCharts.DateTimeAxis can plot it.
+        self._equity_curve = self._build_equity_curve(ranged_trades)
 
         goal_holdings = compute_holdings_from_trades(goal_trades)
         goal_realized = compute_realized_pl_by_symbol(goal_trades)
@@ -485,10 +655,11 @@ class AccountController(QObject):
             goal_trades, goal_target, unrealized_profit=goal_summary.unrealized_pl,
         )
 
-        trade_rows = compute_trade_rows(account_trades)
+        trade_rows = compute_trade_rows(ranged_trades)
         enriched: List[Dict[str, Any]] = []
         for r in trade_rows:
-            source = account_trades[r.index]
+            original_index = orig_indices[r.index]
+            source = account_trades[original_index]
             profit_sign = 0
             if r.trade_profit is not None:
                 profit_sign = 1 if r.trade_profit > 0 else (-1 if r.trade_profit < 0 else 0)
@@ -505,7 +676,7 @@ class AccountController(QObject):
                 "days": _int(r.days_to_close),
                 "avg_daily": _money(r.avg_daily_return),
                 "notes": source.notes or "",
-                "source_index": int(r.index),
+                "source_index": original_index,
                 "is_pending": bool(source.is_pending),
                 "is_short": bool(source.is_short),
             })
@@ -732,6 +903,11 @@ class AppController(QObject):
     currentAccountChanged = Signal()
     statusChanged = Signal()
     adminChanged = Signal()
+    # Fires when a user toggle in the View menu shows/hides one of the
+    # portfolio view's optional cards (currently just the equity curve).
+    # QML cards bind their `visible:` to the corresponding property and
+    # re-evaluate when this notify fires.
+    viewPrefsChanged = Signal()
 
     def __init__(self, store, theme_manager, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -746,6 +922,11 @@ class AppController(QObject):
         self._status_color = "#9ca3af"
         self._username = str(store.username)
         self._is_admin = bool(store.is_admin)
+
+        # View-menu preferences. Defaults to "shown"; MainWindow overrides
+        # this from QSettings during startup so the user's choice persists
+        # across launches.
+        self._equity_curve_visible: bool = True
 
         # Python-side callbacks wired by MainWindow after __init__.
         self._callbacks: Dict[str, Callable] = {}
@@ -798,6 +979,22 @@ class AppController(QObject):
     @Property(str, notify=statusChanged)
     def statusColor(self) -> str:
         return self._status_color
+
+    # ---- view-menu preferences ----
+    # `equityCurveVisible` is bound by PortfolioView.qml's EquityCurveCard.
+    # MainWindow drives the value via set_equity_curve_visible() — the
+    # menu QAction toggles, MainWindow persists to QSettings + calls this
+    # setter, which emits viewPrefsChanged so the QML binding re-evaluates.
+
+    @Property(bool, notify=viewPrefsChanged)
+    def equityCurveVisible(self) -> bool:
+        return self._equity_curve_visible
+
+    def set_equity_curve_visible(self, visible: bool) -> None:
+        visible = bool(visible)
+        if visible != self._equity_curve_visible:
+            self._equity_curve_visible = visible
+            self.viewPrefsChanged.emit()
 
     # ---- status ----
 
