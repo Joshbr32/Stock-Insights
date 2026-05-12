@@ -704,20 +704,90 @@ function holdingsTable(rows) {
 }
 
 function showHoldingDetail(r) {
-    openModal(`${r.instrument}`, el("div", {class: "kv"}, [
-        kvRow("Quantity", String(Math.abs(r.qty)) + (r.qty < 0 ? " (short)" : "")),
-        kvRow("Avg cost", fmtNum(r.avg_cost)),
-        kvRow("Mark", fmtNum(r.mark)),
-        kvRow("Market value", fmtMoney(r.market_value)),
-        kvRow("Weight", pct(r.weight_pct, 1)),
-        kvRow("Unrealized P/L", signed(r.unrealized_pl)),
-        kvRow("Realized P/L", signed(r.realized_pl)),
-        kvRow("Total P/L", signed(r.total_pl)),
-        r.notes ? el("div", {class: "kv-row"}, [
-            el("span", {class: "kv-label"}, "Notes"),
-            el("span", {class: "kv-value notes"}, r.notes),
-        ]) : null,
+    // Drill-down: existing kv summary + per-symbol equity curve + a
+    // chronological list of every trade for this symbol. Mirrors the
+    // desktop's SymbolHistoryDialog.
+    const sym = r.instrument;
+    // All trades for this symbol within the user's currently-selected
+    // account (same scoping rule the holdings row was computed under).
+    const symTrades = tradesForSelected().filter(
+        t => (t.instrument || "").toUpperCase() === sym
+    );
+    const closedCount = symTrades.filter(t => isClosed(t) && !t.is_pending).length;
+
+    openModal(sym, el("div", {class: "stack drill-down"}, [
+        // ── Position summary (existing kv block) ──────────────────
+        el("div", {class: "kv"}, [
+            kvRow("Quantity",
+                String(Math.abs(r.qty)) + (r.qty < 0 ? " (short)" : "")),
+            kvRow("Avg cost", fmtNum(r.avg_cost)),
+            kvRow("Mark", fmtNum(r.mark)),
+            kvRow("Market value", fmtMoney(r.market_value)),
+            kvRow("Weight", pct(r.weight_pct, 1)),
+            kvRow("Unrealized P/L", signed(r.unrealized_pl)),
+            kvRow("Realized P/L", signed(r.realized_pl)),
+            kvRow("Total P/L", signed(r.total_pl)),
+            r.notes ? el("div", {class: "kv-row"}, [
+                el("span", {class: "kv-label"}, "Notes"),
+                el("span", {class: "kv-value notes"}, r.notes),
+            ]) : null,
+        ]),
+
+        // ── Mini equity curve scoped to this symbol ────────────────
+        // Hidden when there's nothing to plot — keeps the modal short
+        // for symbols you only just bought.
+        closedCount > 0
+            ? equityCurveCard(buildEquityCurve(symTrades, "trades"))
+            : null,
+
+        // ── Per-symbol trade list ──────────────────────────────────
+        // Chronological so the entry/exit story reads top-to-bottom.
+        // Mobile trade rows in the main list reverse to newest-first
+        // for scanning recent activity; for a per-symbol drill-down
+        // chronological reads more naturally.
+        el("section", {class: "card drill-trades"}, [
+            el("div", {class: "card-head"}, [
+                el("h3", {}, "All trades"),
+                el("span", {class: "card-meta"},
+                    `${symTrades.length} ${symTrades.length === 1 ? "trade" : "trades"}`),
+            ]),
+            symTrades.length === 0
+                ? el("p", {class: "empty"}, "No trades for this symbol yet.")
+                : symbolTradeList(symTrades),
+        ]),
     ]));
+}
+
+// Compact, read-only trade list used inside the per-symbol drill-down
+// modal. Differs from the main trade list in that it's chronological
+// (oldest first, so the entry → exit story reads naturally) and
+// non-tappable — taps would cause a confusing "open editor inside an
+// already-open modal" interaction.
+function symbolTradeList(trades) {
+    const sorted = trades.slice().sort((a, b) => {
+        const ad = a.close_date || a.open_date || "";
+        const bd = b.close_date || b.open_date || "";
+        return ad < bd ? -1 : ad > bd ? 1 : 0;
+    });
+    const list = el("div", {class: "drill-trade-list"});
+    for (const t of sorted) {
+        const profit = tradeProfit(t);
+        const status = tradeStatus(t);
+        list.appendChild(el("div", {class: "drill-trade-row"}, [
+            el("div", {class: "dt-l"}, [
+                el("div", {class: "dt-date"},
+                    t.close_date || t.open_date || "—"),
+                el("div", {class: "dt-meta"}, [
+                    el("span", {class: "tag tag-" + status.toLowerCase()}, status),
+                    ` ${t.share_count} sh @ ${fmtNum(t.buy_price)}`,
+                    t.tag ? el("span", {class: "tag tag-strategy"}, t.tag) : null,
+                ]),
+            ]),
+            el("div", {class: "dt-pl " + deltaClass(profit)},
+                profit == null ? "—" : signed(profit)),
+        ]));
+    }
+    return list;
 }
 
 // ── View: Trades ──────────────────────────────────────────────────────

@@ -14,7 +14,9 @@
 // v3 (May 2026): date-range filter + equity-curve card
 // v4 (May 2026): drawdown metrics, hover/tap tooltip, daily resampling,
 //                trade tags, mobile backup/restore
-const VERSION = "si-shell-v4";
+// v5 (May 2026): per-symbol drill-down modal (mini equity curve +
+//                chronological trade list inside holding detail)
+const VERSION = "si-shell-v5";
 const SHELL = [
   "./",
   "./index.html",

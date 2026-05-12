@@ -4,10 +4,17 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="claude enhancements v3">
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="claude enhancements v4">
       <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/io_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/io_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pwa/js/app.js" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/js/app.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pwa/styles.css" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/styles.css" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pwa/sw.js" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/sw.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/server/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/server/server.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/api_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/api_client.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/stock_insights/workers.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/workers.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -446,7 +453,15 @@
       <option name="project" value="LOCAL" />
       <updated>1778541621848</updated>
     </task>
-    <option name="localTasksCounter" value="31" />
+    <task id="LOCAL-00031" summary="claude enhancements v4">
+      <option name="closed" value="true" />
+      <created>1778543986584</created>
+      <option name="number" value="00031" />
+      <option name="presentableId" value="LOCAL-00031" />
+      <option name="project" value="LOCAL" />
+      <updated>1778543986584</updated>
+    </task>
+    <option name="localTasksCounter" value="32" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -464,7 +479,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Revamped Open Holdings" />
     <MESSAGE value="+Trade History: Allow user to adjust which columns to show/ hide on trade history&#10;&#10;~Open Holdings: move Unrealized P/L between Mark and Market Value&#10;&#10;Performance Analytics:&#10;+Avg Trade Value: Avg market value of trades&#10;+Avg ROI %: Avg Profit / Avg Market Value of trades" />
     <MESSAGE value="UI updates for portfolio and settings" />
     <MESSAGE value="New branch, focus only on portfolio" />
@@ -489,7 +503,8 @@
     <MESSAGE value="claude enhancements" />
     <MESSAGE value="claude enhancements v2" />
     <MESSAGE value="claude enhancements v3" />
-    <option name="LAST_COMMIT_MESSAGE" value="claude enhancements v3" />
+    <MESSAGE value="claude enhancements v4" />
+    <option name="LAST_COMMIT_MESSAGE" value="claude enhancements v4" />
     <option name="OPTIMIZE_IMPORTS_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REFORMAT_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REARRANGE_BEFORE_PROJECT_COMMIT" value="true" />

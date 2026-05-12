@@ -332,6 +332,47 @@ class RemoteDataStore(DataStore):
             raise APIError(r.text, r.status_code)
         return r.json()
 
+    # ---- Health probe (used by the status pill) -----------------------
+
+    def ping_health(self) -> dict:
+        """Lightweight liveness probe.
+
+        Returns a dict shaped like:
+            {
+                "ok": True/False,
+                "latency_ms": <int>,
+                "server_version": "1.2.3",   # only on success
+                "uptime_seconds": 12345,     # only on success
+                "db_ok": True/False,         # only on success
+                "error": "...",              # only on failure
+            }
+
+        Short timeout (3s) because this is called on a polling loop —
+        we'd rather report "server slow" via a stale-ish version field
+        than block the worker on a 30s hang. Never raises; surfaces
+        every failure mode via the `ok` flag so the caller's UI logic
+        stays simple.
+        """
+        import time
+        t0 = time.monotonic()
+        try:
+            # No auth header — /health is intentionally public.
+            r = requests.get(f"{self._base}/health", timeout=3)
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            if not r.ok:
+                return {"ok": False, "latency_ms": latency_ms,
+                        "error": f"HTTP {r.status_code}"}
+            data = r.json()
+            data["ok"] = bool(data.get("ok", False))
+            data["latency_ms"] = latency_ms
+            return data
+        except requests.exceptions.Timeout:
+            return {"ok": False, "latency_ms": int((time.monotonic() - t0) * 1000),
+                    "error": "timeout"}
+        except Exception as exc:
+            return {"ok": False, "latency_ms": int((time.monotonic() - t0) * 1000),
+                    "error": str(exc)[:120]}
+
 
 # ---------------------------------------------------------------------------
 # LocalDataStore — QSettings fallback (offline / no server)

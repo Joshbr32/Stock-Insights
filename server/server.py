@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stock Insights — Portfolio Sync Server (SQL Server edition).
+r"""Stock Insights — Portfolio Sync Server (SQL Server edition).
 
 Prerequisites on COLONIAL_SERVER
 ─────────────────────────────────
@@ -330,6 +330,52 @@ class GoalGroupUpdate(BaseModel):
 
 class WatchlistUpdate(BaseModel):
     symbols: List[str]
+
+
+# ---------------------------------------------------------------------------
+# Health check  (no auth — surfaces version + db status to the client's
+# status pill so the user can see "Server v1.2.3 · 12ms" at a glance)
+# ---------------------------------------------------------------------------
+
+# Single source of truth for the server-side version. Bump alongside the
+# desktop's stock_insights/version.py when you ship coordinated changes
+# (new endpoints, schema migrations, etc.). Independent of APP_VERSION
+# because server + desktop can update on different cadences.
+SERVER_VERSION = "1.0.0"
+import time as _time
+
+_SERVER_BOOT_TIME = _time.time()
+
+
+@app.get("/health")
+def health():
+    """Lightweight liveness probe + version surface.
+
+    Returns the server version, process uptime, and whether a quick SQL
+    Server SELECT succeeds. Used by the desktop's status pill (polled
+    every few seconds) and by external monitoring (the response is the
+    same shape both consumers can parse).
+
+    No auth — the response carries no sensitive data, and requiring a
+    token would defeat the point of a network-edge health check.
+    """
+    db_ok = False
+    db_error = ""
+    try:
+        with db() as conn:
+            cur = _exec(conn, "SELECT 1")
+            cur.fetchone()
+            db_ok = True
+    except Exception as exc:
+        db_error = str(exc)[:200]  # truncate so a verbose ODBC error doesn't bloat the response
+
+    return {
+        "ok": db_ok,
+        "server_version": SERVER_VERSION,
+        "uptime_seconds": int(_time.time() - _SERVER_BOOT_TIME),
+        "db_ok": db_ok,
+        "db_error": db_error if not db_ok else "",
+    }
 
 
 # ---------------------------------------------------------------------------

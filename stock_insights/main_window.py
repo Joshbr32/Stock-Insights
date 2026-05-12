@@ -31,31 +31,28 @@ from typing import Dict, List, Optional
 # EquityCurveCard.qml). Without it the QML engine silently fails to
 # instantiate ChartView and the curve renders as a blank area.
 from PySide6 import QtCharts  # noqa: F401  (side-effect import)
-from PySide6.QtCore import Qt, QSettings, QTimer, QThread, QUrl, Signal
+from PySide6.QtCore import Qt, QSettings, QTimer, QThread, QUrl
 from PySide6.QtGui import QAction, QColor, QCursor, QKeySequence
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
     QProgressBar,
-    QPushButton,
     QSizePolicy,
-    QTabWidget,
-    QVBoxLayout,
     QWidget,
 )
 
+from .admin_dialogs import (
+    ManageUserPasswordsDialog,
+    SelectUserDialog,
+    UserAccountDialog,
+    UserPortfolioViewer,
+)
 from .api_client import DataStore, FallbackDataStore, RemoteDataStore
 from .logging_utils import get_logger, setup_logging, serial_debug
 from .portfolio import Holding, Trade
@@ -64,7 +61,6 @@ from .portfolio_tab import (
     FulfillOrderDialog,
     GoalDashboardOptionsDialog,
     MarkDownDialog,
-    PortfolioTab,
     TradeEditDialog,
 )
 from .qml_bridge import AppController
@@ -77,463 +73,12 @@ _APP = "StocksGUI"
 _QML_DIR = Path(__file__).resolve().parent / "qml"
 
 
-# ---------------------------------------------------------------------------
-# Admin: User Account Management Dialog (unchanged from QWidget version)
-# ---------------------------------------------------------------------------
-
-class UserAccountDialog(QDialog):
-    """Create / view user accounts (admin-only management + self password change)."""
-
-    def __init__(self, store: DataStore, parent=None):
-        super().__init__(parent)
-        self._store = store
-        self.setWindowTitle("User Account")
-        self.resize(520, 420)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
-
-        # ---- Profile group ----
-        profile_grp = QGroupBox("Profile")
-        profile_grid = QGridLayout(profile_grp)
-        profile_grid.setContentsMargins(14, 18, 14, 14)
-        profile_grid.setHorizontalSpacing(12)
-        profile_grid.setVerticalSpacing(10)
-
-        info = store.user_info
-        profile_grid.addWidget(QLabel("Username:"), 0, 0)
-        profile_grid.addWidget(QLabel(info.get("username", "")), 0, 1)
-        profile_grid.addWidget(QLabel("Role:"), 1, 0)
-        profile_grid.addWidget(QLabel("Admin" if info.get("is_admin") else "User"), 1, 1)
-        profile_grid.addWidget(QLabel("Server:"), 2, 0)
-
-        server_url = ""
-        if isinstance(store, RemoteDataStore):
-            server_url = store._base
-        elif isinstance(store, FallbackDataStore):
-            server_url = store._remote._base
-        profile_grid.addWidget(QLabel(server_url or "(offline)"), 2, 1)
-        root.addWidget(profile_grp)
-
-        # ---- Change password ----
-        pwd_grp = QGroupBox("Change Password")
-        pwd_form = QVBoxLayout(pwd_grp)
-        pwd_form.setContentsMargins(14, 18, 14, 14)
-        self.new_pass_edit = QLineEdit()
-        self.new_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.new_pass_edit.setPlaceholderText("New password (leave blank to keep current)")
-        btn_change_pwd = QPushButton("Change Password")
-        btn_change_pwd.clicked.connect(self._change_password)
-        pwd_form.addWidget(self.new_pass_edit)
-        pwd_form.addWidget(btn_change_pwd)
-        root.addWidget(pwd_grp)
-
-        # ---- Accounts list ----
-        accts_grp = QGroupBox("My Accounts")
-        accts_layout = QVBoxLayout(accts_grp)
-        accts_layout.setContentsMargins(14, 18, 14, 14)
-        accts_layout.setSpacing(8)
-
-        self.accounts_list = QListWidget()
-        for acct in store.get_account_names():
-            self.accounts_list.addItem(acct)
-        accts_layout.addWidget(self.accounts_list)
-
-        acct_btns = QHBoxLayout()
-        btn_add = QPushButton("+ Add Account")
-        btn_remove = QPushButton("- Remove Account")
-        btn_add.clicked.connect(self._add_account)
-        btn_remove.clicked.connect(self._remove_account)
-        acct_btns.addWidget(btn_add)
-        acct_btns.addWidget(btn_remove)
-        acct_btns.addStretch(1)
-        accts_layout.addLayout(acct_btns)
-        root.addWidget(accts_grp)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-        buttons.accepted.connect(self.accept)
-        root.addWidget(buttons)
-
-    def _change_password(self):
-        password = self.new_pass_edit.text().strip()
-        if not password:
-            return
-        remote_store = self._remote_store()
-        if remote_store is None:
-            QMessageBox.information(self, "Offline", "Password change requires a server connection.")
-            return
-        try:
-            import requests
-            user_id = remote_store.user_info["user_id"]
-            r = requests.put(
-                f"{remote_store._base}/users/{user_id}/password",
-                json={"new_password": password},
-                headers=remote_store._headers(),
-                timeout=8,
-            )
-            if r.ok:
-                QMessageBox.information(self, "Success", "Password changed.")
-                self.new_pass_edit.clear()
-            else:
-                QMessageBox.warning(self, "Error", r.text)
-        except Exception as exc:
-            QMessageBox.warning(self, "Error", str(exc))
-
-    def _remote_store(self) -> Optional[RemoteDataStore]:
-        if isinstance(self._store, RemoteDataStore):
-            return self._store
-        if isinstance(self._store, FallbackDataStore) and self._store._is_online:
-            return self._store._remote
-        return None
-
-    def _add_account(self):
-        text, ok = QInputDialog.getText(self, "Add Account", "Account name:")
-        if not ok or not text.strip(): return
-        name = text.strip()
-        existing = self._store.get_account_names()
-        if name in existing:
-            QMessageBox.information(self, "Duplicate", f"'{name}' already exists."); return
-        try:
-            self._store.save_accounts(existing + [name])
-            self.accounts_list.addItem(name)
-        except Exception as exc:
-            QMessageBox.warning(self, "Error", str(exc))
-
-    def _remove_account(self):
-        item = self.accounts_list.currentItem()
-        if not item: return
-        name = item.text()
-        existing = self._store.get_account_names()
-        if len(existing) <= 1:
-            QMessageBox.information(self, "Cannot Remove", "At least one account must remain."); return
-        if QMessageBox.question(self, "Remove Account", f"Remove '{name}'? This deletes all its trades.") \
-                != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            self._store.save_accounts([a for a in existing if a != name])
-            self.accounts_list.takeItem(self.accounts_list.row(item))
-        except Exception as exc:
-            QMessageBox.warning(self, "Error", str(exc))
-
-
-# ---------------------------------------------------------------------------
-# Admin: portfolio viewer for another user (still uses the QWidget PortfolioTab)
-# ---------------------------------------------------------------------------
-
-class UserPortfolioViewer(QMainWindow):
-    """Read-only portfolio window opened by an admin to view another user's data."""
-
-    closed = Signal()
-
-    def __init__(self, user_store: DataStore, username: str, settings: QSettings, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Viewing Portfolio — {username}")
-        self.resize(1100, 750)
-        self._store = user_store
-        self._settings = settings
-        self.theme = getattr(parent, "theme", None)
-        self._tabs: Dict[str, PortfolioTab] = {}
-        self._closing = False
-        self._active_marks_thread: Optional[QThread] = None
-        self._active_marks_worker = None
-
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-
-        banner = QLabel(f"  👁  Admin view — {username}'s portfolios (read-only)")
-        banner.setStyleSheet(
-            "background: #7c3aed; color: white; padding: 6px 12px; font-weight: bold;"
-        )
-        layout.addWidget(banner)
-
-        self.tab_widget = QTabWidget()
-        layout.addWidget(self.tab_widget)
-
-        try:
-            accounts = user_store.get_account_names()
-        except Exception:
-            accounts = []
-
-        for account in accounts:
-            tab = PortfolioTab(
-                account_name=account,
-                store=user_store,
-                settings=settings,
-                read_only=True,
-                parent=self,
-            )
-            self.tab_widget.addTab(tab, account)
-            self._tabs[account] = tab
-
-        if not accounts:
-            self.tab_widget.addTab(QLabel("No accounts found."), "—")
-
-        self._marks_timer = QTimer(self)
-        self._marks_timer.setInterval(30_000)
-        self._marks_timer.timeout.connect(self._refresh_marks)
-        self._marks_timer.start()
-        QTimer.singleShot(500, self._refresh_marks)
-
-    def _refresh_marks(self):
-        if self._closing:
-            return
-        if self._active_marks_thread is not None and self._active_marks_thread.isRunning():
-            return
-        tickers: List[str] = []
-        for tab in self._tabs.values():
-            tickers.extend(tab.holdings_symbols())
-        tickers = list(dict.fromkeys([t for t in tickers if t]))
-        if not tickers:
-            return
-        worker = MarksWorker(tickers)
-        th = QThread(self)
-        self._active_marks_worker = worker
-        self._active_marks_thread = th
-        worker.moveToThread(th)
-        th.started.connect(worker.run)
-        worker.done.connect(self._on_marks)
-        worker.done.connect(th.quit)
-        worker.error.connect(th.quit)
-        th.finished.connect(worker.deleteLater)
-        th.finished.connect(th.deleteLater)
-
-        def _cleanup():
-            self._active_marks_thread = None
-            self._active_marks_worker = None
-        th.finished.connect(_cleanup)
-        th.start()
-
-    def _on_marks(self, data: dict):
-        if self._closing:
-            return
-        for tab in self._tabs.values():
-            tab.update_marks(data)
-
-    def update_ui(self):
-        for tab in self._tabs.values():
-            tab.update_ui()
-        self.update()
-
-    def closeEvent(self, event):
-        self._closing = True
-        self._marks_timer.stop()
-        try:
-            self._marks_timer.timeout.disconnect()
-        except Exception:
-            pass
-        if self._active_marks_thread is not None:
-            try:
-                if self._active_marks_thread.isRunning():
-                    self._active_marks_thread.quit()
-                    self._active_marks_thread.wait(4000)
-            except Exception:
-                pass
-            self._active_marks_thread = None
-            self._active_marks_worker = None
-        self._tabs.clear()
-        event.accept()
-        self.closed.emit()
-
-
-# ---------------------------------------------------------------------------
-# Admin: user selection dialog
-# ---------------------------------------------------------------------------
-
-class SelectUserDialog(QDialog):
-    def __init__(self, users: List[dict], current_user_id: int, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Select User to View")
-        self.resize(360, 280)
-        self._selected: Optional[dict] = None
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
-
-        root.addWidget(QLabel("Select a user to open their portfolio in a read-only window:"))
-
-        self.list_widget = QListWidget()
-        for user in users:
-            if user["id"] == current_user_id:
-                continue
-            item = QListWidgetItem(f"{'[Admin] ' if user['is_admin'] else ''}{user['username']}")
-            item.setData(Qt.ItemDataRole.UserRole, user)
-            self.list_widget.addItem(item)
-        root.addWidget(self.list_widget)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
-
-        self.list_widget.doubleClicked.connect(self._accept)
-
-    def _accept(self):
-        item = self.list_widget.currentItem()
-        if item:
-            self._selected = item.data(Qt.ItemDataRole.UserRole)
-            self.accept()
-
-    def selected_user(self) -> Optional[dict]:
-        return self._selected
-
-
-# ---------------------------------------------------------------------------
-# Admin: reset other users' passwords
-# ---------------------------------------------------------------------------
-
-# QGroupBox style mirrors GROUP_STYLE in portfolio_tab.py / settings_dialog.py
-# so this dialog matches the rest of the modal aesthetic.
-_GROUP_STYLE = (
-    "QGroupBox { margin-top: 8px; }"
-    "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 2px 8px; }"
-)
-
-
-class ManageUserPasswordsDialog(QDialog):
-    """Admin-only dialog for resetting any user's password.
-
-    Used by small-team / friends-only deployments where a proper
-    self-service "forgot password" email flow is overkill — admin types
-    the new password, communicates it to the user out-of-band, the user
-    can change it themselves later via File → User Account.
-    """
-
-    def __init__(self, store: DataStore, parent=None):
-        super().__init__(parent)
-        self._store = store
-        self.setWindowTitle("Manage User Passwords")
-        self.setModal(True)
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self.setMinimumWidth(440)
-        self.resize(480, 400)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
-
-        # ── Section: Users ──────────────────────────────────────────────
-        users_grp = QGroupBox("Users")
-        users_grp.setStyleSheet(_GROUP_STYLE)
-        users_lay = QVBoxLayout(users_grp)
-        users_lay.setContentsMargins(14, 14, 14, 14)
-        users_lay.setSpacing(8)
-
-        self.users_list = QListWidget()
-        self.users_list.itemDoubleClicked.connect(lambda _: self._reset_selected())
-        try:
-            users = store.list_users()
-        except Exception as exc:
-            QMessageBox.warning(self, "Error", f"Could not fetch users: {exc}")
-            users = []
-        my_id = store.user_info.get("user_id", -1)
-        for u in users:
-            if u["id"] == my_id:
-                continue  # admin can self-reset via File > User Account
-            label = f"{'[Admin] ' if u.get('is_admin') else ''}{u['username']}"
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, u)
-            self.users_list.addItem(item)
-        users_lay.addWidget(self.users_list)
-
-        info = QLabel(
-            "Pick a user, then click <b>Reset Password</b>. The new password "
-            "is shown to you so you can pass it to them — they can change it "
-            "themselves later via File → User Account."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet("color: gray; font-size: 11px;")
-        users_lay.addWidget(info)
-
-        btn_reset = QPushButton("Reset Password…")
-        btn_reset.clicked.connect(self._reset_selected)
-        users_lay.addWidget(btn_reset)
-
-        root.addWidget(users_grp)
-
-        # ── Close button ────────────────────────────────────────────────
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
-
-    # ------------------------------------------------------------------
-
-    def _remote_store(self) -> Optional[RemoteDataStore]:
-        if isinstance(self._store, RemoteDataStore):
-            return self._store
-        if isinstance(self._store, FallbackDataStore) and self._store._is_online:
-            return self._store._remote
-        return None
-
-    def _reset_selected(self) -> None:
-        item = self.users_list.currentItem()
-        if item is None:
-            QMessageBox.information(self, "Select user",
-                                    "Pick a user from the list first.")
-            return
-        user = item.data(Qt.ItemDataRole.UserRole) or {}
-        username = user.get("username", "")
-        user_id = user.get("id")
-        if not username or user_id is None:
-            return
-
-        remote = self._remote_store()
-        if remote is None:
-            QMessageBox.information(
-                self, "Offline",
-                "Resetting another user's password requires a server connection. "
-                "Reconnect and try again.",
-            )
-            return
-
-        # Plain-text input — admin will need to read the new password back
-        # to the user out-of-band, so masking it doesn't help here.
-        new_pw, ok = QInputDialog.getText(
-            self, "Reset Password",
-            f"New password for {username}:",
-            QLineEdit.EchoMode.Normal, "",
-        )
-        if not ok:
-            return
-        new_pw = new_pw.strip()
-        if not new_pw:
-            QMessageBox.warning(self, "Empty password",
-                                "Password cannot be empty.")
-            return
-        if len(new_pw) < 4:
-            QMessageBox.warning(self, "Too short",
-                                "Use at least 4 characters.")
-            return
-
-        if QMessageBox.question(
-                self, "Confirm Reset",
-                f"Reset password for <b>{username}</b> to:<br><br>"
-                f"&nbsp;&nbsp;<code>{new_pw}</code><br><br>Proceed?",
-        ) != QMessageBox.StandardButton.Yes:
-            return
-
-        try:
-            import requests
-            r = requests.put(
-                f"{remote._base}/users/{user_id}/password",
-                json={"new_password": new_pw},
-                headers=remote._headers(),
-                timeout=8,
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Error", str(exc))
-            return
-
-        if r.ok:
-            QMessageBox.information(
-                self, "Password Reset",
-                f"Password reset for <b>{username}</b>.<br><br>"
-                f"They can log in with: <code>{new_pw}</code>",
-            )
-        else:
-            QMessageBox.warning(self, "Error", r.text)
+# Admin/dialog classes that used to live in this file (UserAccountDialog,
+# UserPortfolioViewer, SelectUserDialog, ManageUserPasswordsDialog) were
+# extracted to admin_dialogs.py during the T4.12 split — that shaved
+# ~450 lines off this module without changing any external API.
+# Per-symbol drill-down lives in symbol_history_dialog.py for the same
+# reason: it's a standalone QDialog and doesn't need MainWindow internals.
 
 
 # ---------------------------------------------------------------------------
@@ -710,12 +255,20 @@ class MainWindow(QMainWindow):
         return [t for t in all_trades if (t.account or "").strip() == account_name]
 
     def _save_account(self, account_name: str, trades: List[Trade]) -> None:
-        try:
-            self._store.save_account_trades(account_name, trades)
-        except Exception as exc:
-            QMessageBox.warning(self, "Save Failed", str(exc))
-            return
-        self._app.refresh_all_accounts()
+        """Persist a slice of trades for one account, then refresh the UI.
+
+        Backgrounded via `_run_in_background` so the calling dialog can
+        close immediately on slow networks instead of freezing for the
+        HTTP roundtrip. The local in-memory `_app.refresh_all_accounts()`
+        runs on the GUI thread once the network write returns.
+        """
+        self._run_in_background(
+            self._store.save_account_trades,
+            args=(account_name, list(trades)),
+            on_done=lambda _result: self._app.refresh_all_accounts(),
+            on_error=lambda msg: QMessageBox.warning(self, "Save Failed", msg),
+            label=f"save_account_trades({account_name})",
+        )
 
     def _safe_run(self, fn, *args, **kwargs) -> None:
         """Run `fn` on the next event-loop iteration, catching any exception.
@@ -738,6 +291,66 @@ class MainWindow(QMainWindow):
                     pass
 
         QTimer.singleShot(0, _wrap)
+
+    def _run_in_background(self, fn, args=(), kwargs=None,
+                           on_done=None, on_error=None,
+                           label: str = "store-call") -> None:
+        """Run `fn(*args, **kwargs)` in a background QThread, then
+        invoke `on_done(result)` (or `on_error(msg)`) on the GUI thread.
+
+        Use this for any potentially-blocking operation triggered by a
+        UI action — `save_account_trades` over the network, watchlist
+        writes, etc. — so the UI stays responsive on slow links.
+
+        Lifecycle: a fresh QThread + StoreCallWorker pair is created
+        per call, started, and torn down on completion. Both are
+        parented to `self` and tracked in `_active_workers` to keep
+        them alive past the function return (Python GC otherwise reaps
+        the references mid-call and SEGVs on exit).
+
+        Don't use this for ops that need to BLOCK (e.g. data needed to
+        render the next paint). Use it for fire-and-update flows.
+        """
+        from .workers import StoreCallWorker
+        thread = QThread(self)
+        worker = StoreCallWorker(fn, args=args, kwargs=kwargs or {}, label=label)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        # Track the worker pair so they survive past this method's
+        # return — the Python ref count is what keeps QObjects alive,
+        # and without this they'd be collected before the thread runs.
+        if not hasattr(self, "_active_workers"):
+            self._active_workers = []
+        self._active_workers.append((thread, worker))
+
+        def _on_done(result):
+            try:
+                if on_done is not None:
+                    on_done(result)
+            finally:
+                _cleanup()
+
+        def _on_error(msg):
+            try:
+                if on_error is not None:
+                    on_error(msg)
+            finally:
+                _cleanup()
+
+        def _cleanup():
+            thread.quit()
+            thread.wait(50)  # short wait — run() returned already
+            try:
+                self._active_workers.remove((thread, worker))
+            except ValueError:
+                pass
+            worker.deleteLater()
+            thread.deleteLater()
+
+        worker.done.connect(_on_done)
+        worker.error.connect(_on_error)
+        thread.start()
 
     def _trade_default_quantity(self) -> int:
         try:
@@ -883,11 +496,24 @@ class MainWindow(QMainWindow):
         self._app.set_watchlist([str(s).upper() for s in symbols])
 
     def _save_watchlist(self) -> None:
+        """Persist the watchlist remotely (best-effort) + locally.
+
+        The remote write is backgrounded so the UI doesn't lag when the
+        user adds or removes a ticker on a slow network. Local QSettings
+        write stays sync — it's a microsecond op against a local file
+        and we want it durable before the function returns so a crash
+        doesn't lose the change.
+        """
         symbols = self._app.watchlist_symbols()
-        try:
-            self._store.save_watchlist(symbols)
-        except Exception:
-            pass
+        # Remote: background, swallow errors (matches old behavior — the
+        # local QSettings copy is the durable record).
+        self._run_in_background(
+            self._store.save_watchlist,
+            args=(list(symbols),),
+            on_error=lambda msg: None,
+            label="save_watchlist",
+        )
+        # Local: synchronous, durable before we return.
         s = self._qsettings()
         s.setValue("watchlist/items", symbols)
         s.sync()
@@ -1040,15 +666,39 @@ class MainWindow(QMainWindow):
         dst_with_moved = dst_existing + [moved]
 
         # Source first (drops the moved trade), then destination (adds it).
-        try:
-            self._store.save_account_trades(account.name, src_remaining)
-            self._store.save_account_trades(destination_account, dst_with_moved)
-        except Exception as exc:
-            QMessageBox.warning(self, "Move Failed", str(exc))
-            return
-        self._app.refresh_all_accounts()
+        # Both writes go through `_run_in_background` so the UI doesn't
+        # freeze during the two HTTP roundtrips. We chain them: the
+        # destination write only runs after the source write completes,
+        # preserving the "drop before add" order that prevents duplicates.
+        src_name = account.name
+
+        def _on_src_done(_result):
+            self._run_in_background(
+                self._store.save_account_trades,
+                args=(destination_account, dst_with_moved),
+                on_done=lambda _r: self._app.refresh_all_accounts(),
+                on_error=lambda msg: QMessageBox.warning(
+                    self, "Move Failed (destination)", msg),
+                label=f"save_account_trades({destination_account})",
+            )
+
+        self._run_in_background(
+            self._store.save_account_trades,
+            args=(src_name, src_remaining),
+            on_done=_on_src_done,
+            on_error=lambda msg: QMessageBox.warning(
+                self, "Move Failed (source)", msg),
+            label=f"save_account_trades({src_name})",
+        )
 
     def _on_set_goal_target(self, value: float) -> None:
+        """Update goal target(s) for the current account.
+
+        If the account is part of a shared goal group, ALL accounts in
+        the group get the same target (the group has one shared goal).
+        The write is backgrounded so the slider in the QML Goal
+        Dashboard stays responsive on slow networks.
+        """
         account = self._app.currentAccount
         if account is None:
             return
@@ -1057,16 +707,25 @@ class MainWindow(QMainWindow):
             shared_set = set(shared)
         except Exception:
             shared_set = set()
-        try:
-            if account.name in shared_set:
-                for name in shared_set:
-                    self._store.set_goal_target(name, float(value))
-            else:
-                self._store.set_goal_target(account.name, float(value))
-        except Exception as exc:
-            QMessageBox.warning(self, "Save Failed", str(exc))
-            return
-        self._app.refresh_all_accounts()
+
+        if account.name in shared_set:
+            names = list(shared_set)
+        else:
+            names = [account.name]
+
+        def _do_writes():
+            # Run multiple set_goal_target calls inline in the background
+            # thread. Keeps the order deterministic and avoids spawning
+            # N threads for what's typically a 2-3-account group.
+            for name in names:
+                self._store.set_goal_target(name, float(value))
+
+        self._run_in_background(
+            _do_writes,
+            on_done=lambda _r: self._app.refresh_all_accounts(),
+            on_error=lambda msg: QMessageBox.warning(self, "Save Failed", msg),
+            label=f"set_goal_target({','.join(names)})",
+        )
 
     # ------------------------------------------------------------------
     # Auto-snapshot (defensive, disk-based)
@@ -1125,17 +784,21 @@ class MainWindow(QMainWindow):
         dlg = GoalDashboardOptionsDialog(accounts, shared_names, goal_targets, preset_values, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        try:
-            self._store.set_goal_group(
+        # Background the set_goal_group write — the dialog has already
+        # closed by the time `exec()` returns, so we just need the UI
+        # to refresh once the write lands without freezing during it.
+        self._run_in_background(
+            self._store.set_goal_group,
+            args=(
                 dlg.selected_accounts(),
                 dlg.shared_goal(),
                 dlg.individual_goals(),
                 dlg.all_preset_values(),
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Save Failed", str(exc))
-            return
-        self._app.refresh_all_accounts()
+            ),
+            on_done=lambda _r: self._app.refresh_all_accounts(),
+            on_error=lambda msg: QMessageBox.warning(self, "Save Failed", msg),
+            label="set_goal_group",
+        )
 
     def _on_open_trade_history_options(self) -> None:
         QMessageBox.information(
@@ -1180,6 +843,11 @@ class MainWindow(QMainWindow):
                 lambda: self._safe_run(self._mark_down, instrument, account.name, account_trades))
             menu.addAction("Double Down").triggered.connect(
                 lambda: self._safe_run(self._double_down, instrument, account.name, account_trades))
+        # Drill-down — read-only review of every trade for this symbol
+        # (closed, open, pending) plus a mini equity curve scoped to it.
+        menu.addSeparator()
+        menu.addAction(f"View Trade History — {instrument}").triggered.connect(
+            lambda: self._safe_run(self._open_symbol_history, instrument, account.name))
         menu.exec(QCursor.pos())
 
     def _close_position(self, instrument: str, account_name: str,
@@ -1306,10 +974,39 @@ class MainWindow(QMainWindow):
                     lambda _checked=False, d=dest:
                     self._safe_run(self._on_move_trade, source_index, d))
 
+        # Drill-down on the symbol — same dialog as the Holdings menu
+        # entry. Useful here because closed-out symbols only appear in
+        # the trade history (no holdings row to right-click).
+        instr = trade.normalized_instrument()
+        if instr:
+            menu.addSeparator()
+            menu.addAction(f"View All Trades for {instr}").triggered.connect(
+                lambda: self._safe_run(self._open_symbol_history, instr, account.name))
+
         menu.addSeparator()
         menu.addAction("Delete Trade").triggered.connect(
             lambda: self._safe_run(self._on_delete_trade, source_index))
         menu.exec(QCursor.pos())
+
+    def _open_symbol_history(self, instrument: str, account_name: str) -> None:
+        """Open the per-symbol drill-down dialog. Pulls the account's
+        full trade list (unfiltered) so the dialog shows the complete
+        history regardless of any active date-range / tag filter on
+        the main window."""
+        from .symbol_history_dialog import SymbolHistoryDialog
+        all_trades = self._account_trades(account_name, self._all_trades())
+        # Look up the most recent mark for this symbol (used by the
+        # dialog's header to show the live unrealized P/L).
+        marks = getattr(self._app, "_marks_by_symbol", {}) or {}
+        info = marks.get(instrument.upper(), {})
+        mark = info.get("price") if isinstance(info, dict) else None
+        dlg = SymbolHistoryDialog(
+            instrument=instrument,
+            trades=all_trades,
+            current_mark=mark,
+            parent=self,
+        )
+        dlg.exec()
 
     def _fulfill_pending(self, source_index: int) -> None:
         account = self._app.currentAccount
@@ -1600,12 +1297,23 @@ class MainWindow(QMainWindow):
         self.timer_net = QTimer(self)
         self.timer_net.setInterval(self.NET_INTERVAL)
         self.timer_net.timeout.connect(self._kick_netcheck)
+        # Server-side /health probe — fires every 15s, much cheaper than
+        # the generic netcheck (which hits Google/Cloudflare) and gives
+        # us the actual server version + latency for the status pill's
+        # tooltip. Skipped entirely when not on a RemoteDataStore.
+        self.timer_health = QTimer(self)
+        self.timer_health.setInterval(15_000)
+        self.timer_health.timeout.connect(self._kick_health_probe)
+
         self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
         self.timer_net.start()
+        if self._remote_store_for_health() is not None:
+            self.timer_health.start()
         # Defer first tick — avoids spawning a QThread before the QML scene
         # has finished mounting (Windows access-violation guard).
         QTimer.singleShot(250, self._kick_netcheck)
         QTimer.singleShot(500, self._level1_tick)
+        QTimer.singleShot(800, self._kick_health_probe)
 
     def _thread_running(self, thread: Optional[QThread]) -> bool:
         return thread is not None and thread.isRunning()
@@ -1709,6 +1417,77 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_status.setText("● Online")
             self.lbl_status.setStyleSheet("color: #22c55e;")
+
+    # ── Server health probe ──────────────────────────────────────────
+    # Polls /health every 15s on a Remote/Fallback store and stuffs the
+    # result into the status pill's tooltip. Adds zero label width —
+    # the pill stays "● Online" / "● Offline" — but hovering reveals
+    # "Server v1.0.0 · 12 ms · db ok · up 2h 14m" so you can see the
+    # actual server state without leaving the app.
+
+    def _remote_store_for_health(self) -> Optional[RemoteDataStore]:
+        """Return the underlying RemoteDataStore (if any) for /health calls.
+
+        LocalDataStore-only setups have no server, so health probing is
+        a no-op. FallbackDataStore wraps a RemoteDataStore that's still
+        addressable even when the fallback is "offline" — the probe
+        will fail with a fast timeout, which is also useful info.
+        """
+        if isinstance(self._store, RemoteDataStore):
+            return self._store
+        if isinstance(self._store, FallbackDataStore):
+            return self._store._remote
+        return None
+
+    def _kick_health_probe(self) -> None:
+        if self._closing:
+            return
+        remote = self._remote_store_for_health()
+        if remote is None:
+            return
+        # Use the existing _run_in_background plumbing — same lifecycle
+        # rules, no need to spawn a hand-rolled QThread here.
+        self._run_in_background(
+            remote.ping_health,
+            on_done=self._on_health_result,
+            on_error=lambda msg: self._on_health_result({"ok": False, "error": msg}),
+            label="ping_health",
+        )
+
+    def _on_health_result(self, info: dict) -> None:
+        if self._closing or not info:
+            return
+        # Format uptime as "Xh Ym" / "Xm Ys" / "Xs" — readable at a glance.
+        secs = int(info.get("uptime_seconds", 0) or 0)
+        if secs >= 3600:
+            uptime = f"{secs // 3600}h {(secs % 3600) // 60}m"
+        elif secs >= 60:
+            uptime = f"{secs // 60}m {secs % 60}s"
+        else:
+            uptime = f"{secs}s"
+
+        if not info.get("ok"):
+            # Tooltip surfaces the actual failure (timeout, HTTP 5xx,
+            # ConnectionError, etc.) — useful when debugging "why is
+            # the pill amber?".
+            err = info.get("error") or "no response"
+            self.lbl_status.setToolTip(
+                f"Server unreachable\nLast probe error: {err}"
+            )
+            return
+
+        # Success path — build a multi-line tooltip with every signal
+        # we have. Newlines + Qt's default rich-tooltip rendering give
+        # a tidy hover popup.
+        version = info.get("server_version", "?")
+        latency = info.get("latency_ms", "?")
+        db_state = "ok" if info.get("db_ok") else "down"
+        self.lbl_status.setToolTip(
+            f"Server v{version}\n"
+            f"Latency: {latency} ms\n"
+            f"Database: {db_state}\n"
+            f"Uptime: {uptime}"
+        )
 
     def _init_reconnect_timer(self) -> None:
         if not isinstance(self._store, FallbackDataStore):

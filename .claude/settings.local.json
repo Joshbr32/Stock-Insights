@@ -59,7 +59,17 @@
       "Bash(./.venv/Scripts/python.exe -m pytest tests/test_portfolio.py::TestDrawdown -v)",
       "Bash(./.venv/Scripts/python.exe -c \"from stock_insights import qml_bridge; print\\('import OK'\\)\")",
       "Bash(git add *)",
-      "Bash(bash scripts/pre-commit-pwa-version-check.sh)"
+      "Bash(bash scripts/pre-commit-pwa-version-check.sh)",
+      "Bash(./.venv/Scripts/python.exe -c \"from stock_insights.symbol_history_dialog import SymbolHistoryDialog; print\\('import OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"from stock_insights.workers import StoreCallWorker; print\\('worker import OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"from stock_insights.admin_dialogs import UserAccountDialog, UserPortfolioViewer, SelectUserDialog, ManageUserPasswordsDialog; print\\('admin_dialogs OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"from stock_insights import main_window; print\\('main_window OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -m compileall main.py stock_insights/ server/)",
+      "Bash(./.venv/Scripts/python.exe -W error::SyntaxWarning -c \"import py_compile; py_compile.compile\\('server/server.py', doraise=True\\)\")",
+      "Bash(./.venv/Scripts/python.exe -m compileall server/server.py)",
+      "Bash(./.venv/Scripts/python.exe -m pip install pyflakes --quiet)",
+      "Bash(./.venv/Scripts/python.exe -m pyflakes stock_insights/main_window.py)",
+      "Bash(./.venv/Scripts/python.exe -m compileall -q stock_insights/main_window.py)"
     ]
   }
 }

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import urllib.request
-from typing import List
+from typing import Any, Callable, List, Tuple
 
 from PySide6.QtCore import QObject, Signal
 
@@ -11,6 +11,40 @@ from .data import fetch_marks
 from .logging_utils import get_logger
 
 logger = get_logger("workers")
+
+
+class StoreCallWorker(QObject):
+    """Run a single store call (or any callable) on a background thread,
+    then emit either `done(result)` or `error(str)` back to the GUI thread.
+
+    Used for backgrounding network-bound writes — `save_account_trades`,
+    `save_watchlist`, etc. — so the calling dialog can close immediately
+    instead of blocking the UI for a network roundtrip on slow links.
+
+    The companion helper on MainWindow is `_run_in_background` (see there
+    for the QThread lifecycle wiring). Worker instances are single-use:
+    the QThread that hosts them quits as soon as `run()` returns, and
+    both are deleted via `deleteLater()`.
+    """
+    done = Signal(object)
+    error = Signal(str)
+
+    def __init__(self, fn: Callable[..., Any],
+                 args: Tuple = (), kwargs: dict | None = None,
+                 label: str = "store-call"):
+        super().__init__()
+        self._fn = fn
+        self._args = args
+        self._kwargs = kwargs or {}
+        self._label = label
+
+    def run(self) -> None:
+        try:
+            result = self._fn(*self._args, **self._kwargs)
+            self.done.emit(result)
+        except Exception as exc:  # pragma: no cover - Qt worker boundary
+            logger.exception("%s failed", self._label)
+            self.error.emit(str(exc))
 
 
 class MarksWorker(QObject):
