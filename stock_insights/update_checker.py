@@ -108,7 +108,12 @@ def _on_result(
         silent_if_current: bool,
         checking_dlg: "QDialog",
         thread: QThread,
-        worker: _UpdateWorker,
+        # Intentionally unused — the lambda at the call site captures
+        # `worker` to keep it alive past the thread.start() return; we
+        # accept it here so the dependency is explicit in the signature
+        # rather than buried in closure state. Underscore prefix marks
+        # it as deliberately-unused for PyCharm's inspector.
+        _worker: _UpdateWorker,
 ) -> None:
     thread.quit()
     checking_dlg.accept()  # close the "checking…" dialog

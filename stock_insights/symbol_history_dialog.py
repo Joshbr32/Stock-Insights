@@ -304,7 +304,7 @@ class SymbolHistoryDialog(QDialog):
             self._trades,
             # Sort key: (filled_date, original_order). Pending trades sort
             # last with a sentinel max date.
-            key=lambda t: (t.open_date or date.max, t.close_date or date.max),
+            key=lambda tr: (tr.open_date or date.max, tr.close_date or date.max),
         )
 
         cols = ["Date", "Side", "Status", "Qty",

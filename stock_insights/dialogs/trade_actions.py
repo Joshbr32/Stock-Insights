@@ -116,11 +116,11 @@ class MarkDownDialog(QDialog):
         cg.setStyleSheet(GROUP_STYLE)
         cgg = QGridLayout(cg)
         cgg.setContentsMargins(14, 14, 14, 14)
-        cgg.addWidget(QLabel("Instrument"), 0, 0);
+        cgg.addWidget(QLabel("Instrument"), 0, 0)
         cgg.addWidget(QLabel(holding.normalized_instrument()), 0, 1)
-        cgg.addWidget(QLabel("Qty"), 1, 0);
+        cgg.addWidget(QLabel("Qty"), 1, 0)
         cgg.addWidget(QLabel(f"{holding.qty:,d}"), 1, 1)
-        cgg.addWidget(QLabel("Avg Cost"), 2, 0);
+        cgg.addWidget(QLabel("Avg Cost"), 2, 0)
         cgg.addWidget(QLabel(f"$ {holding.avg_cost:,.2f}"), 2, 1)
         root.addWidget(cg)
 
@@ -198,8 +198,8 @@ class MarkDownDialog(QDialog):
             self._computed_buy_price = float(buy_price)
         except Exception as exc:
             self.required_buy_price.setText(str(exc))
-            self.resulting_qty.setText("—");
-            self.resulting_avg.setText("—");
+            self.resulting_qty.setText("—")
+            self.resulting_avg.setText("—")
             self.order_cost.setText("—")
             self.btn_save.setEnabled(False)
             self._computed_buy_price = None
@@ -242,11 +242,11 @@ class DoubleDownDialog(QDialog):
         cg.setStyleSheet(GROUP_STYLE)
         cgg = QGridLayout(cg)
         cgg.setContentsMargins(14, 14, 14, 14)
-        cgg.addWidget(QLabel("Instrument"), 0, 0);
+        cgg.addWidget(QLabel("Instrument"), 0, 0)
         cgg.addWidget(QLabel(holding.normalized_instrument()), 0, 1)
-        cgg.addWidget(QLabel("Qty"), 1, 0);
+        cgg.addWidget(QLabel("Qty"), 1, 0)
         cgg.addWidget(QLabel(f"{holding.qty:,d}"), 1, 1)
-        cgg.addWidget(QLabel("Avg Cost"), 2, 0);
+        cgg.addWidget(QLabel("Avg Cost"), 2, 0)
         cgg.addWidget(QLabel(f"$ {holding.avg_cost:,.2f}"), 2, 1)
         cgg.addWidget(QLabel("Current Mark"), 3, 0)
         cgg.addWidget(QLabel("—" if current_mark is None else f"$ {float(current_mark):,.2f}"), 3, 1)

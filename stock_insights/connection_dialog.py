@@ -190,7 +190,10 @@ class ConnectionDialog(QDialog):
 
         self.user_edit = QLineEdit()
         self.user_edit.setPlaceholderText("Username")
-        self.user_edit.setText(str(s.value(_USER_KEY, "") or ""))
+        # `type=str` makes QSettings coerce the value rather than us
+        # wrapping its `Any` return in `str(...)`, which trips PyCharm's
+        # "str of arbitrary object may not be useful" inspector.
+        self.user_edit.setText(s.value(_USER_KEY, "", type=str) or "")
 
         self.pass_edit = QLineEdit()
         self.pass_edit.setEchoMode(QLineEdit.EchoMode.Password)

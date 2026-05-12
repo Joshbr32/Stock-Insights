@@ -26,10 +26,14 @@ def _apply_startup_theme() -> None:
     # because apply() installs palette + stylesheet on QApplication.instance().
     dummy = QWidget()
     tm = ThemeManager(dummy)
-    tm.override_mode = s.value("ui/THEME_OVERRIDE", "System")
+    # `type=str` / `type=bool` make QSettings coerce the stored value
+    # to a concrete type rather than returning Any/object (which trips
+    # PyCharm's "incorrect type" inspector when assigned to typed
+    # properties on ThemeManager).
+    tm.override_mode = s.value("ui/THEME_OVERRIDE", "System", type=str)
     tm.match_system_accent = s.value("ui/MATCH_SYSTEM_ACCENT", True, type=bool)
-    tm.theme_name = s.value("ui/THEME_NAME", "Default")
-    tm.font_size_label = s.value("ui/FONT_SIZE", "Normal")
+    tm.theme_name = s.value("ui/THEME_NAME", "Default", type=str)
+    tm.font_size_label = s.value("ui/FONT_SIZE", "Normal", type=str)
     tm.apply()
 
 

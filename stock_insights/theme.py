@@ -427,21 +427,21 @@ class ThemeManager(QObject):
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                                 r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent") as k:
                 v, _ = winreg.QueryValueEx(k, "AccentColor")
-                return (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF)
+                return v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF
         except Exception:
             pass
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM") as k:
                 v, _ = winreg.QueryValueEx(k, "ColorizationColor")
-                return ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF)
+                return (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
         except Exception:
             pass
         try:
-            color = ctypes.c_uint();
+            color = ctypes.c_uint()
             opaque = ctypes.c_int()
             if ctypes.windll.dwmapi.DwmGetColorizationColor(ctypes.byref(color), ctypes.byref(opaque)) == 0:
                 v = color.value
-                return ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF)
+                return (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
         except Exception:
             pass
         return self._fixed_light_accent
@@ -490,7 +490,7 @@ class ThemeManager(QObject):
     def current_state(self) -> tuple:
         is_light = self._is_light()
         r, g, b = self._accent_for_mode(is_light)
-        return (is_light, r, g, b, self.match_system_accent, self.theme_name, self.font_size_label)
+        return is_light, r, g, b, self.match_system_accent, self.theme_name, self.font_size_label
 
     def start_watching(self):
         if self._timer is None:
@@ -657,15 +657,15 @@ class ThemeManager(QObject):
         return p
 
     def _themed_stylesheet(self, t: dict) -> str:
-        bg = t["bg"];
-        card = t["card"];
-        card2 = t["card2"];
+        bg = t["bg"]
+        card = t["card"]
+        card2 = t["card2"]
         text = t["text"]
-        muted = t["text_muted"];
-        btn = t["button"];
+        muted = t["text_muted"]
+        btn = t["button"]
         pri = t["primary"]
-        sec = t["secondary"];
-        brd = t["border"];
+        sec = t["secondary"]
+        brd = t["border"]
         toc = t["text_on_color"]
         panel_radius = _UI["panel_radius"]
         card_radius = _UI["card_radius"]

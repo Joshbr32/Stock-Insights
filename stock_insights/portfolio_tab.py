@@ -50,15 +50,22 @@ from .dialogs import (  # noqa: F401  (re-export)
     TradeEditDialog,
     TradeHistoryColumnsDialog,
 )
-# Constants moved to dialogs/_common.py — re-export for callers that
-# still import them from this module.
+# Constants + helpers moved to dialogs/_common.py — pulled back in here
+# because PortfolioTab still uses _fmt_money / _fmt_goal / _fmt_preset_label
+# in its goal section, and external callers may still import these from
+# this module by historical path. Marked noqa F401 for the constants
+# that PortfolioTab doesn't reference directly but re-exports.
 from .dialogs._common import (  # noqa: F401
     GROUP_STYLE,
     _DEFAULT_PRESETS,
+    _fmt_goal,
+    _fmt_money,
+    _fmt_preset_label,
 )
 from .portfolio import (
     Holding,
     Trade,
+    TradeRow,
     compute_goal_progress,
     compute_holdings_from_trades,
     compute_portfolio,
@@ -137,7 +144,7 @@ class PortfolioTab(QWidget):
         for h in self._holdings:
             s = h.normalized_instrument()
             if s and s not in seen:
-                seen.add(s);
+                seen.add(s)
                 out.append(s)
         return out
 
@@ -677,7 +684,7 @@ class PortfolioTab(QWidget):
             if item is None: continue
             symbol = item.text().strip().upper()
             if symbol and symbol not in seen:
-                seen.add(symbol);
+                seen.add(symbol)
                 out.append(symbol)
         return out
 
@@ -754,7 +761,7 @@ class PortfolioTab(QWidget):
         if self._read_only: return
         source_index = self._selected_trade_source_index()
         if source_index is None:
-            QMessageBox.information(self, "Select trade", "Choose a trade row to edit.");
+            QMessageBox.information(self, "Select trade", "Choose a trade row to edit.")
             return
         dlg = TradeEditDialog(
             self._trades[source_index],
@@ -774,7 +781,7 @@ class PortfolioTab(QWidget):
         if self._read_only: return
         source_index = self._selected_trade_source_index()
         if source_index is None:
-            QMessageBox.information(self, "Select trade", "Choose a trade row to delete.");
+            QMessageBox.information(self, "Select trade", "Choose a trade row to delete.")
             return
         trade = self._trades[source_index]
         if QMessageBox.question(
@@ -872,7 +879,7 @@ class PortfolioTab(QWidget):
         dlg = MarkDownDialog(holding=holding, default_quantity=self._trade_default_quantity(),
                              quantity_increment=self._trade_quantity_increment(), parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted: return
-        trade = dlg.to_trade();
+        trade = dlg.to_trade()
         trade.account = self._account_name
         self._trades.append(trade)
         self._save_trades()
@@ -888,7 +895,7 @@ class PortfolioTab(QWidget):
         dlg = DoubleDownDialog(holding=holding, current_mark=self._marks.get(holding.normalized_instrument()),
                                quantity_increment=self._trade_quantity_increment(), parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted: return
-        trade = dlg.to_trade();
+        trade = dlg.to_trade()
         trade.account = self._account_name
         self._trades.append(trade)
         self._save_trades()
@@ -1147,8 +1154,8 @@ class PortfolioTab(QWidget):
                 item = QTableWidgetItem(value_map[key])
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if key == "instrument":
-                    f = item.font();
-                    f.setBold(True);
+                    f = item.font()
+                    f.setBold(True)
                     item.setFont(f)
                 if key == "trade_profit" and row.trade_profit is not None:
                     if _theme is not None:
@@ -1194,8 +1201,8 @@ class PortfolioTab(QWidget):
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if c == 0:
-                    f = item.font();
-                    f.setBold(True);
+                    f = item.font()
+                    f.setBold(True)
                     item.setFont(f)
                 if is_short:
                     item.setBackground(short_brush)

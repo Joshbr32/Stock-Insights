@@ -98,11 +98,11 @@ const $ = sel => document.querySelector(sel);
 const el = (tag, attrs = {}, children = []) => {
     const node = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
-        if (k === "class") node.className = v;
-        else if (k === "html") node.innerHTML = v;
+        if (k === "class") node.className = String(v);
+        else if (k === "html") node.innerHTML = String(v);
         else if (k.startsWith("on") && typeof v === "function") {
             node.addEventListener(k.slice(2), v);
-        } else if (v !== false && v != null) node.setAttribute(k, v);
+        } else if (v !== false && v != null) node.setAttribute(k, String(v));
     }
     for (const c of [].concat(children)) {
         if (c == null || c === false) continue;
@@ -618,7 +618,11 @@ function equityCurveCard(curve) {
         const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-        function showAt(clientX, clientY) {
+        // The Y coord is computed from the curve's value at the matched
+        // point, so the second argument from mouse/touch events is
+        // intentionally unused — caller still passes (clientX, clientY)
+        // for symmetry with the standard pointer-event API.
+        function showAt(clientX) {
             // Convert client x into the SVG viewBox coordinate (0..W).
             const r = svg.getBoundingClientRect();
             const vbX = ((clientX - r.left) / r.width) * W;
@@ -664,16 +668,15 @@ function equityCurveCard(curve) {
 
         // Mouse (desktop preview / tablet with mouse). Touch handled
         // separately so we can also dismiss on touchend.
-        wrapEl.addEventListener("mousemove",
-            e => showAt(e.clientX, e.clientY));
+        wrapEl.addEventListener("mousemove", e => showAt(e.clientX));
         wrapEl.addEventListener("mouseleave", hide);
         wrapEl.addEventListener("touchstart", e => {
             const t = e.touches[0];
-            if (t) showAt(t.clientX, t.clientY);
+            if (t) showAt(t.clientX);
         }, {passive: true});
         wrapEl.addEventListener("touchmove", e => {
             const t = e.touches[0];
-            if (t) showAt(t.clientX, t.clientY);
+            if (t) showAt(t.clientX);
         }, {passive: true});
         wrapEl.addEventListener("touchend", hide);
     });
@@ -1467,4 +1470,8 @@ if ("serviceWorker" in navigator) {
 }
 
 // ── Go ────────────────────────────────────────────────────────────────
-boot();
+// Explicitly ignore the boot() promise via `void` — boot() handles its
+// own errors internally (login screen on auth failure, error toast on
+// load failure), so there's nothing useful to do with the resolved
+// value here. `void` also silences PyCharm's "ignored promise" lint.
+void boot();

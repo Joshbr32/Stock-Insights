@@ -24,7 +24,14 @@ try {
 export const Api = {
     // ── Server URL (auto from origin; override via window.SI_API_URL) ─────
     getServer() {
-        return (window.SI_API_URL || window.location.origin).replace(/\/+$/, "");
+        // window.SI_API_URL is an optional opt-in global the embedding
+        // page can set BEFORE app.js loads to redirect API calls to a
+        // different origin (e.g. when hosting the PWA on Vercel/Netlify
+        // but pointing at a separately-hosted FastAPI server). Cast
+        // through `any` so the JS lint doesn't flag it as undefined —
+        // it intentionally only exists when the user opts in.
+        const override = /** @type {any} */ (window).SI_API_URL;
+        return (override || window.location.origin).replace(/\/+$/, "");
     },
 
     // ── Auth state ────────────────────────────────────────────────────────

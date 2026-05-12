@@ -144,7 +144,7 @@ class MainWindow(QMainWindow):
         self._app.set_callbacks({
             "add_ticker": lambda: self._safe_run(self._on_add_ticker),
             "remove_ticker": lambda r: self._safe_run(self._on_remove_ticker, r),
-            "rename_ticker": lambda r, s: self._safe_run(self._on_rename_ticker, r, s),
+            "rename_ticker": lambda r, sym: self._safe_run(self._on_rename_ticker, r, sym),
             "refresh_marks": self._level1_tick,  # not a dialog — direct call OK
             "add_trade": lambda: self._safe_run(self._on_add_trade),
             "edit_trade": lambda i: self._safe_run(self._on_edit_trade, i),
@@ -444,13 +444,13 @@ class MainWindow(QMainWindow):
         status_corner = QWidget(self)
         status_corner.setObjectName("menuStatusCorner")
         sr = QHBoxLayout(status_corner)
-        sr.setContentsMargins(8, 2, 8, 3);
+        sr.setContentsMargins(8, 2, 8, 3)
         sr.setSpacing(8)
         self.lbl_updating.setObjectName("menuUpdatingLabel")
         self.lbl_status.setObjectName("menuOnlineLabel")
-        sr.addWidget(self.spinner);
+        sr.addWidget(self.spinner)
         sr.addWidget(self.lbl_updating)
-        sr.addWidget(self.lbl_status);
+        sr.addWidget(self.lbl_status)
         sr.addWidget(self.progress)
         status_corner.adjustSize()
         self.menuBar().setCornerWidget(status_corner, Qt.Corner.TopRightCorner)
@@ -1065,7 +1065,14 @@ class MainWindow(QMainWindow):
         s.sync()
         self.timer_l1.setInterval(self.L1_INTERVAL)
         self.timer_net.setInterval(self.NET_INTERVAL)
-        self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
+        # Ternary expressions like `f() if cond else g()` get flagged by
+        # PyCharm when f/g return None (the result is discarded but the
+        # form looks like a value-bearing expression). Plain if/else is
+        # clearer and lint-clean.
+        if self.L1_ENABLED:
+            self.timer_l1.start()
+        else:
+            self.timer_l1.stop()
 
     def _check_for_updates(self) -> None:
         from .update_checker import check_for_updates
@@ -1279,8 +1286,8 @@ class MainWindow(QMainWindow):
         user_id = user["id"]
         if user_id in self._viewer_windows:
             w = self._viewer_windows[user_id]
-            w.raise_();
-            w.activateWindow();
+            w.raise_()
+            w.activateWindow()
             return
         user_store = self._store.store_for_user(user_id, user["username"])
         viewer = UserPortfolioViewer(user_store, user["username"], self._qsettings(), parent=None)
@@ -1307,7 +1314,14 @@ class MainWindow(QMainWindow):
         self.timer_health.setInterval(15_000)
         self.timer_health.timeout.connect(self._kick_health_probe)
 
-        self.timer_l1.start() if self.L1_ENABLED else self.timer_l1.stop()
+        # Ternary expressions like `f() if cond else g()` get flagged by
+        # PyCharm when f/g return None (the result is discarded but the
+        # form looks like a value-bearing expression). Plain if/else is
+        # clearer and lint-clean.
+        if self.L1_ENABLED:
+            self.timer_l1.start()
+        else:
+            self.timer_l1.stop()
         self.timer_net.start()
         if self._remote_store_for_health() is not None:
             self.timer_health.start()
@@ -1323,13 +1337,13 @@ class MainWindow(QMainWindow):
     def _busy_enter(self) -> None:
         self._busy_ops += 1
         if self._busy_ops == 1:
-            self.spinner.start(90);
+            self.spinner.start(90)
             self.lbl_updating.setText("Updating...")
 
     def _busy_leave(self) -> None:
         self._busy_ops = max(0, self._busy_ops - 1)
         if self._busy_ops == 0:
-            self.spinner.stop();
+            self.spinner.stop()
             self.lbl_updating.setText("")
 
     def _level1_tick(self) -> None:

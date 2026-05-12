@@ -425,7 +425,7 @@ class LocalDataStore(DataStore):
         for item in raw:
             name = str(item or "").strip()
             if name and name not in seen:
-                seen.add(name);
+                seen.add(name)
                 out.append(name)
         return out or ["Default"]
 
@@ -637,8 +637,13 @@ class FallbackDataStore(DataStore):
 
     # ---- internal ----
 
-    def _handle_write_failure(self, exc: Exception, action: str, payload: dict) -> None:
-        """Called when a remote write fails. Save locally and queue for sync."""
+    def _handle_write_failure(self, _exc: Exception, action: str, payload: dict) -> None:
+        """Called when a remote write fails. Save locally and queue for sync.
+
+        `_exc` is accepted (not just *args) so the call sites read clearly
+        — the actual exception object is logged elsewhere, we just need
+        the failure signal here.
+        """
         from . import sync_queue
         self._is_online = False
         username = self._remote.user_info.get("username", "unknown")

@@ -69,7 +69,11 @@
       "Bash(./.venv/Scripts/python.exe -m compileall server/server.py)",
       "Bash(./.venv/Scripts/python.exe -m pip install pyflakes --quiet)",
       "Bash(./.venv/Scripts/python.exe -m pyflakes stock_insights/main_window.py)",
-      "Bash(./.venv/Scripts/python.exe -m compileall -q stock_insights/main_window.py)"
+      "Bash(./.venv/Scripts/python.exe -m compileall -q stock_insights/main_window.py)",
+      "Bash(grep -nE '^\\\\s*[^#\"]*\\\\w\\\\.\\\\w+\\\\\\([^\\)]*\\\\\\)[ \\\\t]*;[ \\\\t]*$|^\\\\s*\\\\w[^#\"\\\\\\\\n]*[\\)\\\\]]\\\\s*;\\\\s*$' stock_insights/main_window.py stock_insights/portfolio_tab.py stock_insights/admin_dialogs.py stock_insights/api_client.py stock_insights/dialogs/trade_actions.py stock_insights/theme.py)",
+      "Bash(./.venv/Scripts/python.exe -m pyflakes stock_insights/main_window.py stock_insights/portfolio_tab.py stock_insights/admin_dialogs.py stock_insights/symbol_history_dialog.py stock_insights/api_client.py stock_insights/widgets.py stock_insights/dialogs/*.py main.py)",
+      "Bash(./.venv/Scripts/python.exe -m pyflakes stock_insights/portfolio_tab.py)",
+      "Bash(./.venv/Scripts/python.exe -c \"from stock_insights.portfolio_tab import PortfolioTab; print\\('PortfolioTab imports OK'\\)\")"
     ]
   }
 }

@@ -168,7 +168,7 @@ class UserAccountDialog(QDialog):
         name = text.strip()
         existing = self._store.get_account_names()
         if name in existing:
-            QMessageBox.information(self, "Duplicate", f"'{name}' already exists.");
+            QMessageBox.information(self, "Duplicate", f"'{name}' already exists.")
             return
         try:
             self._store.save_accounts(existing + [name])
@@ -182,7 +182,7 @@ class UserAccountDialog(QDialog):
         name = item.text()
         existing = self._store.get_account_names()
         if len(existing) <= 1:
-            QMessageBox.information(self, "Cannot Remove", "At least one account must remain.");
+            QMessageBox.information(self, "Cannot Remove", "At least one account must remain.")
             return
         if QMessageBox.question(self, "Remove Account", f"Remove '{name}'? This deletes all its trades.") \
                 != QMessageBox.StandardButton.Yes:

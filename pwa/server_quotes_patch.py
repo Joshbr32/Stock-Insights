@@ -59,7 +59,10 @@ def _fetch_one_quote(symbol: str) -> float | None:
             tickers=symbol, period="1d", interval="1m",
             progress=False, threads=False,
         )
-        if df is not None and "Close" in df:
+        # `"Close" in df.columns` is the explicit check — avoids the
+        # pandas truth-value ambiguity that fires on `"Close" in df`
+        # under newer DataFrame __contains__ semantics.
+        if df is not None and "Close" in df.columns:
             close = df["Close"].dropna()
             if len(close):
                 return float(close.iloc[-1])

@@ -104,7 +104,9 @@ class WatchTable(QTableWidget):
         max_ticker_width = max(60, available - 78) if available else 108
         ticker_width = max(72, min(ticker_width + 12, min(108, max_ticker_width)))
         mark_width = max(78, available - ticker_width)
-        if available > 0 and ticker_width + mark_width > available:
+        # Chained: 0 < available < ticker_width + mark_width — reads as
+        # "we have some viewport AND the columns overflow it".
+        if 0 < available < ticker_width + mark_width:
             mark_width = max(78, available - ticker_width)
         self.setColumnWidth(0, ticker_width)
         self.setColumnWidth(1, mark_width)

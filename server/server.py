@@ -216,8 +216,18 @@ def _new_token() -> str:
     return secrets.token_hex(32)  # 64 hex chars — fits NVARCHAR(64)
 
 
+def _utc_now() -> datetime:
+    """Naive UTC `datetime.now()` — replacement for the deprecated
+    `datetime.utcnow()`. We keep tokens tz-naive on disk because
+    the SQL Server column is `datetime2` without offset, and the
+    expiry comparison stays self-consistent (we always compare two
+    naive-UTC values to each other)."""
+    from datetime import timezone
+    return datetime.now(tz=timezone.utc).replace(tzinfo=None)
+
+
 def _token_expiry() -> str:
-    return (datetime.utcnow() + timedelta(days=TOKEN_DAYS)).strftime("%Y-%m-%dT%H:%M:%S")
+    return (_utc_now() + timedelta(days=TOKEN_DAYS)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _get_user_from_token(token: str) -> Optional[Dict[str, Any]]:
@@ -235,7 +245,7 @@ def _get_user_from_token(token: str) -> Optional[Dict[str, Any]]:
     expiry = row["expires_at"]
     if isinstance(expiry, str):
         expiry = datetime.fromisoformat(expiry)
-    if expiry < datetime.utcnow():
+    if expiry < _utc_now():
         return None
     return row
 
