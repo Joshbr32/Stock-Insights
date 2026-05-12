@@ -26,10 +26,10 @@ class _IconColorFormatter(logging.Formatter):
 
     RESET = "\033[0m"
     COLORS = {
-        logging.DEBUG: "\033[36m",     # cyan
-        logging.INFO: "\033[32m",      # green
-        logging.WARNING: "\033[33m",   # yellow
-        logging.ERROR: "\033[31m",     # red
+        logging.DEBUG: "\033[36m",  # cyan
+        logging.INFO: "\033[32m",  # green
+        logging.WARNING: "\033[33m",  # yellow
+        logging.ERROR: "\033[31m",  # red
         logging.CRITICAL: "\033[35m",  # magenta
     }
     ICONS = {

@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import requests
+
     _REQUESTS_OK = True
 except ImportError:
     _REQUESTS_OK = False
@@ -77,11 +78,11 @@ class DataStore(ABC):
 
     @abstractmethod
     def set_goal_group(
-        self,
-        shared_accounts: List[str],
-        shared_goal: float,
-        individual_goals: Dict[str, float],
-        individual_presets: Dict[str, List[float]],
+            self,
+            shared_accounts: List[str],
+            shared_goal: float,
+            individual_goals: Dict[str, float],
+            individual_presets: Dict[str, List[float]],
     ) -> None:
         ...
 
@@ -131,11 +132,11 @@ class RemoteDataStore(DataStore):
     """
 
     def __init__(
-        self,
-        base_url: str,
-        token: str,
-        user_info_dict: dict,
-        for_user_id: Optional[int] = None,
+            self,
+            base_url: str,
+            token: str,
+            user_info_dict: dict,
+            for_user_id: Optional[int] = None,
     ):
         if not _REQUESTS_OK:
             raise ImportError("Install 'requests':  pip install requests")
@@ -284,11 +285,11 @@ class RemoteDataStore(DataStore):
         return self._goal_group_cache
 
     def set_goal_group(
-        self,
-        shared_accounts: List[str],
-        shared_goal: float,
-        individual_goals: Dict[str, float],
-        individual_presets: Dict[str, List[float]],
+            self,
+            shared_accounts: List[str],
+            shared_goal: float,
+            individual_goals: Dict[str, float],
+            individual_presets: Dict[str, List[float]],
     ) -> None:
         self._put("/goal-group", {"account_names": shared_accounts, "shared_goal": float(shared_goal)})
         self._goal_group_cache = None
@@ -415,14 +416,17 @@ class LocalDataStore(DataStore):
     def get_account_names(self) -> List[str]:
         raw = self._settings.value(self._scoped_key(self.ACCOUNTS_KEY), ["Default"])
         if isinstance(raw, str):
-            try: raw = json.loads(raw)
-            except Exception: raw = [x.strip() for x in raw.split(",") if x.strip()]
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = [x.strip() for x in raw.split(",") if x.strip()]
         if not isinstance(raw, list): raw = ["Default"]
         out, seen = [], set()
         for item in raw:
             name = str(item or "").strip()
             if name and name not in seen:
-                seen.add(name); out.append(name)
+                seen.add(name);
+                out.append(name)
         return out or ["Default"]
 
     def save_accounts(self, accounts: List[str]) -> None:
@@ -488,8 +492,10 @@ class LocalDataStore(DataStore):
     def get_goal_group(self) -> Tuple[List[str], float]:
         raw = self._settings.value(self._scoped_key(self.GOAL_GROUP_KEY), [])
         if isinstance(raw, str):
-            try: raw = json.loads(raw)
-            except Exception: raw = []
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = []
         if not isinstance(raw, list): raw = []
         shared_goal = float(
             self._settings.value(self._scoped_key(self.GOAL_GROUP_SHARED_KEY), 500_000.0) or 500_000.0
@@ -497,11 +503,11 @@ class LocalDataStore(DataStore):
         return list(raw), shared_goal
 
     def set_goal_group(
-        self,
-        shared_accounts: List[str],
-        shared_goal: float,
-        individual_goals: Dict[str, float],
-        individual_presets: Dict[str, List[float]],
+            self,
+            shared_accounts: List[str],
+            shared_goal: float,
+            individual_goals: Dict[str, float],
+            individual_presets: Dict[str, List[float]],
     ) -> None:
         self._settings.setValue(self._scoped_key(self.GOAL_GROUP_KEY), json.dumps(shared_accounts))
         self._settings.setValue(self._scoped_key(self.GOAL_GROUP_SHARED_KEY), float(shared_goal))
@@ -518,8 +524,10 @@ class LocalDataStore(DataStore):
     def get_watchlist(self) -> List[str]:
         items = self._settings.value(self._scoped_key("watchlist/items"), [])
         if isinstance(items, str):
-            try: items = json.loads(items)
-            except Exception: items = [x.strip() for x in items.split(",") if x.strip()]
+            try:
+                items = json.loads(items)
+            except Exception:
+                items = [x.strip() for x in items.split(",") if x.strip()]
         return [str(t).upper() for t in items] if items else []
 
     def save_watchlist(self, symbols: List[str]) -> None:
@@ -536,7 +544,8 @@ def remote_login(base_url: str, username: str, password: str, timeout: int = 5) 
     if not _REQUESTS_OK:
         raise ImportError("Install 'requests':  pip install requests")
     url = base_url.rstrip("/")
-    r = requests.post(f"{url}/auth/login", json={"username": username, "password": password}, timeout=(timeout, timeout))
+    r = requests.post(f"{url}/auth/login", json={"username": username, "password": password},
+                      timeout=(timeout, timeout))
     if not r.ok:
         raise APIError(f"Login failed ({r.status_code}): {r.text}", r.status_code)
     data = r.json()
@@ -614,11 +623,11 @@ class FallbackDataStore(DataStore):
     """
 
     def __init__(
-        self,
-        remote: RemoteDataStore,
-        local: "LocalDataStore",
-        on_offline_cb=None,   # callable(n_pending: int)
-        on_online_cb=None,    # callable(synced_count: int)
+            self,
+            remote: RemoteDataStore,
+            local: "LocalDataStore",
+            on_offline_cb=None,  # callable(n_pending: int)
+            on_online_cb=None,  # callable(synced_count: int)
     ):
         self._remote = remote
         self._local = local
@@ -740,11 +749,11 @@ class FallbackDataStore(DataStore):
         )
 
     def set_goal_group(
-        self,
-        shared_accounts: List[str],
-        shared_goal: float,
-        individual_goals: Dict[str, float],
-        individual_presets: Dict[str, List[float]],
+            self,
+            shared_accounts: List[str],
+            shared_goal: float,
+            individual_goals: Dict[str, float],
+            individual_presets: Dict[str, List[float]],
     ) -> None:
         self._local.set_goal_group(shared_accounts, shared_goal, individual_goals, individual_presets)
         try:

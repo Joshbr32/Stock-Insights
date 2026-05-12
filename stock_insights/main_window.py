@@ -1039,7 +1039,7 @@ class MainWindow(QMainWindow):
             "L1_ENABLED": self.L1_ENABLED,
             "THEME_OVERRIDE": s.value("ui/THEME_OVERRIDE", getattr(self.theme, "override_mode", "System")),
             "MATCH_SYSTEM_ACCENT": s.value("ui/MATCH_SYSTEM_ACCENT",
-                                            getattr(self.theme, "match_system_accent", True), type=bool),
+                                           getattr(self.theme, "match_system_accent", True), type=bool),
             "THEME_NAME": s.value("ui/THEME_NAME", getattr(self.theme, "theme_name", "Default")),
             "FONT_SIZE": s.value("ui/FONT_SIZE", getattr(self.theme, "font_size_label", "Normal")),
             "TRADE_DEFAULT_QUANTITY": int(s.value("trade_defaults/default_quantity", 1) or 1),
@@ -1255,8 +1255,8 @@ class MainWindow(QMainWindow):
                                     "Only admin accounts can view other users' portfolios.")
             return
         _remote_ok = (
-            isinstance(self._store, RemoteDataStore) or
-            (isinstance(self._store, FallbackDataStore) and self._store._is_online)
+                isinstance(self._store, RemoteDataStore) or
+                (isinstance(self._store, FallbackDataStore) and self._store._is_online)
         )
         if not _remote_ok:
             QMessageBox.information(
@@ -1279,7 +1279,9 @@ class MainWindow(QMainWindow):
         user_id = user["id"]
         if user_id in self._viewer_windows:
             w = self._viewer_windows[user_id]
-            w.raise_(); w.activateWindow(); return
+            w.raise_();
+            w.activateWindow();
+            return
         user_store = self._store.store_for_user(user_id, user["username"])
         viewer = UserPortfolioViewer(user_store, user["username"], self._qsettings(), parent=None)
         viewer.closed.connect(lambda uid=user_id: self._viewer_windows.pop(uid, None))

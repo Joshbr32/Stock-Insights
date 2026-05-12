@@ -105,12 +105,12 @@ class PortfolioTab(QWidget):
     ]
 
     def __init__(
-        self,
-        account_name: str,
-        store,           # DataStore
-        settings,        # QSettings (UI prefs only)
-        read_only: bool = False,
-        parent=None,
+            self,
+            account_name: str,
+            store,  # DataStore
+            settings,  # QSettings (UI prefs only)
+            read_only: bool = False,
+            parent=None,
     ):
         super().__init__(parent)
         self._account_name: str = account_name
@@ -118,7 +118,7 @@ class PortfolioTab(QWidget):
         self._settings = settings
         self._read_only = read_only
         self._marks: Dict[str, Optional[float]] = {}
-        self._trades: List[Trade] = []   # all trades for all accounts (filtered per view)
+        self._trades: List[Trade] = []  # all trades for all accounts (filtered per view)
         self._holdings: List[Holding] = []
         self._trade_row_indices: List[int] = []
         self._holding_row_instruments: List[str] = []
@@ -137,7 +137,8 @@ class PortfolioTab(QWidget):
         for h in self._holdings:
             s = h.normalized_instrument()
             if s and s not in seen:
-                seen.add(s); out.append(s)
+                seen.add(s);
+                out.append(s)
         return out
 
     def update_marks(self, data: Dict[str, Dict]):
@@ -190,8 +191,10 @@ class PortfolioTab(QWidget):
     def _trade_history_visible_keys(self) -> List[str]:
         raw = self._settings.value(self.TRADE_HISTORY_VISIBLE_COLUMNS_KEY, [])
         if isinstance(raw, str):
-            try: raw = json.loads(raw)
-            except Exception: raw = []
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = []
         if not isinstance(raw, list): raw = []
         valid = {key for key, _ in self.TRADE_HISTORY_COLUMNS}
         visible = [str(key) for key in raw if str(key) in valid]
@@ -206,8 +209,10 @@ class PortfolioTab(QWidget):
     def _trade_history_sort_rules(self) -> List[dict]:
         raw = self._settings.value(self.TRADE_HISTORY_SORT_KEY, [])
         if isinstance(raw, str):
-            try: raw = json.loads(raw)
-            except Exception: raw = []
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = []
         if not isinstance(raw, list):
             raw = []
 
@@ -672,7 +677,8 @@ class PortfolioTab(QWidget):
             if item is None: continue
             symbol = item.text().strip().upper()
             if symbol and symbol not in seen:
-                seen.add(symbol); out.append(symbol)
+                seen.add(symbol);
+                out.append(symbol)
         return out
 
     def _selected_trade_source_index(self) -> Optional[int]:
@@ -709,10 +715,10 @@ class PortfolioTab(QWidget):
         return [
             (idx, trade) for idx, trade in enumerate(self._trades)
             if (trade.account or "").strip() == self._account_name
-            and not trade.is_closed
-            and not trade.is_pending
-            and trade.is_short == short
-            and trade.normalized_instrument() == symbol
+               and not trade.is_closed
+               and not trade.is_pending
+               and trade.is_short == short
+               and trade.normalized_instrument() == symbol
         ]
 
     def _combined_open_trade(self, instrument: str, short: bool = False) -> Optional[Trade]:
@@ -748,7 +754,8 @@ class PortfolioTab(QWidget):
         if self._read_only: return
         source_index = self._selected_trade_source_index()
         if source_index is None:
-            QMessageBox.information(self, "Select trade", "Choose a trade row to edit."); return
+            QMessageBox.information(self, "Select trade", "Choose a trade row to edit.");
+            return
         dlg = TradeEditDialog(
             self._trades[source_index],
             watchlist_symbols=self._watchlist_symbols(),
@@ -767,11 +774,12 @@ class PortfolioTab(QWidget):
         if self._read_only: return
         source_index = self._selected_trade_source_index()
         if source_index is None:
-            QMessageBox.information(self, "Select trade", "Choose a trade row to delete."); return
+            QMessageBox.information(self, "Select trade", "Choose a trade row to delete.");
+            return
         trade = self._trades[source_index]
         if QMessageBox.question(
-            self, "Delete trade",
-            f"Delete {trade.normalized_instrument()} trade for {trade.share_count:,d} shares?",
+                self, "Delete trade",
+                f"Delete {trade.normalized_instrument()} trade for {trade.share_count:,d} shares?",
         ) != QMessageBox.StandardButton.Yes:
             return
         self._trades.pop(source_index)
@@ -810,7 +818,6 @@ class PortfolioTab(QWidget):
         if 0 <= view_row < len(self._holding_row_is_short):
             return self._holding_row_is_short[view_row]
         return False
-
 
     def _fulfill_pending_order(self):
         """Mark a WAITING trade as fulfilled — sets open date and confirms fill price."""
@@ -863,9 +870,10 @@ class PortfolioTab(QWidget):
         holding = Holding(instrument=combined.normalized_instrument(), qty=int(combined.share_count),
                           avg_cost=float(combined.buy_price), notes=combined.notes or "")
         dlg = MarkDownDialog(holding=holding, default_quantity=self._trade_default_quantity(),
-                              quantity_increment=self._trade_quantity_increment(), parent=self)
+                             quantity_increment=self._trade_quantity_increment(), parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted: return
-        trade = dlg.to_trade(); trade.account = self._account_name
+        trade = dlg.to_trade();
+        trade.account = self._account_name
         self._trades.append(trade)
         self._save_trades()
         self.refresh_view(selected_trade_source_index=len(self._trades) - 1)
@@ -880,7 +888,8 @@ class PortfolioTab(QWidget):
         dlg = DoubleDownDialog(holding=holding, current_mark=self._marks.get(holding.normalized_instrument()),
                                quantity_increment=self._trade_quantity_increment(), parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted: return
-        trade = dlg.to_trade(); trade.account = self._account_name
+        trade = dlg.to_trade();
+        trade.account = self._account_name
         self._trades.append(trade)
         self._save_trades()
         self.refresh_view(selected_trade_source_index=len(self._trades) - 1)
@@ -1138,7 +1147,9 @@ class PortfolioTab(QWidget):
                 item = QTableWidgetItem(value_map[key])
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if key == "instrument":
-                    f = item.font(); f.setBold(True); item.setFont(f)
+                    f = item.font();
+                    f.setBold(True);
+                    item.setFont(f)
                 if key == "trade_profit" and row.trade_profit is not None:
                     if _theme is not None:
                         item.setForeground(QColor(_theme.profit_color() if row.trade_profit > 0
@@ -1153,8 +1164,10 @@ class PortfolioTab(QWidget):
         if rows:
             row_to_select = 0
             if selected_trade_source_index is not None:
-                try: row_to_select = self._trade_row_indices.index(selected_trade_source_index)
-                except ValueError: row_to_select = 0
+                try:
+                    row_to_select = self._trade_row_indices.index(selected_trade_source_index)
+                except ValueError:
+                    row_to_select = 0
             self.trade_table.selectRow(row_to_select)
 
     def _size_trade_table_columns(self):
@@ -1181,7 +1194,9 @@ class PortfolioTab(QWidget):
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if c == 0:
-                    f = item.font(); f.setBold(True); item.setFont(f)
+                    f = item.font();
+                    f.setBold(True);
+                    item.setFont(f)
                 if is_short:
                     item.setBackground(short_brush)
                 self.holdings_table.setItem(r, c, item)

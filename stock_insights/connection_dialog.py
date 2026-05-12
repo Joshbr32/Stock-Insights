@@ -27,10 +27,10 @@ _APP = "StocksGUI"
 _USER_KEY = "server/last_username"
 
 SERVER_URL_EXTERNAL = "http://66.225.151.13:8742"
-SERVER_URL_LOCAL    = "http://192.168.0.149:8742"
+SERVER_URL_LOCAL = "http://192.168.0.149:8742"
 
 CONNECT_TIMEOUT = 5
-MAX_RETRIES     = 3
+MAX_RETRIES = 3
 
 log = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ class _LoginThread(QThread):
     PySide6 — overriding run() directly is the reliable approach.
     """
 
-    success = Signal(object)   # RemoteDataStore
-    error   = Signal(str)
+    success = Signal(object)  # RemoteDataStore
+    error = Signal(str)
     log_msg = Signal(str)
 
     def __init__(self, username: str, password: str, parent=None):
@@ -97,7 +97,7 @@ class _LoginThread(QThread):
             self._emit("")
 
             for label, url in [("external", SERVER_URL_EXTERNAL),
-                                ("local",    SERVER_URL_LOCAL)]:
+                               ("local", SERVER_URL_LOCAL)]:
                 self._emit(f"--- Trying {label} URL: {url} ---")
 
                 for attempt in range(1, MAX_RETRIES + 1):

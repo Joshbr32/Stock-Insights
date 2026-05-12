@@ -56,7 +56,7 @@ def _newer(remote: str, local: str) -> bool:
 class _UpdateWorker(QObject):
     """Fetches the version manifest on a background thread."""
 
-    finished = Signal(dict)   # {"version", "notes", "download_url"} or {"error": "..."}
+    finished = Signal(dict)  # {"version", "notes", "download_url"} or {"error": "..."}
 
     def run(self) -> None:
         try:
@@ -103,15 +103,15 @@ def check_for_updates(parent=None, silent_if_current: bool = False) -> None:
 
 
 def _on_result(
-    data: dict,
-    parent,
-    silent_if_current: bool,
-    checking_dlg: "QDialog",
-    thread: QThread,
-    worker: _UpdateWorker,
+        data: dict,
+        parent,
+        silent_if_current: bool,
+        checking_dlg: "QDialog",
+        thread: QThread,
+        worker: _UpdateWorker,
 ) -> None:
     thread.quit()
-    checking_dlg.accept()   # close the "checking…" dialog
+    checking_dlg.accept()  # close the "checking…" dialog
 
     if "error" in data:
         _ErrorDialog(data["error"], parent).exec()

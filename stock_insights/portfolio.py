@@ -10,6 +10,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:
     import pandas_market_calendars as _mcal  # type: ignore
+
     _nyse_cal = _mcal.get_calendar("NYSE")
     _TRADING_CAL_OK = True
 except Exception:
@@ -46,14 +47,14 @@ def _nyse_day_count(start: date, end: date) -> int:
 class Trade:
     instrument: str
     share_count: int
-    buy_price: float          # long: buy price;  short: entry (short) price
+    buy_price: float  # long: buy price;  short: entry (short) price
     sell_price: Optional[float] = None  # long: sell price; short: cover price
     open_date: Optional[date] = None
     close_date: Optional[date] = None
     notes: str = ""
     account: str = ""
     is_pending: bool = False  # True = unconfirmed/waiting order (excluded from calcs)
-    is_short: bool = False    # True = short position (sell first, buy to cover)
+    is_short: bool = False  # True = short position (sell first, buy to cover)
     # Optional free-form strategy tag — "swing", "earnings", "news", etc.
     # Used for filtering analytics & history by strategy. Empty string =
     # "no tag set". Schema-compatible with old backups: trade_from_dict
@@ -371,10 +372,10 @@ def trades_from_json(raw) -> List[Trade]:
 
 
 def solve_buy_mark_for_target_avg(
-    current_qty: int,
-    current_avg_cost: float,
-    buy_qty: int,
-    target_mark: float,
+        current_qty: int,
+        current_avg_cost: float,
+        buy_qty: int,
+        target_mark: float,
 ) -> float:
     """Return the buy price required to bring the blended average cost down to target_mark."""
     if current_qty <= 0:
@@ -463,9 +464,9 @@ def compute_realized_pl_by_symbol(trades: Iterable[Trade]) -> Dict[str, float]:
 
 
 def compute_portfolio(
-    holdings: Iterable[Holding],
-    marks: Dict[str, Optional[float]],
-    realized_by_symbol: Optional[Dict[str, float]] = None,
+        holdings: Iterable[Holding],
+        marks: Dict[str, Optional[float]],
+        realized_by_symbol: Optional[Dict[str, float]] = None,
 ) -> Tuple[List[HoldingView], PortfolioSummary]:
     realized_by_symbol = realized_by_symbol or {}
     cleaned: List[Holding] = []
@@ -629,10 +630,10 @@ def compute_trade_analytics(trades: Iterable[Trade]) -> TradeAnalytics:
 
 
 def compute_goal_progress(
-    trades: Iterable[Trade],
-    goal_target: float,
-    unrealized_profit: float = 0.0,
-    today: Optional[date] = None,
+        trades: Iterable[Trade],
+        goal_target: float,
+        unrealized_profit: float = 0.0,
+        today: Optional[date] = None,
 ) -> GoalProgress:
     today = today or date.today()
     realized_profit = sum(float(t.trade_profit or 0.0) for t in trades if t.is_closed and not t.is_pending)

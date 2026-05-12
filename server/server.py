@@ -88,9 +88,9 @@ except ImportError as _e:
 # Configuration  (override via environment variables)
 # ---------------------------------------------------------------------------
 
-SQL_SERVER   = os.environ.get("PORTFOLIO_SQL_SERVER",   r"localhost\STOCKINSIGHTS")
-SQL_DATABASE = os.environ.get("PORTFOLIO_SQL_DATABASE",  "StockInsights")
-SQL_USER     = os.environ.get("PORTFOLIO_SQL_USER",      "sa")
+SQL_SERVER = os.environ.get("PORTFOLIO_SQL_SERVER", r"localhost\STOCKINSIGHTS")
+SQL_DATABASE = os.environ.get("PORTFOLIO_SQL_DATABASE", "StockInsights")
+SQL_USER = os.environ.get("PORTFOLIO_SQL_USER", "sa")
 SQL_PASSWORD = os.environ.get("PORTFOLIO_SQL_PASSWORD")
 if not SQL_PASSWORD:
     raise SystemExit(
@@ -104,9 +104,10 @@ if not SQL_PASSWORD:
         "    set PORTFOLIO_SQL_PASSWORD=your_password           (cmd)\n"
         "    $env:PORTFOLIO_SQL_PASSWORD='your_password'        (PowerShell)"
     )
-HOST         = os.environ.get("PORTFOLIO_HOST",          "0.0.0.0")
-PORT         = int(os.environ.get("PORTFOLIO_PORT",      "8742"))
-TOKEN_DAYS   = 30
+HOST = os.environ.get("PORTFOLIO_HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORTFOLIO_PORT", "8742"))
+TOKEN_DAYS = 30
+
 
 # ---------------------------------------------------------------------------
 # Database connection helpers
@@ -134,12 +135,12 @@ def _conn_string() -> str:
     # TrustServerCertificate is required for ODBC 18 with self-signed certs
     trust = "TrustServerCertificate=yes;" if "18" in driver else ""
     return (
-        f"DRIVER={{{driver}}};"
-        f"SERVER={SQL_SERVER};"
-        f"DATABASE={SQL_DATABASE};"
-        f"UID={SQL_USER};"
-        f"PWD={SQL_PASSWORD};"
-        + trust
+            f"DRIVER={{{driver}}};"
+            f"SERVER={SQL_SERVER};"
+            f"DATABASE={SQL_DATABASE};"
+            f"UID={SQL_USER};"
+            f"PWD={SQL_PASSWORD};"
+            + trust
     )
 
 
@@ -212,7 +213,7 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 
 def _new_token() -> str:
-    return secrets.token_hex(32)          # 64 hex chars — fits NVARCHAR(64)
+    return secrets.token_hex(32)  # 64 hex chars — fits NVARCHAR(64)
 
 
 def _token_expiry() -> str:
@@ -292,13 +293,16 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+
 class CreateUserRequest(BaseModel):
     username: str
     password: str
     is_admin: bool = False
 
+
 class UpdatePasswordRequest(BaseModel):
     new_password: str
+
 
 class AccountIn(BaseModel):
     name: str
@@ -306,8 +310,10 @@ class AccountIn(BaseModel):
     goal_presets: List[float] = [250_000.0, 500_000.0, 1_000_000.0]
     position: int = 0
 
+
 class AccountsUpdate(BaseModel):
     accounts: List[AccountIn]
+
 
 class TradeIn(BaseModel):
     instrument: str
@@ -320,13 +326,16 @@ class TradeIn(BaseModel):
     is_pending: bool = False
     is_short: bool = False
 
+
 class TradesBatch(BaseModel):
     account_name: str
     trades: List[TradeIn]
 
+
 class GoalGroupUpdate(BaseModel):
     account_names: List[str]
     shared_goal: float
+
 
 class WatchlistUpdate(BaseModel):
     symbols: List[str]
@@ -386,22 +395,22 @@ def health():
 def login(body: LoginRequest):
     with db() as conn:
         cur = _exec(conn,
-            "SELECT id, username, password_hash, is_admin "
-            "FROM dbo.users WHERE username = ?",
-            body.username,
-        )
+                    "SELECT id, username, password_hash, is_admin "
+                    "FROM dbo.users WHERE username = ?",
+                    body.username,
+                    )
         user = _one(cur)
     if user is None or not _verify_password(body.password, user["password_hash"]):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
     token = _new_token()
     with db() as conn:
         _exec(conn,
-            "INSERT INTO dbo.sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-            token, int(user["id"]), _token_expiry(),
-        )
+              "INSERT INTO dbo.sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+              token, int(user["id"]), _token_expiry(),
+              )
     return {
-        "token":    token,
-        "user_id":  int(user["id"]),
+        "token": token,
+        "user_id": int(user["id"]),
         "username": str(user["username"]),
         "is_admin": bool(user["is_admin"]),
     }
@@ -427,9 +436,9 @@ def me(user: dict = Depends(current_user)):
 def list_users(user: dict = Depends(admin_user)):
     with db() as conn:
         cur = _exec(conn,
-            "SELECT id, username, is_admin, created_at "
-            "FROM dbo.users ORDER BY id"
-        )
+                    "SELECT id, username, is_admin, created_at "
+                    "FROM dbo.users ORDER BY id"
+                    )
         rows = _all(cur)
     return rows
 
@@ -439,9 +448,9 @@ def create_user(body: CreateUserRequest, user: dict = Depends(admin_user)):
     try:
         with db() as conn:
             _exec(conn,
-                "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-                body.username, _hash_password(body.password), int(body.is_admin),
-            )
+                  "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, ?)",
+                  body.username, _hash_password(body.password), int(body.is_admin),
+                  )
     except pyodbc.IntegrityError:
         raise HTTPException(status.HTTP_409_CONFLICT, f"Username '{body.username}' already exists")
     return {"ok": True}
@@ -453,9 +462,9 @@ def change_password(user_id: int, body: UpdatePasswordRequest, user: dict = Depe
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot change another user's password")
     with db() as conn:
         _exec(conn,
-            "UPDATE dbo.users SET password_hash = ? WHERE id = ?",
-            _hash_password(body.new_password), user_id,
-        )
+              "UPDATE dbo.users SET password_hash = ? WHERE id = ?",
+              _hash_password(body.new_password), user_id,
+              )
     return {"ok": True}
 
 
@@ -477,18 +486,18 @@ def get_accounts(user: dict = Depends(current_user), for_user_id: Optional[int] 
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
         cur = _exec(conn,
-            "SELECT id, name, goal_target, goal_presets, position "
-            "FROM dbo.accounts WHERE user_id = ? ORDER BY position, name",
-            uid,
-        )
+                    "SELECT id, name, goal_target, goal_presets, position "
+                    "FROM dbo.accounts WHERE user_id = ? ORDER BY position, name",
+                    uid,
+                    )
         return _all(cur)
 
 
 @app.put("/accounts")
 def replace_accounts(
-    body: AccountsUpdate,
-    user: dict = Depends(current_user),
-    for_user_id: Optional[int] = None,
+        body: AccountsUpdate,
+        user: dict = Depends(current_user),
+        for_user_id: Optional[int] = None,
 ):
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
@@ -506,33 +515,33 @@ def replace_accounts(
         for pos, acct in enumerate(body.accounts):
             if acct.name in existing:
                 _exec(conn,
-                    "UPDATE dbo.accounts SET goal_target = ?, goal_presets = ?, position = ? "
-                    "WHERE id = ?",
-                    acct.goal_target, json.dumps(acct.goal_presets),
-                    pos, existing[acct.name],
-                )
+                      "UPDATE dbo.accounts SET goal_target = ?, goal_presets = ?, position = ? "
+                      "WHERE id = ?",
+                      acct.goal_target, json.dumps(acct.goal_presets),
+                      pos, existing[acct.name],
+                      )
             else:
                 _exec(conn,
-                    "INSERT INTO dbo.accounts (user_id, name, goal_target, goal_presets, position) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    uid, acct.name, acct.goal_target,
-                    json.dumps(acct.goal_presets), pos,
-                )
+                      "INSERT INTO dbo.accounts (user_id, name, goal_target, goal_presets, position) "
+                      "VALUES (?, ?, ?, ?, ?)",
+                      uid, acct.name, acct.goal_target,
+                      json.dumps(acct.goal_presets), pos,
+                      )
     return {"ok": True}
 
 
 @app.put("/accounts/{account_name}/settings")
 def update_account_settings(
-    account_name: str, body: AccountIn,
-    user: dict = Depends(current_user), for_user_id: Optional[int] = None,
+        account_name: str, body: AccountIn,
+        user: dict = Depends(current_user), for_user_id: Optional[int] = None,
 ):
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
         _exec(conn,
-            "UPDATE dbo.accounts SET goal_target = ?, goal_presets = ? "
-            "WHERE user_id = ? AND name = ?",
-            body.goal_target, json.dumps(body.goal_presets), uid, account_name,
-        )
+              "UPDATE dbo.accounts SET goal_target = ?, goal_presets = ? "
+              "WHERE user_id = ? AND name = ?",
+              body.goal_target, json.dumps(body.goal_presets), uid, account_name,
+              )
     return {"ok": True}
 
 
@@ -545,37 +554,37 @@ def get_trades(user: dict = Depends(current_user), for_user_id: Optional[int] = 
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
         cur = _exec(conn,
-            "SELECT t.id, a.name AS account, t.instrument, t.share_count, "
-            "       t.buy_price, t.sell_price, t.open_date, t.close_date, "
-            "       t.notes, t.is_pending, t.is_short "
-            "FROM dbo.trades t "
-            "JOIN dbo.accounts a ON a.id = t.account_id "
-            "WHERE a.user_id = ? "
-            "ORDER BY t.id",
-            uid,
-        )
+                    "SELECT t.id, a.name AS account, t.instrument, t.share_count, "
+                    "       t.buy_price, t.sell_price, t.open_date, t.close_date, "
+                    "       t.notes, t.is_pending, t.is_short "
+                    "FROM dbo.trades t "
+                    "JOIN dbo.accounts a ON a.id = t.account_id "
+                    "WHERE a.user_id = ? "
+                    "ORDER BY t.id",
+                    uid,
+                    )
         return _all(cur)
 
 
 @app.put("/trades/{account_name}")
 def replace_account_trades(
-    account_name: str, body: TradesBatch,
-    user: dict = Depends(current_user), for_user_id: Optional[int] = None,
+        account_name: str, body: TradesBatch,
+        user: dict = Depends(current_user), for_user_id: Optional[int] = None,
 ):
     """Atomically replace all trades for one account (other accounts untouched)."""
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
         cur = _exec(conn,
-            "SELECT id FROM dbo.accounts WHERE user_id = ? AND name = ?",
-            uid, account_name,
-        )
+                    "SELECT id FROM dbo.accounts WHERE user_id = ? AND name = ?",
+                    uid, account_name,
+                    )
         row = _one(cur)
         if row is None:
             # Auto-create the account if it doesn't exist yet
             _exec(conn,
-                "INSERT INTO dbo.accounts (user_id, name) VALUES (?, ?)",
-                uid, account_name,
-            )
+                  "INSERT INTO dbo.accounts (user_id, name) VALUES (?, ?)",
+                  uid, account_name,
+                  )
             acct_id = _last_id(conn)
         else:
             acct_id = int(row["id"])
@@ -613,22 +622,22 @@ def get_goal_group(user: dict = Depends(current_user), for_user_id: Optional[int
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
         cur = _exec(conn,
-            "SELECT account_names, shared_goal FROM dbo.goal_group WHERE user_id = ?", uid
-        )
+                    "SELECT account_names, shared_goal FROM dbo.goal_group WHERE user_id = ?", uid
+                    )
         row = _one(cur)
     if row is None:
         return {"account_names": [], "shared_goal": 500_000.0}
     return {
         "account_names": json.loads(row["account_names"]),
-        "shared_goal":   float(row["shared_goal"]),
+        "shared_goal": float(row["shared_goal"]),
     }
 
 
 @app.put("/goal-group")
 def update_goal_group(
-    body: GoalGroupUpdate,
-    user: dict = Depends(current_user),
-    for_user_id: Optional[int] = None,
+        body: GoalGroupUpdate,
+        user: dict = Depends(current_user),
+        for_user_id: Optional[int] = None,
 ):
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
@@ -637,14 +646,14 @@ def update_goal_group(
         exists = cur.fetchone() is not None
         if exists:
             _exec(conn,
-                "UPDATE dbo.goal_group SET account_names = ?, shared_goal = ? WHERE user_id = ?",
-                json.dumps(body.account_names), body.shared_goal, uid,
-            )
+                  "UPDATE dbo.goal_group SET account_names = ?, shared_goal = ? WHERE user_id = ?",
+                  json.dumps(body.account_names), body.shared_goal, uid,
+                  )
         else:
             _exec(conn,
-                "INSERT INTO dbo.goal_group (user_id, account_names, shared_goal) VALUES (?, ?, ?)",
-                uid, json.dumps(body.account_names), body.shared_goal,
-            )
+                  "INSERT INTO dbo.goal_group (user_id, account_names, shared_goal) VALUES (?, ?, ?)",
+                  uid, json.dumps(body.account_names), body.shared_goal,
+                  )
     return {"ok": True}
 
 
@@ -657,17 +666,17 @@ def get_watchlist(user: dict = Depends(current_user), for_user_id: Optional[int]
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
         cur = _exec(conn,
-            "SELECT symbol FROM dbo.watchlist WHERE user_id = ? ORDER BY position, symbol",
-            uid,
-        )
+                    "SELECT symbol FROM dbo.watchlist WHERE user_id = ? ORDER BY position, symbol",
+                    uid,
+                    )
         return [r["symbol"] for r in _all(cur)]
 
 
 @app.put("/watchlist")
 def update_watchlist(
-    body: WatchlistUpdate,
-    user: dict = Depends(current_user),
-    for_user_id: Optional[int] = None,
+        body: WatchlistUpdate,
+        user: dict = Depends(current_user),
+        for_user_id: Optional[int] = None,
 ):
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
@@ -708,6 +717,7 @@ except ImportError:
 
 try:
     import yfinance as _yf
+
     _YF_OK = True
 except ImportError:
     _YF_OK = False
@@ -909,19 +919,20 @@ def setup_admin():
     password = input("Password: ").strip()
     admin_rights = input("Admin rights? (Y/N): ").strip().upper()
     if not username or not password or not admin_rights:
-        print("Cancelled."); return
+        print("Cancelled.");
+        return
     try:
         with db() as conn:
             if admin_rights == "Y":
                 _exec(conn,
-                    "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 1)",
-                    username, _hash_password(password),
-                )
+                      "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 1)",
+                      username, _hash_password(password),
+                      )
             else:
                 _exec(conn,
-                    "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 0)",
-                    username, _hash_password(password),
-                )
+                      "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 0)",
+                      username, _hash_password(password),
+                      )
         print(f"\nUser '{username}' created. Start the server with: python server.py\n")
     except pyodbc.IntegrityError:
         print(f"User '{username}' already exists.")

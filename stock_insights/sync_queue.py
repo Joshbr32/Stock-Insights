@@ -113,7 +113,7 @@ def flush(remote_store, username: Optional[str] = None) -> tuple[int, int]:
     remaining: List[dict] = []
 
     for i, entry in enumerate(entries):
-        action  = entry.get("action", "")
+        action = entry.get("action", "")
         payload = entry.get("payload", {})
         try:
             _replay(remote_store, action, payload)

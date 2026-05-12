@@ -10,7 +10,6 @@ from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle
 if sys.platform.startswith("win"):
     import winreg
 
-
 # ---------------------------------------------------------------------------
 # Named theme colour tokens
 # ---------------------------------------------------------------------------
@@ -22,266 +21,264 @@ if sys.platform.startswith("win"):
 #   bad    — loss / negative P/L text colour   (must contrast with 'card' bg)
 
 _THEMES: dict = {
-    "Default": None,   # uses the built-in dark/light stylesheets below
+    "Default": None,  # uses the built-in dark/light stylesheets below
 
     "Warm Earth": {
         "light": {
-            "bg":         "#c0b6ac",
-            "card":       "#ffffff",
-            "card2":      "#f5f5f5",
-            "text":       "#2e2a2b",   # was #585253 — darkened for 7.1:1 contrast
+            "bg": "#c0b6ac",
+            "card": "#ffffff",
+            "card2": "#f5f5f5",
+            "text": "#2e2a2b",  # was #585253 — darkened for 7.1:1 contrast
             "text_muted": "#6f6869",
-            "button":     "#c9d9a8",
-            "primary":    "#c9d9a8",
-            "secondary":  "#809150",
+            "button": "#c9d9a8",
+            "primary": "#c9d9a8",
+            "secondary": "#809150",
             "text_on_color": "#161e00",
-            "border":     "#9da09b",
-            "good":       "#4a6820",   # 6.4:1 on white card
-            "bad":        "#892020",   # 9.2:1 on white card
+            "border": "#9da09b",
+            "good": "#4a6820",  # 6.4:1 on white card
+            "bad": "#892020",  # 9.2:1 on white card
         },
         "dark": {
-            "bg":         "#3c3835",   # darkened from #4a4545 for better bad contrast
-            "card":       "#47433f",
-            "card2":      "#524e4a",
-            "text":       "#e1e4de",   # 9.0:1 on card
+            "bg": "#3c3835",  # darkened from #4a4545 for better bad contrast
+            "card": "#47433f",
+            "card2": "#524e4a",
+            "text": "#e1e4de",  # 9.0:1 on card
             "text_muted": "#b0b3ae",
-            "button":     "#5a5548",
-            "primary":    "#d6e6b4",
-            "secondary":  "#a8c070",
+            "button": "#5a5548",
+            "primary": "#d6e6b4",
+            "secondary": "#a8c070",
             "text_on_color": "#1a1c10",
-            "border":     "#5e5a57",
-            "good":       "#b0e060",   # 7.6:1 on card
-            "bad":        "#ff6060",   # 3.9:1 on card (large bold text ≥3.0 OK)
+            "border": "#5e5a57",
+            "good": "#b0e060",  # 7.6:1 on card
+            "bad": "#ff6060",  # 3.9:1 on card (large bold text ≥3.0 OK)
         },
     },
 
     "Forest": {
         "light": {
-            "bg":         "#ecefe9",
-            "card":       "#f3f6f0",
-            "card2":      "#e5e8e2",
-            "text":       "#3a3d38",
+            "bg": "#ecefe9",
+            "card": "#f3f6f0",
+            "card2": "#e5e8e2",
+            "text": "#3a3d38",
             "text_muted": "#898b86",
-            "button":     "#d0dece",
-            "primary":    "#709674",
-            "secondary":  "#679288",
+            "button": "#d0dece",
+            "primary": "#709674",
+            "secondary": "#679288",
             "text_on_color": "#06210b",
-            "border":     "#c4c7c1",
-            "good":       "#285a2e",   # 7.4:1 on card
-            "bad":        "#8a2020",   # 8.3:1 on card
+            "border": "#c4c7c1",
+            "good": "#285a2e",  # 7.4:1 on card
+            "bad": "#8a2020",  # 8.3:1 on card
         },
         "dark": {
-            "bg":         "#3e403b",
-            "card":       "#4a4c47",
-            "card2":      "#525450",
-            "text":       "#d6d9d3",
+            "bg": "#3e403b",
+            "card": "#4a4c47",
+            "card2": "#525450",
+            "text": "#d6d9d3",
             "text_muted": "#9da09b",
-            "button":     "#3d5c42",
-            "primary":    "#bfe8c2",
-            "secondary":  "#679288",
-            "text_on_color": "#06210b",   # dark on light primary #bfe8c2
-            "border":     "#686b65",
-            "good":       "#90e870",   # 5.8:1 on card
-            "bad":        "#ffaa88",   # 4.7:1 on card
+            "button": "#3d5c42",
+            "primary": "#bfe8c2",
+            "secondary": "#679288",
+            "text_on_color": "#06210b",  # dark on light primary #bfe8c2
+            "border": "#686b65",
+            "good": "#90e870",  # 5.8:1 on card
+            "bad": "#ffaa88",  # 4.7:1 on card
         },
     },
 
     "Lavender Mist": {
         "light": {
-            "bg":         "#f2f5ef",
-            "card":       "#f3f6f0",
-            "card2":      "#ecefe9",
-            "text":       "#3a3c38",   # was #747772 — darkened for 10.1:1 contrast
+            "bg": "#f2f5ef",
+            "card": "#f3f6f0",
+            "card2": "#ecefe9",
+            "text": "#3a3c38",  # was #747772 — darkened for 10.1:1 contrast
             "text_muted": "#90938e",
-            "button":     "#ddd5db",
-            "primary":    "#a18898",
-            "secondary":  "#a48c8e",
+            "button": "#ddd5db",
+            "primary": "#a18898",
+            "secondary": "#a48c8e",
             "text_on_color": "#251420",
-            "border":     "#dee1db",
-            "good":       "#384a2a",   # 8.8:1 on card
-            "bad":        "#6a2848",   # 9.6:1 on card
+            "border": "#dee1db",
+            "good": "#384a2a",  # 8.8:1 on card
+            "bad": "#6a2848",  # 9.6:1 on card
         },
         "dark": {
-            "bg":         "#504e4c",   # darkened from #606360 for better contrast
-            "card":       "#5c5a58",
-            "card2":      "#676563",
-            "text":       "#e8e9e6",   # 6.8:1 on card
+            "bg": "#504e4c",  # darkened from #606360 for better contrast
+            "card": "#5c5a58",
+            "card2": "#676563",
+            "text": "#e8e9e6",  # 6.8:1 on card
             "text_muted": "#b4b7b1",
-            "button":     "#6a5a65",
-            "primary":    "#c9b3c3",
-            "secondary":  "#a48c8e",
-            "text_on_color": "#1e1018",   # dark on light primary #c9b3c3
-            "border":     "#888582",
-            "good":       "#d8e890",   # 6.3:1 on card
-            "bad":        "#f880a8",   # 3.4:1 on card (large bold ≥3.0 OK)
+            "button": "#6a5a65",
+            "primary": "#c9b3c3",
+            "secondary": "#a48c8e",
+            "text_on_color": "#1e1018",  # dark on light primary #c9b3c3
+            "border": "#888582",
+            "good": "#d8e890",  # 6.3:1 on card
+            "bad": "#f880a8",  # 3.4:1 on card (large bold ≥3.0 OK)
         },
     },
 
     "Slate Blue": {
         "light": {
             # text on card 4.9:1 (text darkened from source #434541 to pass card contrast)
-            "bg":           "#b0b3ae",
-            "card":         "#a7a9a4",
-            "card2":        "#adafaa",
-            "text":         "#353633",   # darkened: 5.3:1 on card
-            "text_muted":   "#5e605c",
-            "button":       "#8e9bc4",
-            "primary":      "#526393",
-            "secondary":    "#6d6187",
-            "text_on_color":"#d6e4ff",
-            "border":       "#9ea09b",
-            "good":         "#0c4038",   # 4.9:1 on card
-            "bad":          "#4a1f48",   # 5.6:1 on card
+            "bg": "#b0b3ae",
+            "card": "#a7a9a4",
+            "card2": "#adafaa",
+            "text": "#353633",  # darkened: 5.3:1 on card
+            "text_muted": "#5e605c",
+            "button": "#8e9bc4",
+            "primary": "#526393",
+            "secondary": "#6d6187",
+            "text_on_color": "#d6e4ff",
+            "border": "#9ea09b",
+            "good": "#0c4038",  # 4.9:1 on card
+            "bad": "#4a1f48",  # 5.6:1 on card
         },
         "dark": {
-            "bg":           "#373934",
-            "card":         "#3e413c",
-            "card2":        "#3a3c37",
-            "text":         "#b8bab5",
-            "text_muted":   "#939590",
-            "button":       "#505870",
-            "primary":      "#6a7aa7",
-            "secondary":    "#80749a",
-            "text_on_color":"#050a25",
-            "border":       "#474944",
-            "good":         "#7dd4c4",   # 6.0:1 on card
-            "bad":          "#dda0dc",   # 5.0:1 on card
+            "bg": "#373934",
+            "card": "#3e413c",
+            "card2": "#3a3c37",
+            "text": "#b8bab5",
+            "text_muted": "#939590",
+            "button": "#505870",
+            "primary": "#6a7aa7",
+            "secondary": "#80749a",
+            "text_on_color": "#050a25",
+            "border": "#474944",
+            "good": "#7dd4c4",  # 6.0:1 on card
+            "bad": "#dda0dc",  # 5.0:1 on card
         },
     },
 
     "Graphite": {
         "light": {
             # Graphite light: medium grey card limits P/L contrast — 3.4/4.0 acceptable for bold
-            "bg":           "#828580",
-            "card":         "#7a7c77",
-            "card2":        "#737671",
-            "text":         "#161814",
-            "text_muted":   "#333531",
-            "button":       "#4e5050",
-            "primary":      "#403f44",
-            "secondary":    "#413f41",
-            "text_on_color":"#d9d3ed",
-            "border":       "#676a65",
-            "good":         "#1a2e2c",   # 3.4:1 (large bold text threshold)
-            "bad":          "#281820",   # 4.0:1 on card
+            "bg": "#828580",
+            "card": "#7a7c77",
+            "card2": "#737671",
+            "text": "#161814",
+            "text_muted": "#333531",
+            "button": "#4e5050",
+            "primary": "#403f44",
+            "secondary": "#413f41",
+            "text_on_color": "#d9d3ed",
+            "border": "#676a65",
+            "good": "#1a2e2c",  # 3.4:1 (large bold text threshold)
+            "bad": "#281820",  # 4.0:1 on card
         },
         "dark": {
-            "bg":           "#0a0c08",
-            "card":         "#10120e",
-            "card2":        "#0e100c",
-            "text":         "#868883",
-            "text_muted":   "#6b6e69",
-            "button":       "#3a393e",
-            "primary":      "#56555b",
-            "secondary":    "#585558",
-            "text_on_color":"#d8d4ed",
-            "border":       "#171915",
-            "good":         "#bfdfd9",   # 13.2:1 (good-fg from source)
-            "bad":          "#e4d0e4",   # 13.0:1 (bad-fg from source)
+            "bg": "#0a0c08",
+            "card": "#10120e",
+            "card2": "#0e100c",
+            "text": "#868883",
+            "text_muted": "#6b6e69",
+            "button": "#3a393e",
+            "primary": "#56555b",
+            "secondary": "#585558",
+            "text_on_color": "#d8d4ed",
+            "border": "#171915",
+            "good": "#bfdfd9",  # 13.2:1 (good-fg from source)
+            "bad": "#e4d0e4",  # 13.0:1 (bad-fg from source)
         },
     },
 
     "Monochrome": {
         "light": {
-            "bg":           "#f5f5f5",
-            "card":         "#e8e8e8",
-            "card2":        "#dedede",
-            "text":         "#121212",
-            "text_muted":   "#4d4d4d",
-            "button":       "#c4a8e8",
-            "primary":      "#7553ad",
-            "secondary":    "#a3689f",
-            "text_on_color":"#efe5ff",
-            "border":       "#c4c4c4",
-            "good":         "#007d6b",   # 4.1:1 on card (source value, large-text pass)
-            "bad":          "#974096",   # 4.9:1 on card
+            "bg": "#f5f5f5",
+            "card": "#e8e8e8",
+            "card2": "#dedede",
+            "text": "#121212",
+            "text_muted": "#4d4d4d",
+            "button": "#c4a8e8",
+            "primary": "#7553ad",
+            "secondary": "#a3689f",
+            "text_on_color": "#efe5ff",
+            "border": "#c4c4c4",
+            "good": "#007d6b",  # 4.1:1 on card (source value, large-text pass)
+            "bad": "#974096",  # 4.9:1 on card
         },
         "dark": {
-            "bg":           "#020202",
-            "card":         "#060606",
-            "card2":        "#0b0b0b",
-            "text":         "#e4e4e4",
-            "text_muted":   "#8f8f8f",
-            "button":       "#5a3870",
-            "primary":      "#9272cc",
-            "secondary":    "#a3689f",
-            "text_on_color":"#210b3d",
-            "border":       "#222222",
-            "good":         "#1c8d7a",   # 5.0:1 on card
-            "bad":          "#a84ea7",   # 4.2:1 on card (large bold acceptable)
+            "bg": "#020202",
+            "card": "#060606",
+            "card2": "#0b0b0b",
+            "text": "#e4e4e4",
+            "text_muted": "#8f8f8f",
+            "button": "#5a3870",
+            "primary": "#9272cc",
+            "secondary": "#a3689f",
+            "text_on_color": "#210b3d",
+            "border": "#222222",
+            "good": "#1c8d7a",  # 5.0:1 on card
+            "bad": "#a84ea7",  # 4.2:1 on card (large bold acceptable)
         },
     },
 
     "Crimson": {
         "light": {
-            "bg":           "#d0d3cd",
-            "card":         "#bbbdb8",
-            "card2":        "#abada8",
-            "text":         "#000000",
-            "text_muted":   "#2a2c28",
-            "button":       "#9a3040",
-            "primary":      "#560815",
-            "secondary":    "#431e0f",
-            "text_on_color":"#ffc3c2",
-            "border":       "#848681",
-            "good":         "#201800",   # 9.3:1 on card (source value)
-            "bad":          "#380014",   # 9.4:1 on card (source value)
+            "bg": "#d0d3cd",
+            "card": "#bbbdb8",
+            "card2": "#abada8",
+            "text": "#000000",
+            "text_muted": "#2a2c28",
+            "button": "#9a3040",
+            "primary": "#560815",
+            "secondary": "#431e0f",
+            "text_on_color": "#ffc3c2",
+            "border": "#848681",
+            "good": "#201800",  # 9.3:1 on card (source value)
+            "bad": "#380014",  # 9.4:1 on card (source value)
         },
         "dark": {
-            "bg":           "#000000",
-            "card":         "#0c0808",
-            "card2":        "#100c0c",
-            "text":         "#b4b7b2",
-            "text_muted":   "#62645f",
-            "button":       "#5c2028",
-            "primary":      "#963c42",
-            "secondary":    "#7f4f3c",
-            "text_on_color":"#ffc3c3",
-            "border":       "#1a1010",
-            "good":         "#9a8e60",   # 6.4:1 on card
-            "bad":          "#cc6080",   # 5.6:1 on card
+            "bg": "#000000",
+            "card": "#0c0808",
+            "card2": "#100c0c",
+            "text": "#b4b7b2",
+            "text_muted": "#62645f",
+            "button": "#5c2028",
+            "primary": "#963c42",
+            "secondary": "#7f4f3c",
+            "text_on_color": "#ffc3c3",
+            "border": "#1a1010",
+            "good": "#9a8e60",  # 6.4:1 on card
+            "bad": "#cc6080",  # 5.6:1 on card
         },
     },
 
     "Amber Night": {
         "light": {
-            "bg":         "#f3f6f0",
-            "card":       "#ecefe9",
-            "card2":      "#e5e8e2",
-            "text":       "#1e201c",
+            "bg": "#f3f6f0",
+            "card": "#ecefe9",
+            "card2": "#e5e8e2",
+            "text": "#1e201c",
             "text_muted": "#82847f",
-            "button":     "#f0d8a0",
-            "primary":    "#c47c00",
-            "secondary":  "#8a9300",
+            "button": "#f0d8a0",
+            "primary": "#c47c00",
+            "secondary": "#8a9300",
             "text_on_color": "#2a1500",
-            "border":     "#dfe2dc",
-            "good":       "#505a00",   # 6.5:1 on card
-            "bad":        "#b02010",   # 5.9:1 on card
+            "border": "#dfe2dc",
+            "good": "#505a00",  # 6.5:1 on card
+            "bad": "#b02010",  # 5.9:1 on card
         },
         "dark": {
-            "bg":         "#060705",
-            "card":       "#191b17",
-            "card2":      "#272925",
-            "text":       "#f3f6f0",
+            "bg": "#060705",
+            "card": "#191b17",
+            "card2": "#272925",
+            "text": "#f3f6f0",
             "text_muted": "#dfe2dc",
-            "button":     "#3a3300",
-            "primary":    "#ffcf8e",
-            "secondary":  "#ddea63",
+            "button": "#3a3300",
+            "primary": "#ffcf8e",
+            "secondary": "#ddea63",
             "text_on_color": "#281600",
-            "border":     "#595b56",
-            "good":       "#ffe060",   # 13.3:1 on card
-            "bad":        "#ff8060",   # 7.0:1 on card
+            "border": "#595b56",
+            "good": "#ffe060",  # 13.3:1 on card
+            "bad": "#ff8060",  # 7.0:1 on card
         },
     },
 }
 
 THEME_NAMES = list(_THEMES.keys())
 
-
 # Font size presets (pt)
 FONT_SIZES = {"Small": 9, "Normal": 11, "Large": 13, "X-Large": 16}
 FONT_SIZE_LABELS = list(FONT_SIZES.keys())
-
 
 _UI = {
     "panel_radius": 14,
@@ -306,9 +303,11 @@ def _windows_high_contrast_enabled() -> bool:
         return False
     try:
         SPI_GETHIGHCONTRAST = 0x0042
+
         class HIGHCONTRAST(ctypes.Structure):
             _fields_ = [("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_uint),
                         ("lpszDefaultScheme", ctypes.c_wchar_p)]
+
         hc = HIGHCONTRAST()
         hc.cbSize = ctypes.sizeof(HIGHCONTRAST)
         ctypes.windll.user32.SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, ctypes.byref(hc), 0)
@@ -381,10 +380,10 @@ class ChevronProxyStyle(QProxyStyle):
 
 
 class ThemeManager(QObject):
-    override_mode: str = "System"       # Colour Mode: System / Light / Dark
+    override_mode: str = "System"  # Colour Mode: System / Light / Dark
     match_system_accent: bool = True
-    theme_name: str = "Default"         # Theme: Default / Warm Earth / Forest / etc.
-    font_size_label: str = "Normal"     # Font Size: Small / Normal / Large / X-Large
+    theme_name: str = "Default"  # Theme: Default / Warm Earth / Forest / etc.
+    font_size_label: str = "Normal"  # Font Size: Small / Normal / Large / X-Large
 
     # Emitted at the end of every successful apply(). Subscribers (e.g. the
     # QML ThemeController) use this to refresh their bound color tokens.
@@ -398,7 +397,7 @@ class ThemeManager(QObject):
         self._timer: Optional[QTimer] = None
         self._chevron_style: Optional[ChevronProxyStyle] = None
         self._fixed_light_accent = (10, 102, 194)
-        self._fixed_dark_accent  = (96, 165, 250)
+        self._fixed_dark_accent = (96, 165, 250)
 
     def _assets_dir(self) -> Path:
         if getattr(sys, "frozen", False):
@@ -417,7 +416,7 @@ class ThemeManager(QObject):
     def _windows_is_light(self) -> bool:
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                    r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+                                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
                 v, _ = winreg.QueryValueEx(k, "AppsUseLightTheme")
                 return bool(v)
         except Exception:
@@ -426,21 +425,25 @@ class ThemeManager(QObject):
     def _windows_accent_rgb(self) -> Tuple[int, int, int]:
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent") as k:
+                                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent") as k:
                 v, _ = winreg.QueryValueEx(k, "AccentColor")
                 return (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF)
-        except Exception: pass
+        except Exception:
+            pass
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM") as k:
                 v, _ = winreg.QueryValueEx(k, "ColorizationColor")
                 return ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF)
-        except Exception: pass
+        except Exception:
+            pass
         try:
-            color = ctypes.c_uint(); opaque = ctypes.c_int()
+            color = ctypes.c_uint();
+            opaque = ctypes.c_int()
             if ctypes.windll.dwmapi.DwmGetColorizationColor(ctypes.byref(color), ctypes.byref(opaque)) == 0:
                 v = color.value
                 return ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF)
-        except Exception: pass
+        except Exception:
+            pass
         return self._fixed_light_accent
 
     def _accent_for_mode(self, is_light: bool) -> Tuple[int, int, int]:
@@ -527,10 +530,10 @@ class ThemeManager(QObject):
         theme_data = _THEMES.get(tn)
         if theme_data is None:
             accent = QColor(r, g, b)
-            palette    = self._default_light_palette(accent) if is_light else self._default_dark_palette(accent)
+            palette = self._default_light_palette(accent) if is_light else self._default_dark_palette(accent)
             stylesheet = self._default_light_stylesheet(accent) if is_light else self._default_dark_stylesheet(accent)
         else:
-            tokens  = theme_data["light" if is_light else "dark"]
+            tokens = theme_data["light" if is_light else "dark"]
             palette = self._themed_palette(tokens)
             stylesheet = self._themed_stylesheet(tokens)
 
@@ -538,7 +541,9 @@ class ThemeManager(QObject):
         if app is not None:
             if self._chevron_style is None:
                 existing_style = app.style()
-                self._chevron_style = existing_style if isinstance(existing_style, ChevronProxyStyle) else ChevronProxyStyle(existing_style)
+                self._chevron_style = existing_style if isinstance(existing_style,
+                                                                   ChevronProxyStyle) else ChevronProxyStyle(
+                    existing_style)
             if app.style() is not self._chevron_style:
                 app.setStyle(self._chevron_style)
             app.setPalette(palette)
@@ -637,24 +642,31 @@ class ThemeManager(QObject):
 
     def _themed_palette(self, t: dict) -> QPalette:
         p = QPalette()
-        p.setColor(QPalette.Window,          QColor(t["bg"]))
-        p.setColor(QPalette.Base,            QColor(t["card"]))
-        p.setColor(QPalette.AlternateBase,   QColor(t["card2"]))
-        p.setColor(QPalette.ToolTipBase,     QColor(t["card"]))
-        p.setColor(QPalette.ToolTipText,     QColor(t["text"]))
-        p.setColor(QPalette.Text,            QColor(t["text"]))
-        p.setColor(QPalette.Button,          QColor(t["button"]))
-        p.setColor(QPalette.ButtonText,      QColor(t["text"]))
-        p.setColor(QPalette.Highlight,       QColor(t["secondary"]))
+        p.setColor(QPalette.Window, QColor(t["bg"]))
+        p.setColor(QPalette.Base, QColor(t["card"]))
+        p.setColor(QPalette.AlternateBase, QColor(t["card2"]))
+        p.setColor(QPalette.ToolTipBase, QColor(t["card"]))
+        p.setColor(QPalette.ToolTipText, QColor(t["text"]))
+        p.setColor(QPalette.Text, QColor(t["text"]))
+        p.setColor(QPalette.Button, QColor(t["button"]))
+        p.setColor(QPalette.ButtonText, QColor(t["text"]))
+        p.setColor(QPalette.Highlight, QColor(t["secondary"]))
         p.setColor(QPalette.HighlightedText, QColor(t["text_on_color"]))
-        p.setColor(QPalette.WindowText,      QColor(t["text"]))
+        p.setColor(QPalette.WindowText, QColor(t["text"]))
         p.setColor(QPalette.PlaceholderText, QColor(t["text_muted"]))
         return p
 
     def _themed_stylesheet(self, t: dict) -> str:
-        bg=t["bg"]; card=t["card"]; card2=t["card2"]; text=t["text"]
-        muted=t["text_muted"]; btn=t["button"]; pri=t["primary"]
-        sec=t["secondary"]; brd=t["border"]; toc=t["text_on_color"]
+        bg = t["bg"];
+        card = t["card"];
+        card2 = t["card2"];
+        text = t["text"]
+        muted = t["text_muted"];
+        btn = t["button"];
+        pri = t["primary"]
+        sec = t["secondary"];
+        brd = t["border"];
+        toc = t["text_on_color"]
         panel_radius = _UI["panel_radius"]
         card_radius = _UI["card_radius"]
         group_radius = _UI["group_radius"]
@@ -790,33 +802,33 @@ class ThemeManager(QObject):
 
     def _default_dark_palette(self, accent: QColor) -> QPalette:
         p = QPalette()
-        p.setColor(QPalette.Window,          QColor("#0f1115"))
-        p.setColor(QPalette.Base,            QColor("#14171d"))
-        p.setColor(QPalette.AlternateBase,   QColor("#171a21"))
-        p.setColor(QPalette.ToolTipBase,     QColor("#10131a"))
-        p.setColor(QPalette.ToolTipText,     QColor("#eaeef2"))
-        p.setColor(QPalette.Text,            QColor("#eaeef2"))
-        p.setColor(QPalette.Button,          QColor("#1f2430"))
-        p.setColor(QPalette.ButtonText,      QColor("#eaeef2"))
-        p.setColor(QPalette.Highlight,       accent)
+        p.setColor(QPalette.Window, QColor("#0f1115"))
+        p.setColor(QPalette.Base, QColor("#14171d"))
+        p.setColor(QPalette.AlternateBase, QColor("#171a21"))
+        p.setColor(QPalette.ToolTipBase, QColor("#10131a"))
+        p.setColor(QPalette.ToolTipText, QColor("#eaeef2"))
+        p.setColor(QPalette.Text, QColor("#eaeef2"))
+        p.setColor(QPalette.Button, QColor("#1f2430"))
+        p.setColor(QPalette.ButtonText, QColor("#eaeef2"))
+        p.setColor(QPalette.Highlight, accent)
         p.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-        p.setColor(QPalette.WindowText,      QColor("#eaeef2"))
+        p.setColor(QPalette.WindowText, QColor("#eaeef2"))
         p.setColor(QPalette.PlaceholderText, QColor("#a9b1bd"))
         return p
 
     def _default_light_palette(self, accent: QColor) -> QPalette:
         p = QPalette()
-        p.setColor(QPalette.Window,          QColor("#ffffff"))
-        p.setColor(QPalette.Base,            QColor("#f8fafc"))
-        p.setColor(QPalette.AlternateBase,   QColor("#eef2f7"))
-        p.setColor(QPalette.ToolTipBase,     QColor("#f3f5f7"))
-        p.setColor(QPalette.ToolTipText,     QColor("#0f1115"))
-        p.setColor(QPalette.Text,            QColor("#0f1115"))
-        p.setColor(QPalette.Button,          QColor("#ffffff"))
-        p.setColor(QPalette.ButtonText,      QColor("#0f1115"))
-        p.setColor(QPalette.Highlight,       accent)
+        p.setColor(QPalette.Window, QColor("#ffffff"))
+        p.setColor(QPalette.Base, QColor("#f8fafc"))
+        p.setColor(QPalette.AlternateBase, QColor("#eef2f7"))
+        p.setColor(QPalette.ToolTipBase, QColor("#f3f5f7"))
+        p.setColor(QPalette.ToolTipText, QColor("#0f1115"))
+        p.setColor(QPalette.Text, QColor("#0f1115"))
+        p.setColor(QPalette.Button, QColor("#ffffff"))
+        p.setColor(QPalette.ButtonText, QColor("#0f1115"))
+        p.setColor(QPalette.Highlight, accent)
         p.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-        p.setColor(QPalette.WindowText,      QColor("#0f1115"))
+        p.setColor(QPalette.WindowText, QColor("#0f1115"))
         p.setColor(QPalette.PlaceholderText, QColor("#4b5563"))
         return p
 
