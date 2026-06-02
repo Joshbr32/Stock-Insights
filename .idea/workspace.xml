@@ -4,19 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="claude enhancements v5">
-      <change beforePath="$PROJECT_DIR$/pwa/sw.js" beforeDir="false" afterPath="$PROJECT_DIR$/pwa/sw.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/server/server.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/api_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/api_client.py" afterDir="false" />
+    <list default="true" id="a65a0b14-38e2-483f-a255-5c8979c05652" name="Changes" comment="Fixed code inspection">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/stock_insights/connection_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/connection_dialog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/logging_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/logging_utils.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/main_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/portfolio_tab.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/sync_queue.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/sync_queue.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/theme.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/theme.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/stock_insights/update_checker.py" beforeDir="false" afterPath="$PROJECT_DIR$/stock_insights/update_checker.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/version.json" beforeDir="false" afterPath="$PROJECT_DIR$/version.json" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -42,6 +32,7 @@
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="RESET_MODE" value="HARD" />
   </component>
   <component name="GitHubPullRequestSearchHistory">{
   &quot;lastFilter&quot;: {}
@@ -66,38 +57,37 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.main.executor": "Run",
-    "Python.main_window.executor": "Run",
-    "Python.migrate_local_to_server.executor": "Run",
-    "Python.migrate_raymond_account.executor": "Run",
-    "Python.stock_insights.executor": "Run",
-    "Python.stock_insights_alpha.executor": "Run",
-    "Python.stock_insights_beta.executor": "Run",
-    "Python.stock_insights_c.executor": "Run",
-    "Python.stock_insights_gui.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "codeWithMe.voiceChat.enabledByDefault": "false",
-    "com.intellij.codeInspection.ui.actions.InspectionResultsExportActionProvider.location": "C:/Users/Joshb/OneDrive/Documents/Code/PycharmProjects/StockInsights",
-    "git-widget-placeholder": "Portfolio",
-    "last_opened_file_path": "C:/Users/Joshb/OneDrive/Documents/Code/PycharmProjects/StockInsights/server",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "run.code.analysis.last.selected.profile": "aDefault",
-    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main_window.executor&quot;: &quot;Run&quot;,
+    &quot;Python.migrate_local_to_server.executor&quot;: &quot;Run&quot;,
+    &quot;Python.migrate_raymond_account.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights_alpha.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights_beta.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights_c.executor&quot;: &quot;Run&quot;,
+    &quot;Python.stock_insights_gui.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;Portfolio&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/Joshb/OneDrive/Documents/Code/PycharmProjects/StockInsights/server&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;run.code.analysis.last.selected.profile&quot;: &quot;aDefault&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="C:\Users\Joshb\OneDrive\Documents\Code\PycharmProjects\StockInsights\server" />
@@ -199,7 +189,7 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-024ed6589d45-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.23567.174" />
+        <option value="bundled-python-sdk-c59985aa861c-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.24374.152" />
       </set>
     </attachedChunks>
   </component>
@@ -464,15 +454,7 @@
       <option name="project" value="LOCAL" />
       <updated>1778543986584</updated>
     </task>
-    <task id="LOCAL-00032" summary="claude enhancements v5">
-      <option name="closed" value="true" />
-      <created>1778545958608</created>
-      <option name="number" value="00032" />
-      <option name="presentableId" value="LOCAL-00032" />
-      <option name="project" value="LOCAL" />
-      <updated>1778545958608</updated>
-    </task>
-    <option name="localTasksCounter" value="33" />
+    <option name="localTasksCounter" value="32" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -490,6 +472,7 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
+    <MESSAGE value="+Trade History: Allow user to adjust which columns to show/ hide on trade history&#10;&#10;~Open Holdings: move Unrealized P/L between Mark and Market Value&#10;&#10;Performance Analytics:&#10;+Avg Trade Value: Avg market value of trades&#10;+Avg ROI %: Avg Profit / Avg Market Value of trades" />
     <MESSAGE value="UI updates for portfolio and settings" />
     <MESSAGE value="New branch, focus only on portfolio" />
     <MESSAGE value="Trimmed everything unrelated to portfolio" />
@@ -514,8 +497,7 @@
     <MESSAGE value="claude enhancements v2" />
     <MESSAGE value="claude enhancements v3" />
     <MESSAGE value="claude enhancements v4" />
-    <MESSAGE value="claude enhancements v5" />
-    <option name="LAST_COMMIT_MESSAGE" value="claude enhancements v5" />
+    <option name="LAST_COMMIT_MESSAGE" value="claude enhancements v4" />
     <option name="OPTIMIZE_IMPORTS_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REFORMAT_BEFORE_PROJECT_COMMIT" value="true" />
     <option name="REARRANGE_BEFORE_PROJECT_COMMIT" value="true" />

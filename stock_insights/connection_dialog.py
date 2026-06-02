@@ -26,7 +26,10 @@ _ORG = "StockInsights"
 _APP = "StocksGUI"
 _USER_KEY = "server/last_username"
 
-SERVER_URL_EXTERNAL = "http://66.225.151.13:8742"
+# Cloudflare Tunnel — terminates HTTPS at the edge and proxies to the
+# origin on the home LAN. Port stays implicit (443 for https). Replaces
+# the old direct external IP + port-forward setup.
+SERVER_URL_EXTERNAL = "https://si.coloniallawns.ca"
 SERVER_URL_LOCAL = "http://192.168.0.149:8742"
 
 CONNECT_TIMEOUT = 5
@@ -45,12 +48,17 @@ def _check_port_open(host: str, port: int, timeout: float = 3.0) -> bool:
 
 
 def _parse_host_port(url: str):
+    # Default port depends on the scheme. http:// → 80, https:// → 443.
+    # Without this branch, Cloudflare-Tunnel URLs (https, no explicit
+    # port) would TCP-probe port 80 and falsely report "unreachable"
+    # because the tunnel only listens on 443.
+    is_https = url.startswith("https://")
     url = url.replace("http://", "").replace("https://", "")
     host_port = url.split("/")[0]
     if ":" in host_port:
         host, port = host_port.rsplit(":", 1)
         return host, int(port)
-    return host_port, 80
+    return host_port, 443 if is_https else 80
 
 
 class _LoginThread(QThread):
@@ -157,7 +165,8 @@ class _LoginThread(QThread):
             self._emit("Suggestions:")
             self._emit("  1. Is server.py running on COLONIAL_SERVER?")
             self._emit("  2. Is port 8742 open in Windows Firewall on COLONIAL_SERVER?")
-            self._emit("  3. Is router port forwarding 8742 -> 192.168.0.149?")
+            self._emit("  3. Is the Cloudflare Tunnel running on COLONIAL_SERVER?")
+            self._emit("     (the tunnel proxies si.coloniallawns.ca -> localhost:8742)")
             self._emit("  4. Click 'Work Offline' to continue without the server.")
             self.error.emit(
                 "Could not reach the server on either URL.\n"

@@ -18,9 +18,12 @@ Prerequisites on COLONIAL_SERVER
 5.  Run:
         python server.py
 
-Other devices on your network (or via external IP 66.225.151.13) connect
-to http://COLONIAL_SERVER:8742  —  SQL Server itself does NOT need to be
-exposed externally; only port 8742 does.
+Other devices on your network connect to http://COLONIAL_SERVER:8742;
+external (off-LAN) clients reach the same server through the Cloudflare
+Tunnel at https://si.coloniallawns.ca/  —  the tunnel terminates HTTPS
+at Cloudflare's edge and proxies to the origin on port 8742, so port
+8742 does NOT need to be open on the public internet. SQL Server itself
+is never exposed externally.
 """
 
 import argparse

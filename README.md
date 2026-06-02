@@ -54,7 +54,9 @@ once via SSMS).
 
 ### Mobile PWA
 
-The server mounts `pwa/` at `/`, so `http://your-server:8742/` is the PWA.
+The server mounts `pwa/` at `/`, so the PWA is reachable wherever the
+sync server is. On the LAN that's `http://192.168.x.x:8742/`; externally
+it's the Cloudflare Tunnel URL — for this deployment, **<https://si.coloniallawns.ca/>**.
 See `pwa/README.md` for HTTPS / install-to-home-screen / cache-busting
 notes.
 

@@ -75,30 +75,35 @@ everything works before going mobile.
 PWAs require a "secure context" — i.e. **HTTPS or localhost**. Service
 workers won't register otherwise, which means no install-to-home-screen.
 
-If you're going to access the PWA from your phone over the internet
-(not on the same Wi-Fi as the server), you need HTTPS. Easiest paths:
+**This deployment already solves that**: a Cloudflare Tunnel terminates
+HTTPS at the edge and proxies to the origin server on port 8742, so
+the PWA is reachable at <https://si.coloniallawns.ca/> with no extra
+config on the phone. The home IP stays private; only Cloudflare's
+edge accepts inbound traffic.
+
+If you ever need to re-create this from scratch on a different machine:
 
 - **Cloudflare Tunnel** in front of port 8742 (free, gives you a real
-  HTTPS URL and protects your home IP). Recommended.
+  HTTPS URL and protects your home IP). What this deployment uses.
 - **Caddy** as a reverse proxy with auto-HTTPS via Let's Encrypt.
 - **Tailscale** if it's just for you — your phone gets a private
   HTTPS-on-magic-DNS URL like `https://your-server.tailnet.ts.net`.
 
 For local-network testing (phone on same Wi-Fi as desktop server), most
 browsers also allow PWA features when accessing `http://localhost`,
-but **not** plain `http://192.168.x.x`. So a tunnel or Tailscale really
-is the friction-free answer.
+but **not** plain `http://192.168.x.x`. So the tunnel is also the
+friction-free answer when you're on Wi-Fi.
 
 ### 4. Connect your phone
 
 1. Open the URL where you hosted the PWA in your phone's browser
-   (Safari on iOS, Chrome on Android).
-2. On the login screen, enter your server URL — e.g.
-   `https://your-tunnel-url.example.com` or `http://66.225.151.13:8742`
-   if you're on the same network. Trailing slash is fine; the PWA
-   strips it.
-3. Sign in with your normal Stock Insights credentials.
-4. Add to home screen:
+   (Safari on iOS, Chrome on Android). For this deployment that's
+   **<https://si.coloniallawns.ca/>** — the Cloudflare Tunnel into
+   the sync server.
+2. Sign in with your normal Stock Insights credentials. The PWA
+   auto-detects the API server from the page's origin, so no separate
+   URL field is needed.
+3. Add to home screen:
     - **iOS:** Share → "Add to Home Screen"
     - **Android:** ⋮ menu → "Install app" or "Add to home screen"
 
