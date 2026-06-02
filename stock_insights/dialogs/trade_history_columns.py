@@ -6,13 +6,14 @@ via QSettings.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
     QGroupBox,
     QLabel,
     QVBoxLayout,
