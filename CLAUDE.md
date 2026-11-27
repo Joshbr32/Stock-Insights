@@ -47,5 +47,5 @@ A personal trade tracker for a small group of friends. Three pieces share one SQ
 
 ## Working as a team
 
-Once the agent-team setup is merged, `.claude/skills/route-team` splits larger requests across
+`.claude/skills/route-team` splits larger requests across
 Fable / Opus / Sonnet teammates (`.claude/agents/`). Small changes are done directly.
