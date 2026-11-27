@@ -64,6 +64,9 @@ notes.
 
 ## Repo layout
 
+Agents and new contributors: start with `CLAUDE.md`, then `docs/code/README.md` (one doc per source
+file) and `docs/design/design-system.md`.
+
 ```
 .
 ├── main.py                              # Desktop entry point
@@ -104,7 +107,7 @@ notes.
 │   └── init_stockinsights.sql           # One-time DB / login / table setup
 ├── pwa/                                 # Mobile PWA (companion to the desktop)
 │   ├── index.html                       # App shell
-│   ├── styles.css                       # All styling (editorial / cream-paper aesthetic)
+│   ├── styles.css                       # All styling (Harbor design system, light + dark)
 │   ├── manifest.webmanifest             # PWA install metadata
 │   ├── sw.js                            # Service worker (cache the shell, network-first APIs)
 │   ├── js/
@@ -113,8 +116,8 @@ notes.
 │   │   └── app.js                       # Views, routing, drill-down modal, equity SVG
 │   └── README.md                        # PWA-specific setup + cache-busting notes
 ├── tests/                               # Pure-Python unit tests
-│   ├── test_portfolio.py                # 51 tests — math + drawdown + tag + date-range filter
-│   └── test_io_utils.py                 # 38 tests — CSV writer + backup roundtrip + auto-snapshot
+│   ├── test_portfolio.py                # math, drawdown, tags, date-range filter, goal pace
+│   └── test_io_utils.py                 # CSV writer, backup roundtrip + validation, auto-snapshot
 ├── scripts/                             # Helper scripts (git hooks, etc.)
 │   ├── pre-commit-pwa-version-check.sh  # Blocks shell-file commits without sw.js VERSION bump
 │   └── install-git-hooks.sh             # One-time hook installer
@@ -133,7 +136,7 @@ python -m pytest tests/test_portfolio.py -v                # one file, verbose
 python -m pytest tests/ -k "drawdown" -v                   # match-test-name
 ```
 
-The test suite is pure Python — no Qt instantiation needed. ~93 tests
+The test suite is pure Python — no Qt instantiation needed. ~140 tests
 covering portfolio math, drawdown, date-range filter index preservation,
 tag round-tripping, CSV write-and-read-back, backup roundtrip, and
 backup validation.

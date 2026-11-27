@@ -6,6 +6,8 @@ SectionTitle 1.0 SectionTitle.qml
 ThemedScrollBar 1.0 ThemedScrollBar.qml
 ThemedComboBox 1.0 ThemedComboBox.qml
 ToolButton2 1.0 ToolButton2.qml
+FocusRing 1.0 FocusRing.qml
+PaceRail 1.0 PaceRail.qml
 WatchlistPane 1.0 WatchlistPane.qml
 PortfolioPane 1.0 PortfolioPane.qml
 PortfolioView 1.0 PortfolioView.qml

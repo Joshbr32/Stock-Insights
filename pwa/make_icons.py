@@ -4,7 +4,6 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 OUT = Path(__file__).parent / "icons"
-OUT.mkdir(exist_ok=True)
 
 CREAM = (244, 238, 224)
 INK = (21, 20, 15)
@@ -59,9 +58,13 @@ def render_icon(size: int, maskable: bool = False) -> Image.Image:
     return img
 
 
-for s in (192, 512):
-    render_icon(s).save(OUT / f"icon-{s}.png", optimize=True)
+def main() -> None:
+    OUT.mkdir(exist_ok=True)
+    for s in (192, 512):
+        render_icon(s).save(OUT / f"icon-{s}.png", optimize=True)
+    render_icon(512, maskable=True).save(OUT / "icon-maskable-512.png", optimize=True)
+    print("Icons written to", OUT)
 
-render_icon(512, maskable=True).save(OUT / "icon-maskable-512.png", optimize=True)
 
-print("Icons written to", OUT)
+if __name__ == "__main__":
+    main()

@@ -1,41 +1,50 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 
-// Compact selectable preset pill used in the goal dashboard header.
+// Fully round selectable chip (goal presets). Keyboard: Tab to focus,
+// Space / Enter to choose.
 Rectangle {
     id: root
     property string label: ""
     property bool selected: false
     signal clicked
 
-    implicitHeight: 28
-    implicitWidth: Math.max(48, txt.implicitWidth + 22)
+    implicitHeight: 32
+    implicitWidth: Math.max(52, txt.implicitWidth + 24)
     radius: height / 2
-    // Selected pills use the theme's primary accent — this is the same
-    // token the Goal Target hero number uses, so picking a preset feels
-    // visually connected to the number it sets.
-    color: selected ? app.theme.primary : "transparent"
-    border.color: selected ? app.theme.primary : app.theme.border
-    border.width: 1
+    activeFocusOnTab: true
+    color: selected ? app.theme.primary
+         : mouse.containsMouse ? app.theme.cardAlt : "transparent"
+    border.width: selected ? 0 : 1
+    border.color: app.theme.border
 
-    Behavior on color { ColorAnimation { duration: 120 } }
-    Behavior on border.color { ColorAnimation { duration: 120 } }
+    Accessible.role: Accessible.Button
+    Accessible.name: label
+    Accessible.checkable: true
+    Accessible.checked: selected
+    Accessible.onPressAction: root.clicked()
+
+    Keys.onSpacePressed: root.clicked()
+    Keys.onReturnPressed: root.clicked()
+    Keys.onEnterPressed: root.clicked()
 
     Label {
         id: txt
         anchors.centerIn: parent
         text: root.label
         color: root.selected ? app.theme.textOnColor : app.theme.text
-        font.pointSize: 9 * app.theme.fontScale
+        font.pixelSize: 13 * app.theme.fontScale
         font.weight: Font.DemiBold
+        font.features: { "tnum": 1 }
     }
 
     MouseArea {
+        id: mouse
         anchors.fill: parent
-        cursorShape: Qt.PointingHandCursor
         hoverEnabled: true
-        onEntered: if (!root.selected) root.color = app.theme.cardAlt
-        onExited:  if (!root.selected) root.color = "transparent"
+        cursorShape: Qt.PointingHandCursor
         onClicked: root.clicked()
     }
+
+    FocusRing { shown: root.activeFocus; controlRadius: root.radius }
 }

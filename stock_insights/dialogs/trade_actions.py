@@ -1,93 +1,77 @@
-"""Trade-action dialogs: Fulfill (pending → open), Mark Down, Double Down.
+"""Dialogs that act on an existing order or position.
 
-Three small dialogs grouped together because they all act on an
-existing trade or holding rather than creating one from scratch.
-Mark Down + Double Down both compute "what buy price would I need to
-hit a target average cost?" via portfolio.solve_buy_mark_for_target_avg.
+* FulfillOrderDialog — "Mark order filled": a pending order becomes an open
+  trade with a fill date and (possibly different) fill price.
+* MarkDownDialog — buy more to bring the average cost down to a target;
+  solves the required buy price with portfolio.solve_buy_mark_for_target_avg.
+* DoubleDownDialog — buy more at a chosen price and preview the new average.
+
+Each returns the new/updated values through accessors (`to_trade()`,
+`get_fill_date()`, `get_fill_price()`); the caller persists them.
 """
 from __future__ import annotations
 
-from datetime import date
 from typing import Optional
 
-from PySide6.QtCore import QDate
-from PySide6.QtWidgets import (
-    QDateEdit,
-    QDialog,
-    QDialogButtonBox,
-    QDoubleSpinBox,
-    QFormLayout,
-    QGridLayout,
-    QGroupBox,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QSpinBox,
-    QVBoxLayout,
-)
+from PySide6.QtWidgets import QDialog, QLabel, QLineEdit
 
-from ._common import GROUP_STYLE
+from ._common import date_edit, price_spin, shares_spin
 from ..portfolio import Holding, Trade, solve_buy_mark_for_target_avg
+from ..widgets import Panel, add_dialog_buttons, align_form_labels, dialog_layout, fmt_int, fmt_money, muted_label, set_text_role
+
+
+def _result_label() -> QLabel:
+    lbl = QLabel("—")
+    f = lbl.font()
+    f.setWeight(f.Weight.DemiBold)
+    lbl.setFont(f)
+    return lbl
+
+
+def _position_panel(holding: Holding, current_mark: Optional[float] = None, show_mark: bool = False) -> Panel:
+    panel = Panel(f"Your {holding.normalized_instrument()} position")
+    form = panel.form()
+    form.addRow("Shares", QLabel(fmt_int(holding.qty)))
+    form.addRow("Average cost", QLabel(fmt_money(holding.avg_cost)))
+    if show_mark:
+        form.addRow("Current price", QLabel(fmt_money(current_mark)) if current_mark is not None
+                    else muted_label("Not loaded yet", wrap=False))
+    return panel
+
+
+def _blended_avg(holding: Holding, buy_qty: int, buy_price: float) -> tuple:
+    total_qty = int(holding.qty) + buy_qty
+    avg = (float(holding.avg_cost) * int(holding.qty) + buy_price * buy_qty) / total_qty
+    return total_qty, avg
 
 
 # ---------------------------------------------------------------------------
-# Fulfill pending order dialog
+# Mark order filled
 # ---------------------------------------------------------------------------
 
 class FulfillOrderDialog(QDialog):
-    """Confirm a pending (WAITING) trade order — set the actual open date and
-    optionally adjust the fill price if it differs from the order price."""
+    """Confirm a pending order: set the fill date and, if needed, the price."""
 
     def __init__(self, trade: Trade, parent=None):
         super().__init__(parent)
         self._trade = trade
-        self.setWindowTitle("Mark Order as Fulfilled")
-        self.resize(380, 240)
+        self.setWindowTitle("Mark order filled")
+        self.setMinimumWidth(400)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
-
-        info = QLabel(
-            f"<b>{trade.normalized_instrument()}</b> — "
-            f"{'Short' if trade.is_short else 'Long'}  {trade.share_count:,d} shares<br>"
-            f"Order price: $ {trade.buy_price:,.2f}"
-        )
-        info.setWordWrap(True)
-        root.addWidget(info)
-
-        form = QFormLayout()
-        form.setSpacing(10)
-
-        self.open_date_edit = QDateEdit()
-        self.open_date_edit.setCalendarPopup(True)
-        self.open_date_edit.setDisplayFormat("yyyy-MM-dd")
-        today = date.today()
-        self.open_date_edit.setDate(QDate(today.year, today.month, today.day))
-
-        self.fill_price_spin = QDoubleSpinBox()
-        self.fill_price_spin.setRange(0.01, 1_000_000_000.0)
-        self.fill_price_spin.setDecimals(2)
-        self.fill_price_spin.setPrefix("$ ")
-        self.fill_price_spin.setValue(float(trade.buy_price))
-
-        form.addRow("Fill Date:", self.open_date_edit)
-        form.addRow("Fill Price:", self.fill_price_spin)
-        root.addLayout(form)
-
-        note = QLabel("Fill price defaults to the order price. Adjust if your broker filled at a different price.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: gray; font-size: 11px;")
-        root.addWidget(note)
+        root = dialog_layout(self)
+        side = "Short" if trade.is_short else "Buy"
+        panel = Panel(f"{side} {trade.share_count:,d} {trade.normalized_instrument()}",
+                      subtitle=f"Order price {fmt_money(trade.buy_price)}")
+        form = panel.form()
+        self.open_date_edit = date_edit()
+        self.fill_price_spin = price_spin(float(trade.buy_price), minimum=0.01)
+        form.addRow("Filled on", self.open_date_edit)
+        form.addRow("Fill price", self.fill_price_spin)
+        panel.body.addWidget(muted_label("Change the price if your broker filled at a different one."))
+        root.addWidget(panel)
 
         root.addStretch(1)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        add_dialog_buttons(self, root, "Mark filled")
 
     def get_fill_date(self):
         return self.open_date_edit.date().toPython()
@@ -97,119 +81,95 @@ class FulfillOrderDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# Mark Down dialog
+# Mark down
 # ---------------------------------------------------------------------------
 
 class MarkDownDialog(QDialog):
     def __init__(self, holding: Holding, default_quantity: int = 1, quantity_increment: int = 1, parent=None):
         super().__init__(parent)
         self._holding = holding
-        self._default_quantity = max(1, int(default_quantity or 1))
-        self._quantity_increment = max(1, int(quantity_increment or 1))
         self._computed_buy_price: Optional[float] = None
+        sym = holding.normalized_instrument()
 
-        self.setWindowTitle("Mark Down")
-        self.resize(460, 340)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        self.setWindowTitle(f"Mark down {sym}")
+        self.setMinimumWidth(440)
+        root = dialog_layout(self)
+        position = _position_panel(holding)
+        root.addWidget(position)
 
-        cg = QGroupBox("Current Holding")
-        cg.setStyleSheet(GROUP_STYLE)
-        cgg = QGridLayout(cg)
-        cgg.setContentsMargins(14, 14, 14, 14)
-        cgg.addWidget(QLabel("Instrument"), 0, 0)
-        cgg.addWidget(QLabel(holding.normalized_instrument()), 0, 1)
-        cgg.addWidget(QLabel("Qty"), 1, 0)
-        cgg.addWidget(QLabel(f"{holding.qty:,d}"), 1, 1)
-        cgg.addWidget(QLabel("Avg Cost"), 2, 0)
-        cgg.addWidget(QLabel(f"$ {holding.avg_cost:,.2f}"), 2, 1)
-        root.addWidget(cg)
-
-        og = QGroupBox("Mark Down Order")
-        og.setStyleSheet(GROUP_STYLE)
-        form = QFormLayout(og)
-        form.setContentsMargins(14, 14, 14, 14)
-        form.setSpacing(10)
-
-        self.buy_qty_spin = QSpinBox()
-        self.buy_qty_spin.setRange(1, 1_000_000_000)
-        self.buy_qty_spin.setSingleStep(self._quantity_increment)
-        self.buy_qty_spin.setValue(self._default_quantity)
-
-        self.target_avg_spin = QDoubleSpinBox()
-        self.target_avg_spin.setRange(0.01, 1_000_000_000.0)
-        self.target_avg_spin.setDecimals(2)
-        self.target_avg_spin.setPrefix("$ ")
-        self.target_avg_spin.setValue(max(0.01, round(float(holding.avg_cost), 2)))
-
-        self.open_date_edit = QDateEdit()
-        self.open_date_edit.setCalendarPopup(True)
-        self.open_date_edit.setDisplayFormat("yyyy-MM-dd")
-        today = date.today()
-        self.open_date_edit.setDate(QDate(today.year, today.month, today.day))
-
+        order = Panel("Buy more to lower your average")
+        form = order.form()
+        self.buy_qty_spin = shares_spin(max(1, int(default_quantity or 1)), quantity_increment)
+        self.target_avg_spin = price_spin(round(float(holding.avg_cost), 2), minimum=0.01)
+        self.open_date_edit = date_edit()
         self.notes_edit = QLineEdit()
-        self.notes_edit.setPlaceholderText("Optional notes")
+        self.notes_edit.setPlaceholderText("Optional")
+        form.addRow("Shares to buy", self.buy_qty_spin)
+        form.addRow("Target average", self.target_avg_spin)
+        form.addRow("Date", self.open_date_edit)
+        form.addRow("Notes", self.notes_edit)
+        root.addWidget(order)
 
-        self.required_buy_price = QLabel("—")
+        result = Panel("Result")
+        rform = result.form()
+        self.required_buy_price = _result_label()
         self.resulting_qty = QLabel("—")
         self.resulting_avg = QLabel("—")
         self.order_cost = QLabel("—")
+        rform.addRow("Buy price needed", self.required_buy_price)
+        rform.addRow("New share count", self.resulting_qty)
+        rform.addRow("New average", self.resulting_avg)
+        rform.addRow("Order cost", self.order_cost)
+        align_form_labels(position.form(), form, rform)
+        self.error_label = muted_label("")
+        self.error_label.setVisible(False)
+        result.body.addWidget(self.error_label)
+        root.addWidget(result)
 
-        form.addRow("Buy Qty", self.buy_qty_spin)
-        form.addRow("Target Avg Cost", self.target_avg_spin)
-        form.addRow("Open Date", self.open_date_edit)
-        form.addRow("Notes", self.notes_edit)
-        form.addRow("Required Buy Price", self.required_buy_price)
-        form.addRow("Resulting Qty", self.resulting_qty)
-        form.addRow("Resulting Avg Cost", self.resulting_avg)
-        form.addRow("Order Cost", self.order_cost)
-        root.addWidget(og)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.btn_save = QPushButton("Add Mark Down Trade")
-        buttons.addButton(self.btn_save, QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.rejected.connect(self.reject)
-        self.btn_save.clicked.connect(self._accept_if_valid)
-        root.addWidget(buttons)
+        root.addStretch(1)
+        _row, self.btn_save = add_dialog_buttons(self, root, "Log trade", on_primary=self._accept_if_valid)
 
         self.buy_qty_spin.valueChanged.connect(self._recompute)
         self.target_avg_spin.valueChanged.connect(self._recompute)
         self._recompute()
 
-    def _recompute(self):
+    def _recompute(self, *_args):
+        buy_qty = int(self.buy_qty_spin.value())
+        target_avg = float(self.target_avg_spin.value())
         try:
-            buy_qty = int(self.buy_qty_spin.value())
-            target_avg = float(self.target_avg_spin.value())
             buy_price = solve_buy_mark_for_target_avg(
                 current_qty=int(self._holding.qty),
                 current_avg_cost=float(self._holding.avg_cost),
                 buy_qty=buy_qty,
                 target_mark=target_avg,
             )
-            if buy_price < 0:
-                raise ValueError("Target avg cannot be reached with a positive buy price at this quantity.")
-            total_qty = int(self._holding.qty) + buy_qty
-            blended_avg = ((float(self._holding.avg_cost) * int(self._holding.qty)) + (buy_price * buy_qty)) / total_qty
-            self.required_buy_price.setText(f"$ {buy_price:,.2f}")
-            self.resulting_qty.setText(f"{total_qty:,d}")
-            self.resulting_avg.setText(f"$ {blended_avg:,.2f}")
-            self.order_cost.setText(f"$ {(buy_price * buy_qty):,.2f}")
-            self.btn_save.setEnabled(True)
-            self._computed_buy_price = float(buy_price)
-        except Exception as exc:
-            self.required_buy_price.setText(str(exc))
-            self.resulting_qty.setText("—")
-            self.resulting_avg.setText("—")
-            self.order_cost.setText("—")
-            self.btn_save.setEnabled(False)
-            self._computed_buy_price = None
+        except (ValueError, ZeroDivisionError) as exc:
+            return self._show_unreachable(str(exc))
+        if buy_price <= 0:
+            return self._show_unreachable(
+                "You can't reach that average with this many shares. "
+                "Raise the target average or buy more shares.")
+        total_qty, blended = _blended_avg(self._holding, buy_qty, buy_price)
+        self.required_buy_price.setText(fmt_money(buy_price))
+        self.resulting_qty.setText(fmt_int(total_qty))
+        self.resulting_avg.setText(fmt_money(blended))
+        self.order_cost.setText(fmt_money(buy_price * buy_qty))
+        self.error_label.setVisible(False)
+        self.btn_save.setEnabled(True)
+        self._computed_buy_price = float(buy_price)
+
+    def _show_unreachable(self, message: str) -> None:
+        for lbl in (self.required_buy_price, self.resulting_qty, self.resulting_avg, self.order_cost):
+            lbl.setText("—")
+        self.error_label.setText(message)
+        set_text_role(self.error_label, "error")
+        self.error_label.setVisible(True)
+        self.btn_save.setEnabled(False)
+        self._computed_buy_price = None
 
     def _accept_if_valid(self):
-        if self._computed_buy_price is None:
-            return
-        self.accept()
+        if self._computed_buy_price is not None:
+            self.accept()
 
     def to_trade(self) -> Trade:
         return Trade(
@@ -224,7 +184,7 @@ class MarkDownDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# Double Down dialog
+# Double down
 # ---------------------------------------------------------------------------
 
 class DoubleDownDialog(QDialog):
@@ -232,87 +192,53 @@ class DoubleDownDialog(QDialog):
                  parent=None):
         super().__init__(parent)
         self._holding = holding
-        self._quantity_increment = max(1, int(quantity_increment or 1))
+        sym = holding.normalized_instrument()
 
-        self.setWindowTitle("Double Down")
-        self.resize(460, 340)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        self.setWindowTitle(f"Double down on {sym}")
+        self.setMinimumWidth(440)
+        root = dialog_layout(self)
+        position = _position_panel(holding, current_mark, show_mark=True)
+        root.addWidget(position)
 
-        cg = QGroupBox("Current Holding")
-        cg.setStyleSheet(GROUP_STYLE)
-        cgg = QGridLayout(cg)
-        cgg.setContentsMargins(14, 14, 14, 14)
-        cgg.addWidget(QLabel("Instrument"), 0, 0)
-        cgg.addWidget(QLabel(holding.normalized_instrument()), 0, 1)
-        cgg.addWidget(QLabel("Qty"), 1, 0)
-        cgg.addWidget(QLabel(f"{holding.qty:,d}"), 1, 1)
-        cgg.addWidget(QLabel("Avg Cost"), 2, 0)
-        cgg.addWidget(QLabel(f"$ {holding.avg_cost:,.2f}"), 2, 1)
-        cgg.addWidget(QLabel("Current Mark"), 3, 0)
-        cgg.addWidget(QLabel("—" if current_mark is None else f"$ {float(current_mark):,.2f}"), 3, 1)
-        root.addWidget(cg)
-
-        og = QGroupBox("Double Down Order")
-        og.setStyleSheet(GROUP_STYLE)
-        form = QFormLayout(og)
-        form.setContentsMargins(14, 14, 14, 14)
-        form.setSpacing(10)
-
-        self.buy_qty_spin = QSpinBox()
-        self.buy_qty_spin.setRange(1, 1_000_000_000)
-        self.buy_qty_spin.setSingleStep(self._quantity_increment)
-        self.buy_qty_spin.setValue(max(1, int(holding.qty)))
-
-        self.buy_price_spin = QDoubleSpinBox()
-        self.buy_price_spin.setRange(0.01, 1_000_000_000.0)
-        self.buy_price_spin.setDecimals(2)
-        self.buy_price_spin.setPrefix("$ ")
+        order = Panel("Buy more")
+        form = order.form()
+        self.buy_qty_spin = shares_spin(max(1, int(holding.qty)), quantity_increment)
         default_buy = float(current_mark) if current_mark is not None else float(holding.avg_cost)
-        self.buy_price_spin.setValue(max(0.01, round(default_buy, 2)))
-
-        self.open_date_edit = QDateEdit()
-        self.open_date_edit.setCalendarPopup(True)
-        self.open_date_edit.setDisplayFormat("yyyy-MM-dd")
-        today = date.today()
-        self.open_date_edit.setDate(QDate(today.year, today.month, today.day))
-
+        self.buy_price_spin = price_spin(round(default_buy, 2), minimum=0.01)
+        self.open_date_edit = date_edit()
         self.notes_edit = QLineEdit()
-        self.notes_edit.setPlaceholderText("Optional notes")
-
-        self.resulting_qty = QLabel("—")
-        self.resulting_avg = QLabel("—")
-        self.order_cost = QLabel("—")
-
-        form.addRow("Buy Qty", self.buy_qty_spin)
-        form.addRow("Buy Price", self.buy_price_spin)
-        form.addRow("Open Date", self.open_date_edit)
+        self.notes_edit.setPlaceholderText("Optional")
+        form.addRow("Shares to buy", self.buy_qty_spin)
+        form.addRow("Buy price", self.buy_price_spin)
+        form.addRow("Date", self.open_date_edit)
         form.addRow("Notes", self.notes_edit)
-        form.addRow("Resulting Qty", self.resulting_qty)
-        form.addRow("Resulting Avg Cost", self.resulting_avg)
-        form.addRow("Order Cost", self.order_cost)
-        root.addWidget(og)
+        root.addWidget(order)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.btn_save = QPushButton("Add Double Down Trade")
-        buttons.addButton(self.btn_save, QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
-        root.addWidget(buttons)
+        result = Panel("Result")
+        rform = result.form()
+        self.resulting_qty = QLabel("—")
+        self.resulting_avg = _result_label()
+        self.order_cost = QLabel("—")
+        rform.addRow("New share count", self.resulting_qty)
+        rform.addRow("New average", self.resulting_avg)
+        rform.addRow("Order cost", self.order_cost)
+        align_form_labels(position.form(), form, rform)
+        root.addWidget(result)
+
+        root.addStretch(1)
+        _row, self.btn_save = add_dialog_buttons(self, root, "Log trade")
 
         self.buy_qty_spin.valueChanged.connect(self._recompute)
         self.buy_price_spin.valueChanged.connect(self._recompute)
         self._recompute()
 
-    def _recompute(self):
+    def _recompute(self, *_args):
         buy_qty = int(self.buy_qty_spin.value())
         buy_price = float(self.buy_price_spin.value())
-        total_qty = int(self._holding.qty) + buy_qty
-        blended_avg = ((float(self._holding.avg_cost) * int(self._holding.qty)) + (buy_price * buy_qty)) / total_qty
-        self.resulting_qty.setText(f"{total_qty:,d}")
-        self.resulting_avg.setText(f"$ {blended_avg:,.2f}")
-        self.order_cost.setText(f"$ {(buy_price * buy_qty):,.2f}")
+        total_qty, blended = _blended_avg(self._holding, buy_qty, buy_price)
+        self.resulting_qty.setText(fmt_int(total_qty))
+        self.resulting_avg.setText(fmt_money(blended))
+        self.order_cost.setText(fmt_money(buy_price * buy_qty))
 
     def to_trade(self) -> Trade:
         return Trade(

@@ -1,8 +1,21 @@
+"""Trade math for Stock Insights: the single source of truth for P/L.
+
+Pure functions over `Trade` dataclasses -- no Qt, no I/O, no network --
+so they are safe to call from any thread and easy to unit-test. Callers
+(qml_bridge, portfolio_tab, main_window, symbol_history_dialog) run these
+on every marks tick for every account, so keep them cheap.
+
+`pwa/js/portfolio.js` ports the same formulas for the phone app; any
+change to math or rounding here must be made there identically.
+"""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+import uuid
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 # ---------- NYSE trading-calendar support ----------
@@ -18,8 +31,15 @@ except Exception:
     _TRADING_CAL_OK = False
 
 
+@lru_cache(maxsize=8192)
 def _nyse_day_count(start: date, end: date) -> int:
-    """Count NYSE trading days between start and end (inclusive)."""
+    """Count NYSE trading days between start and end (inclusive).
+
+    Memoised: the same (open, close) pairs and the same year-to-date
+    windows are re-counted on every marks tick, and a
+    pandas_market_calendars schedule() call costs milliseconds each.
+    The result depends only on the two dates, so caching is exact.
+    """
     if end < start:
         return 0
     if _TRADING_CAL_OK and _nyse_cal is not None:
@@ -31,16 +51,29 @@ def _nyse_day_count(start: date, end: date) -> int:
             return len(sched)
         except Exception:
             pass
-    # Weekday fallback if library unavailable or call fails
-    count, cur = 0, start
-    while cur <= end:
-        if cur.weekday() < 5:
-            count += 1
-        cur += timedelta(days=1)
-    return count
+    # Weekday fallback if the library is unavailable or the call fails.
+    # Whole weeks contribute 5 days each; only the leftover 0-6 days need
+    # checking, so this is O(1) instead of one loop step per calendar day.
+    full_weeks, extra = divmod((end - start).days + 1, 7)
+    first = start.weekday()
+    return full_weeks * 5 + sum(1 for i in range(extra) if (first + i) % 7 < 5)
 
 
 # ---------- Core models ----------
+
+_UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def new_trade_uid() -> str:
+    """A fresh trade id: 32 lowercase hex chars (uuid4 without dashes)."""
+    return uuid.uuid4().hex
+
+
+def _clean_uid(value) -> str:
+    """`value` as a valid uid, or a new one when it is missing or malformed.
+    Dashed / upper-case uuids are accepted and normalised."""
+    text = str(value or "").strip().lower().replace("-", "")
+    return text if _UID_RE.fullmatch(text) else new_trade_uid()
 
 
 @dataclass
@@ -60,6 +93,15 @@ class Trade:
     # "no tag set". Schema-compatible with old backups: trade_from_dict
     # defaults missing values to "" so v1 backups load cleanly.
     tag: str = ""
+    # Stable identity, created once when the trade is first logged and kept
+    # through every edit, move, backup and sync (the server stores it as
+    # dbo.trades.client_id). It is what lets a save send one trade instead
+    # of the whole account. Not part of equality: two trades with the same
+    # content still compare equal, as they did before the field existed.
+    uid: str = field(default="", compare=False)
+
+    def __post_init__(self) -> None:
+        self.uid = _clean_uid(self.uid)
 
     def normalized_instrument(self) -> str:
         return (self.instrument or "").strip().upper()
@@ -267,7 +309,8 @@ def filter_trades_by_date_range_with_orig_index(
 
     Filter semantics — must match `pwa/js/portfolio.js::tradeInRange`:
       • "all"   — no filter
-      • "week"  — Monday of the current week (today.weekday() == 0)
+      • "week"  — Monday of the current week (today.weekday() == 0).
+                  NOTE: the JS version starts the week on Sunday.
       • "month" — first day of the current calendar month
       • "30d"   — today minus 30 days, inclusive
       • "ytd"   — January 1 of the current year
@@ -318,6 +361,7 @@ def trade_to_dict(trade: Trade) -> dict:
         # `tag` is optional — old backups (without this field) deserialize
         # to an empty string via trade_from_dict's defaulting.
         "tag": (trade.tag or "").strip(),
+        "uid": trade.uid,
     }
 
 
@@ -346,6 +390,8 @@ def trade_from_dict(data: dict) -> Optional[Trade]:
             # `tag` is new (added with strategy filter); old persisted
             # trades default to "" — full forward-compat with v1 backups.
             tag=str(data.get("tag", "") or "").strip(),
+            # Missing in data written before uids existed: Trade generates one.
+            uid=str(data.get("uid", "") or ""),
         )
     except Exception:
         return None
@@ -364,9 +410,16 @@ def trades_from_json(raw) -> List[Trade]:
     out: List[Trade] = []
     if not isinstance(raw, list):
         return out
+    seen_uids = set()
     for item in raw:
         trade = trade_from_dict(item)
         if trade is not None and trade.share_count > 0:
+            # A uid must identify one trade. A hand-edited or merged file can
+            # repeat one; the later copy gets a new id instead of silently
+            # overwriting the first on the next per-trade save.
+            if trade.uid in seen_uids:
+                trade.uid = new_trade_uid()
+            seen_uids.add(trade.uid)
             out.append(trade)
     return out
 
@@ -393,7 +446,7 @@ def solve_buy_mark_for_target_avg(
 
 def compute_trade_rows(trades: Iterable[Trade]) -> List[TradeRow]:
     rows: List[TradeRow] = []
-    for idx, trade in enumerate(list(trades)):
+    for idx, trade in enumerate(trades):
         profit = trade.trade_profit
         days = business_days_between(trade.open_date, trade.close_date) if trade.is_closed else None
         avg_daily = (profit / days) if (profit is not None and days not in (None, 0)) else None

@@ -1,8 +1,11 @@
-"""Goal Dashboard Options dialog + the per-account block widget it uses.
+"""View > Goal options: shared vs. per-portfolio goals and quick-set amounts.
 
-Carved out of portfolio_tab.py during the round-5 split. The dialog
-configures shared-vs-individual goal grouping and per-account preset
-values.
+Layout: an intro line, the shared goal (shown only while at least one
+portfolio counts toward it), then one panel per portfolio with a
+"Count toward the shared goal" checkbox, its own goal (hidden while
+shared) and three quick-set amounts (the preset buttons on its dashboard).
+Results are read back with selected_accounts() / shared_goal() /
+individual_goals() / all_preset_values().
 """
 from __future__ import annotations
 
@@ -12,10 +15,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
-    QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QScrollArea,
@@ -23,89 +23,56 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ._common import (
-    _DEFAULT_PRESETS,
-    GROUP_STYLE,
-    _make_goal_spin,
-    _make_preset_spin,
-)
+from ._common import _DEFAULT_PRESETS, _make_goal_spin, _make_preset_spin
+from ..widgets import GAP, Panel, add_dialog_buttons, dialog_layout, muted_label
+
+_PRESET_NAMES = ("Low", "Middle", "High")
 
 
-# ---------------------------------------------------------------------------
-# Goal Dashboard Options dialog
-# ---------------------------------------------------------------------------
-
-class _AccountGoalBlock(QGroupBox):
-    """A self-contained block for one account inside the GoalDashboardOptionsDialog.
-
-    Layout
-    ──────
-      ┌ Josh ──────────────────────────────────────────────────────────────┐
-      │  [x] Include in shared goal group                                  │
-      │  Individual Goal: [$ 500,000]   (hidden when shared)              │
-      │  Presets:  [$ 250,000]  [$ 500,000]  [$ 1,000,000]               │
-      └────────────────────────────────────────────────────────────────────┘
-    """
+class _AccountGoalBlock(Panel):
+    """One portfolio's goal settings inside GoalDashboardOptionsDialog."""
 
     sharedToggled = Signal()
 
-    def __init__(
-            self,
-            account_name: str,
-            is_shared: bool,
-            current_goal: float,
-            preset_values: List[float],
-            parent=None,
-    ):
+    def __init__(self, account_name: str, is_shared: bool, current_goal: float,
+                 preset_values: List[float], parent=None):
         super().__init__(account_name, parent)
-        self.setStyleSheet(GROUP_STYLE)
         self._account_name = account_name
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 16, 14, 10)
-        root.setSpacing(6)
-
-        # -- Shared checkbox --
-        self.cb_shared = QCheckBox("Include in shared goal group")
+        self.cb_shared = QCheckBox("Count toward the shared goal")
         self.cb_shared.setChecked(is_shared)
-        root.addWidget(self.cb_shared)
+        self.body.addWidget(self.cb_shared)
 
-        # -- Individual goal row (visible when NOT shared) --
-        self._indiv_row = QWidget()
-        indiv_h = QHBoxLayout(self._indiv_row)
-        indiv_h.setContentsMargins(0, 0, 0, 0)
-        indiv_h.setSpacing(8)
-        indiv_h.addWidget(QLabel("Individual Goal:"))
+        form = self.form()
         self.goal_spin = _make_goal_spin(current_goal)
-        indiv_h.addWidget(self.goal_spin)
-        indiv_h.addStretch(1)
-        root.addWidget(self._indiv_row)
+        self._indiv_label = QLabel("Own goal")
+        form.addRow(self._indiv_label, self.goal_spin)
 
-        # -- Presets row (always visible) --
-        presets_h = QHBoxLayout()
-        presets_h.setContentsMargins(0, 0, 0, 0)
-        presets_h.setSpacing(8)
-        presets_h.addWidget(QLabel("Presets:"))
-        p = preset_values if len(preset_values) == 3 else list(_DEFAULT_PRESETS)
+        presets_row = QWidget()
+        h = QHBoxLayout(presets_row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        values = preset_values if len(preset_values) == 3 else list(_DEFAULT_PRESETS)
         self.preset_spins: List[QDoubleSpinBox] = []
-        for i, val in enumerate(p):
-            lbl = QLabel(f"{'Min' if i == 0 else 'Mid' if i == 1 else 'Max'}:")
+        for name, val in zip(_PRESET_NAMES, values):
             spin = _make_preset_spin(val)
+            spin.setToolTip(f"{name} quick-set amount")
+            spin.setAccessibleName(f"{account_name} {name.lower()} quick-set amount")
             self.preset_spins.append(spin)
-            presets_h.addWidget(lbl)
-            presets_h.addWidget(spin)
-        presets_h.addStretch(1)
-        root.addLayout(presets_h)
+            h.addWidget(spin, 1)
+        form.addRow("Quick-set amounts", presets_row)
 
         self._sync_visibility()
-        self.cb_shared.stateChanged.connect(self._on_toggle)
+        self.cb_shared.toggled.connect(self._on_toggle)
 
-    def _on_toggle(self):
+    def _on_toggle(self, *_args):
         self._sync_visibility()
         self.sharedToggled.emit()
 
     def _sync_visibility(self):
-        self._indiv_row.setVisible(not self.cb_shared.isChecked())
+        own = not self.cb_shared.isChecked()
+        self.goal_spin.setVisible(own)
+        self._indiv_label.setVisible(own)
 
     # ---- accessors ----
 
@@ -127,111 +94,58 @@ class _AccountGoalBlock(QGroupBox):
 
 
 class GoalDashboardOptionsDialog(QDialog):
-    """Goal Dashboard Options dialog — account grouping, targets, and per-account presets.
+    """Goal options: shared-goal membership, targets, per-portfolio presets."""
 
-    ┌───────────────────────────────────────────────────────────────────┐
-    │  [info]                                                           │
-    │                                                                   │
-    │  Shared Goal:  [$ 500,000 ▲▼]                                    │
-    │  (hidden / greyed when no accounts are checked)                   │
-    │                                                                   │
-    │  ┌ Josh ──────────────────────────────────────────────────────┐  │
-    │  │  [x] Include in shared goal group                          │  │
-    │  │  Presets:  Min [$ 250K]  Mid [$ 500K]  Max [$ 1M]         │  │
-    │  └────────────────────────────────────────────────────────────┘  │
-    │                                                                   │
-    │  ┌ Narmeen ────────────────────────────────────────────────────┐  │
-    │  │  [ ] Include in shared goal group                           │  │
-    │  │  Individual Goal:  [$ 25,000]                              │  │
-    │  │  Presets:  Min [$ 10K]  Mid [$ 25K]  Max [$ 50K]          │  │
-    │  └────────────────────────────────────────────────────────────┘  │
-    │                                                                   │
-    │                               [Cancel]  [Save]                   │
-    └───────────────────────────────────────────────────────────────────┘
-    """
-
-    def __init__(
-            self,
-            accounts: List[str],
-            included_accounts: List[str],
-            goal_targets: Dict[str, float],
-            preset_values: Dict[str, List[float]],
-            parent=None,
-    ):
+    def __init__(self, accounts: List[str], included_accounts: List[str], goal_targets: Dict[str, float],
+                 preset_values: Dict[str, List[float]], parent=None):
         super().__init__(parent)
         self._accounts = accounts
-        self.setWindowTitle("Goal Dashboard Options")
+        self.setWindowTitle("Goal options")
         self.setMinimumWidth(560)
-        self.resize(600, min(100 + 130 * len(accounts) + 80, 680))
+        self.resize(600, min(170 + 190 * len(accounts), 720))
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root = dialog_layout(self)
+        root.addWidget(muted_label(
+            "Portfolios that count toward the shared goal pool their profit into one target. "
+            "The others each track their own goal. Quick-set amounts appear as buttons on "
+            "each portfolio's goal dashboard."))
 
-        # -- Info --
-        info = QLabel(
-            "Check accounts to merge their trades toward a <b>shared goal</b>. "
-            "Unchecked accounts each track their own goal independently. "
-            "Each account's <b>presets</b> appear as quick-set buttons on their Goal Dashboard."
-        )
-        info.setWordWrap(True)
-        root.addWidget(info)
-
-        # -- Shared goal row (visible only when at least one account is checked) --
-        self._shared_row = QWidget()
-        shared_h = QHBoxLayout(self._shared_row)
-        shared_h.setContentsMargins(0, 4, 0, 4)
-        shared_h.setSpacing(8)
-        shared_h.addWidget(QLabel("<b>Shared Group Goal:</b>"))
+        self._shared_row = Panel()
         default_shared = goal_targets.get(
-            included_accounts[0] if included_accounts else (accounts[0] if accounts else ""),
-            500_000.0,
-        )
+            included_accounts[0] if included_accounts else (accounts[0] if accounts else ""), 500_000.0)
         self.shared_goal_spin = _make_goal_spin(default_shared)
-        shared_h.addWidget(self.shared_goal_spin)
-        shared_h.addStretch(1)
+        self._shared_row.form().addRow("Shared goal", self.shared_goal_spin)
         root.addWidget(self._shared_row)
 
-        # -- Account blocks in a scroll area --
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.StyledPanel)
         container = QWidget()
-        blocks_vbox = QVBoxLayout(container)
-        blocks_vbox.setContentsMargins(4, 4, 4, 4)
-        blocks_vbox.setSpacing(8)
+        blocks = QVBoxLayout(container)
+        blocks.setContentsMargins(0, 0, 0, 0)
+        blocks.setSpacing(GAP)
 
-        included_set = set(included_accounts)
+        included = set(included_accounts)
         self._blocks: List[_AccountGoalBlock] = []
         for account in accounts:
             block = _AccountGoalBlock(
                 account_name=account,
-                is_shared=account in included_set,
+                is_shared=account in included,
                 current_goal=goal_targets.get(account, 500_000.0),
                 preset_values=preset_values.get(account, list(_DEFAULT_PRESETS)),
                 parent=container,
             )
             block.sharedToggled.connect(self._update_shared_row_visibility)
-            blocks_vbox.addWidget(block)
+            blocks.addWidget(block)
             self._blocks.append(block)
-
-        blocks_vbox.addStretch(1)
+        blocks.addStretch(1)
         scroll.setWidget(container)
         root.addWidget(scroll, 1)
 
-        # -- Buttons --
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
-
+        add_dialog_buttons(self, root, "Save")
         self._update_shared_row_visibility()
 
     def _update_shared_row_visibility(self):
-        has_shared = any(b.is_shared for b in self._blocks)
-        self._shared_row.setVisible(has_shared)
+        self._shared_row.setVisible(any(b.is_shared for b in self._blocks))
 
     # ---- result accessors ----
 

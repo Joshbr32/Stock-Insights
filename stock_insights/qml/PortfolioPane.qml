@@ -1,103 +1,92 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
+// Right column: one text tab per account, the app's main action
+// ("Log trade") on the right, and the selected account's view below.
 ColumnLayout {
     id: root
-    spacing: 0
+    spacing: 12
 
-    // Custom modern tab bar (one tab per account)
-    Rectangle {
+    RowLayout {
         Layout.fillWidth: true
-        height: 42
-        color: "transparent"
+        Layout.fillHeight: false
+        Layout.preferredHeight: 36
+        spacing: 4
 
-        RowLayout {
-            anchors.fill: parent
-            spacing: 4
+        Repeater {
+            model: app.accounts
+            delegate: AbstractButton {
+                id: tab
+                property bool active: index === app.currentAccountIndex
+                Layout.fillHeight: true
+                implicitWidth: label.implicitWidth + 24
+                hoverEnabled: true
+                activeFocusOnTab: true
+                Accessible.role: Accessible.PageTab
+                Accessible.name: modelData.name
+                Accessible.checked: active
+                onClicked: app.setCurrentAccountIndex(index)
 
-            Repeater {
-                model: app.accounts
-                delegate: Rectangle {
-                    id: tab
-                    property bool active: index === app.currentAccountIndex
-                    property bool hovered: false
-                    height: parent.height
-                    Layout.preferredWidth: Math.max(110, label.implicitWidth + 28)
-                    radius: 10
-                    // Active tab uses the card background to "lift" out of
-                    // the pane background; inactive tabs stay flat.
-                    color: tab.active ? app.theme.card
-                         : (tab.hovered ? app.theme.cardAlt : "transparent")
-                    border.color: tab.active ? app.theme.border : "transparent"
-                    border.width: 1
-
-                    // Active-tab accent stripe along the bottom — primary
-                    // color makes the active selection unmistakable and
-                    // visually rhymes with the +Trade button + Goal Target.
+                contentItem: Label {
+                    id: label
+                    text: modelData.name
+                    color: tab.active || tab.hovered ? app.theme.text : app.theme.textMuted
+                    font.pixelSize: 15 * app.theme.fontScale
+                    font.weight: Font.DemiBold
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Item {
+                    // Selected tab: 2 px primary underline.
                     Rectangle {
-                        visible: tab.active
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         anchors.leftMargin: 12
                         anchors.rightMargin: 12
-                        height: 3
-                        radius: 1.5
+                        height: 2
+                        radius: 1
                         color: app.theme.primary
+                        visible: tab.active
                     }
-
-                    Behavior on color { ColorAnimation { duration: 150 } }
-                    Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                    Label {
-                        id: label
-                        anchors.centerIn: parent
-                        text: modelData.name
-                        // Active tab text picks up the theme's primary
-                        // color — same accent as the bottom stripe.
-                        color: tab.active ? app.theme.primary
-                             : (tab.hovered ? app.theme.text : app.theme.textMuted)
-                        font.pointSize: 10 * app.theme.fontScale
-                        font.weight: tab.active ? Font.DemiBold : Font.Normal
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onEntered: tab.hovered = true
-                        onExited:  tab.hovered = false
-                        onClicked: app.setCurrentAccountIndex(index)
-                    }
+                    FocusRing { shown: tab.visualFocus; controlRadius: 6; anchors.margins: 0 }
                 }
             }
+        }
 
-            Item { Layout.fillWidth: true }
+        Item { Layout.fillWidth: true }
+
+        ToolButton2 {
+            text: "Log trade"
+            primary: true
+            Layout.alignment: Qt.AlignVCenter
+            onClicked: app.addTrade()
         }
     }
 
-    // Card-style content area
-    Rectangle {
+    PortfolioView {
+        id: view
         Layout.fillWidth: true
         Layout.fillHeight: true
-        color: app.theme.card
-        border.color: app.theme.border
-        border.width: 1
-        radius: 12
-        // Defense in depth — if the inner cards' sum-of-minimums ever
-        // exceeds the available height (e.g. user shrank below the
-        // documented window minimum via Aero Snap, or a future font-scale
-        // pushes content past its Layout.minimumHeight), clip the
-        // overflow at the rounded border instead of letting it leak
-        // past the window's content area.
-        clip: true
+        account: app.currentAccount
+    }
 
-        PortfolioView {
-            anchors.fill: parent
-            anchors.margins: 12
-            account: app.currentAccount
+    // Tab switch cross-fade (120 ms); skipped when the OS asks for less motion.
+    NumberAnimation {
+        id: fadeIn
+        target: view
+        property: "opacity"
+        from: 0.35
+        to: 1
+        duration: 120
+        easing.type: Easing.OutQuad
+    }
+    Connections {
+        target: app
+        function onCurrentAccountChanged() {
+            if (!app.theme.reduceMotion) fadeIn.restart()
         }
     }
 }

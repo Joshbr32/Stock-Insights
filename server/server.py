@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
 r"""Stock Insights — Portfolio Sync Server (SQL Server edition).
 
+FastAPI app that stores each user's trades, accounts, goal settings and
+watchlist in SQL Server (via pyodbc), proxies live quotes for the PWA, and
+serves the PWA itself (../pwa) from the same origin.
+
 Prerequisites on COLONIAL_SERVER
 ─────────────────────────────────
 1.  Run init_stockinsights.sql in SSMS to create the DB, login, and tables.
 2.  Install Python deps:
-        pip install fastapi uvicorn pyodbc
-3.  Set environment variables (or edit the defaults below):
+        pip install -r requirements.txt
+3.  Set environment variables (or put them in server/.env — see .env.example):
         PORTFOLIO_SQL_SERVER    e.g. localhost\STOCKINSIGHTS  (default)
         PORTFOLIO_SQL_DATABASE  e.g. StockInsights            (default)
-        PORTFOLIO_SQL_USER      e.g. stock_app                (default)
+        PORTFOLIO_SQL_USER      e.g. stock_app                (default: sa)
         PORTFOLIO_SQL_PASSWORD  your login password           (required)
         PORTFOLIO_HOST          0.0.0.0                       (default)
         PORTFOLIO_PORT          8742                          (default)
+        PORTFOLIO_CORS_ORIGINS  comma-separated origins       (default: *)
+        PORTFOLIO_ENABLE_DOCS   1 = serve /docs, /redoc       (default: off)
 4.  First-time: create an admin account:
         python server.py --setup
 5.  Run:
         python server.py
+
+Schema upgrades live in server/migrations/*.sql. The server applies them at
+start-up (every step is guarded, so re-running is a no-op). If the SQL login
+lacks ALTER rights it logs one error, keeps serving in a reduced mode and
+/health reports "schema": "needs_migration"; run the .sql file once as a
+database owner (SSMS or `sqlcmd -b -I -d StockInsights -i <file>`).
 
 Other devices on your network connect to http://COLONIAL_SERVER:8742;
 external (off-LAN) clients reach the same server through the Cloudflare
@@ -27,43 +39,48 @@ is never exposed externally.
 """
 
 import argparse
+import csv
+import decimal
+import functools
+import getpass
 import hashlib
+import io
 import json
+import logging
 import mimetypes
 import os
 import pathlib
+import re
 import secrets
-from contextlib import contextmanager
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+import time
+import uuid
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timedelta, timezone
+from threading import Lock
+from typing import Annotated, Any, Dict, Iterable, List, Optional, Sequence
 
 # Python's mimetypes db doesn't know .webmanifest by default; some browsers
 # refuse to install a PWA without the right Content-Type. Register it once.
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
+log = logging.getLogger("stock_insights.server")
+
 # ---------------------------------------------------------------------------
 # Load .env (if present) BEFORE we read any PORTFOLIO_* env vars.
 #
-# python-dotenv is listed in server/requirements.txt — installing it is
-# the recommended setup so you can drop the SQL password into a local
-# .env file and forget about it. If it's not installed (e.g. someone is
-# poking at the script in isolation) we silently fall back to real env
-# vars; existing deployments that already export PORTFOLIO_SQL_PASSWORD
-# in the shell continue to work unchanged.
+# python-dotenv is optional: without it, .env is ignored and real environment
+# variables are used, so deployments that export PORTFOLIO_SQL_PASSWORD in the
+# shell keep working.
 # ---------------------------------------------------------------------------
 try:
     from dotenv import load_dotenv
 
-    # Look for .env next to server.py (the canonical location), but don't
-    # walk up the tree — we don't want to accidentally pick up an unrelated
-    # .env from the project root or a parent folder.
+    # Only the .env next to server.py — never walk up the tree and pick up an
+    # unrelated .env from the project root.
     _ENV_FILE = pathlib.Path(__file__).resolve().parent / ".env"
     if _ENV_FILE.exists():
         load_dotenv(_ENV_FILE, override=False)
 except ImportError:
-    # dotenv missing — keep going; either the user is running with shell
-    # env vars set manually, or the SQL_PASSWORD check below will fail
-    # with a clear error message that points at the right fix.
     pass
 
 # ---------------------------------------------------------------------------
@@ -73,18 +90,21 @@ try:
     import pyodbc
 except ImportError:
     print("\nMissing dependency: pyodbc")
-    print("Install with:  pip install pyodbc\n")
+    print("Install with:  pip install -r requirements.txt\n")
     raise SystemExit(1)
 
 try:
     import uvicorn
     from fastapi import Depends, FastAPI, HTTPException, Request, status
+    from fastapi import Path as PathParam
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.middleware.gzip import GZipMiddleware
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
+    from starlette.datastructures import MutableHeaders
 except ImportError as _e:
     print(f"\nMissing dependency: {_e}")
-    print("Install with:  pip install fastapi uvicorn\n")
+    print("Install with:  pip install -r requirements.txt\n")
     raise SystemExit(1)
 
 # ---------------------------------------------------------------------------
@@ -109,7 +129,23 @@ if not SQL_PASSWORD:
     )
 HOST = os.environ.get("PORTFOLIO_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORTFOLIO_PORT", "8742"))
+# The PWA is served same-origin and the desktop client is not a browser, so
+# neither needs CORS. "*" is kept as the default only for setups that host
+# the PWA elsewhere (window.SI_API_URL); set an explicit list to lock it down.
+CORS_ORIGINS = [
+    o.strip() for o in os.environ.get("PORTFOLIO_CORS_ORIGINS", "*").split(",") if o.strip()
+]
 TOKEN_DAYS = 30
+# Interactive API docs expose the full route list on the public tunnel, so
+# they are opt-in.
+DOCS_ENABLED = os.environ.get("PORTFOLIO_ENABLE_DOCS", "").strip() == "1"
+
+# Single source of truth for the server-side version. Bump alongside the
+# desktop's stock_insights/version.py when you ship coordinated changes
+# (new endpoints, schema migrations, etc.). Independent of APP_VERSION
+# because server + desktop can update on different cadences.
+SERVER_VERSION = "1.1.0"
+_SERVER_BOOT_TIME = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +169,15 @@ def _odbc_driver() -> str:
     )
 
 
+@functools.lru_cache(maxsize=1)
 def _conn_string() -> str:
+    """Build the ODBC connection string once.
+
+    Cached because pyodbc.drivers() enumerates the registry and every
+    request opens a connection. The ODBC driver manager pools the physical
+    connections (pyodbc.pooling defaults to True), so connect() per request
+    is cheap as long as the connection string is identical.
+    """
     driver = _odbc_driver()
     # TrustServerCertificate is required for ODBC 18 with self-signed certs
     trust = "TrustServerCertificate=yes;" if "18" in driver else ""
@@ -177,55 +221,235 @@ def _all(cursor) -> List[Dict[str, Any]]:
 
 
 def _scalar(cursor):
-    """Fetch a single scalar value (e.g. SCOPE_IDENTITY())."""
+    """Fetch a single scalar value from the first row."""
     row = cursor.fetchone()
     return row[0] if row else None
 
 
 def _exec(conn, sql: str, *params):
-    """Execute a statement and return the cursor."""
+    """Execute a parameterised statement and return the cursor.
+
+    Every query in this file goes through `?` placeholders — never build SQL
+    with f-strings or %-formatting from request data.
+    """
     cur = conn.cursor()
     cur.execute(sql, params)
     return cur
 
 
-def _last_id(conn) -> int:
-    """Return the identity value inserted by the last INSERT on this connection."""
-    cur = conn.cursor()
-    cur.execute("SELECT SCOPE_IDENTITY()")
-    return int(_scalar(cur) or 0)
+def _chunks(items: Sequence, size: int) -> Iterable[Sequence]:
+    """Yield `items` in slices of `size` (SQL Server caps a statement at 2100
+    parameters, so long IN (...) lists are split)."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _placeholders(n: int) -> str:
+    return ",".join("?" * n)
+
+
+# ---------------------------------------------------------------------------
+# Schema check / migration
+# ---------------------------------------------------------------------------
+#
+# The base schema comes from init_stockinsights.sql (kept on the server PC,
+# not in this repo). Later changes live in server/migrations/NNN_*.sql: plain
+# T-SQL batches separated by GO, each guarded (IF COL_LENGTH(...) IS NULL,
+# IF NOT EXISTS (sys.indexes ...)) so running a file twice is a no-op. The
+# server runs every batch at start-up; the operator runs the same file in
+# SSMS / sqlcmd when the app's login lacks ALTER rights.
+
+_MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parent / "migrations"
+_MIGRATION_HINT = "server/migrations/001_tags_trade_uid.sql"
+_GO_RE = re.compile(r"^\s*GO\s*$", re.IGNORECASE | re.MULTILINE)
+
+# What the running code may rely on. The defaults assume an up-to-date
+# database (true for tests, and for every server once the migration ran);
+# _migrate_schema() / _refresh_schema_state() replace them with facts.
+#   trade_cols     dbo.trades has tag + client_id (uid/tag routes work)
+#   password_wide  dbo.users.password_hash can hold a scrypt hash
+#   ok             everything the latest migration adds is present
+_SCHEMA: Dict[str, bool] = {"ok": True, "trade_cols": True, "password_wide": True}
+
+_SCHEMA_PROBE_SQL = (
+    "SELECT COL_LENGTH('dbo.trades', 'tag') AS tag_len, "
+    "       COL_LENGTH('dbo.trades', 'client_id') AS uid_len, "
+    "       (SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS "
+    "        WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'users' "
+    "          AND COLUMN_NAME = 'password_hash') AS pw_len"
+)
+
+
+def _migration_batches(path: pathlib.Path) -> List[str]:
+    """Split a .sql file on GO lines; drop batches that are only comments."""
+    batches = []
+    for chunk in _GO_RE.split(path.read_text(encoding="utf-8")):
+        code = [ln for ln in chunk.splitlines()
+                if ln.strip() and not ln.strip().startswith("--")]
+        if code:
+            batches.append(chunk.strip())
+    return batches
+
+
+def _refresh_schema_state() -> None:
+    """Read the live schema and update _SCHEMA. Never raises."""
+    try:
+        with db() as conn:
+            row = _one(_exec(conn, _SCHEMA_PROBE_SQL))
+    except pyodbc.Error:
+        log.exception("Schema check failed")
+        _SCHEMA["ok"] = False
+        return
+    trade_cols = row is not None and row["tag_len"] is not None and row["uid_len"] is not None
+    pw_len = row["pw_len"] if row is not None else None
+    # CHARACTER_MAXIMUM_LENGTH is -1 for NVARCHAR(MAX).
+    pw_wide = pw_len is not None and (pw_len == -1 or pw_len >= _SCRYPT_HASH_LEN)
+    pw_ok = pw_len is not None and (pw_len == -1 or pw_len >= 255)
+    _SCHEMA.update(ok=trade_cols and pw_ok, trade_cols=trade_cols, password_wide=pw_wide)
+
+
+def _migrate_schema() -> None:
+    """Apply server/migrations/*.sql, then record the resulting schema state.
+
+    Idempotent and never destructive (columns and indexes are only added, one
+    column is widened). Failures are logged once and the server keeps
+    running: routes that need the new columns answer 503 until a database
+    owner runs the migration.
+    """
+    failures: List[str] = []
+    files = sorted(_MIGRATIONS_DIR.glob("*.sql")) if _MIGRATIONS_DIR.is_dir() else []
+    if not files:
+        failures.append(f"no migration files found in {_MIGRATIONS_DIR}")
+    for path in files:
+        for step, batch in enumerate(_migration_batches(path), 1):
+            try:
+                with db() as conn:
+                    conn.cursor().execute(batch)
+            except pyodbc.Error as exc:
+                failures.append(f"{path.name} batch {step}: {exc}")
+    _refresh_schema_state()
+    if failures and not _SCHEMA["ok"]:
+        log.error(
+            "Database schema is out of date and could not be upgraded automatically "
+            "(%d step(s) failed; the SQL login probably lacks ALTER rights). The server "
+            "keeps running, but per-trade saves and tags are disabled until a database "
+            "owner runs %s (SSMS, or: sqlcmd -b -I -d <database> -i <file>). "
+            "First error: %s",
+            len(failures), _MIGRATION_HINT, failures[0],
+        )
+    elif failures:
+        # Required columns are present; only an optional step (an index) failed.
+        log.warning("Schema migration: %d optional step(s) failed; first: %s",
+                    len(failures), failures[0])
+    else:
+        log.info("Database schema is up to date")
 
 
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
+#
+# Passwords: scrypt (stdlib hashlib.scrypt), stored as
+#   scrypt$<log2 N>$<r>$<p>$<salt hex>$<hash hex>
+# Server 1.0 hashes are PBKDF2-SHA256 "salt:hex" (260k rounds); they still
+# verify and are rewritten to scrypt on the user's next successful login.
 
-def _hash_password(password: str) -> str:
+_PBKDF2_ITERATIONS = 260_000  # legacy format only; baked into "salt:hex" hashes
+_SCRYPT_PREFIX = "scrypt$"
+_SCRYPT_N_LOG2, _SCRYPT_R, _SCRYPT_P = 15, 8, 1
+_SCRYPT_SALT_BYTES, _SCRYPT_KEY_BYTES = 16, 32
+_SCRYPT_CURRENT = f"{_SCRYPT_PREFIX}{_SCRYPT_N_LOG2}${_SCRYPT_R}${_SCRYPT_P}$"
+_SCRYPT_HASH_LEN = len(_SCRYPT_CURRENT) + 1 + 2 * (_SCRYPT_SALT_BYTES + _SCRYPT_KEY_BYTES)
+# Upper bound on the memory a stored hash may ask for, so a tampered row
+# can't make every login allocate gigabytes.
+_SCRYPT_MAX_MEM = 256 * 1024 * 1024
+
+
+def _scrypt(password: str, salt: bytes, n_log2: int, r: int, p: int, dklen: int) -> bytes:
+    # OpenSSL's default maxmem (32 MiB) is exactly what N=2^15, r=8 needs and
+    # fails without headroom, so size it from the parameters.
+    need = 128 * r * ((1 << n_log2) + p + 2)
+    return hashlib.scrypt(password.encode(), salt=salt, n=1 << n_log2, r=r, p=p,
+                          maxmem=need + (1 << 20), dklen=dklen)
+
+
+def _hash_password_scrypt(password: str) -> str:
+    salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
+    dk = _scrypt(password, salt, _SCRYPT_N_LOG2, _SCRYPT_R, _SCRYPT_P, _SCRYPT_KEY_BYTES)
+    return f"{_SCRYPT_CURRENT}{salt.hex()}${dk.hex()}"
+
+
+def _hash_password_pbkdf2(password: str) -> str:
     salt = secrets.token_hex(16)
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ITERATIONS)
     return f"{salt}:{dk.hex()}"
 
 
+def _hash_password(password: str) -> str:
+    """Hash for storage. Uses the legacy format only while
+    dbo.users.password_hash is still too narrow for a scrypt hash."""
+    if _SCHEMA["password_wide"]:
+        return _hash_password_scrypt(password)
+    return _hash_password_pbkdf2(password)
+
+
 def _verify_password(password: str, stored_hash: str) -> bool:
+    if not isinstance(stored_hash, str):
+        return False
+    if stored_hash.startswith(_SCRYPT_PREFIX):
+        try:
+            _, n_log2, r, p, salt_hex, dk_hex = stored_hash.split("$")
+            n_log2, r, p = int(n_log2), int(r), int(p)
+            salt, expected = bytes.fromhex(salt_hex), bytes.fromhex(dk_hex)
+        except ValueError:
+            return False
+        if (not (1 <= n_log2 <= 24 and r >= 1 and p >= 1 and expected)
+                or 128 * r * ((1 << n_log2) + p) > _SCRYPT_MAX_MEM):
+            return False
+        dk = _scrypt(password, salt, n_log2, r, p, len(expected))
+        return secrets.compare_digest(dk, expected)
     try:
         salt, dk_hex = stored_hash.split(":", 1)
-        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
-        return secrets.compare_digest(dk.hex(), dk_hex)
-    except Exception:
+    except ValueError:
         return False
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ITERATIONS)
+    return secrets.compare_digest(dk.hex(), dk_hex)
+
+
+def _needs_rehash(stored_hash: str) -> bool:
+    """True for legacy PBKDF2 hashes and scrypt hashes with older parameters."""
+    return not stored_hash.startswith(_SCRYPT_CURRENT)
+
+
+# Verified against when the username doesn't exist, so a login for an unknown
+# user costs the same scrypt time as a wrong password (no user enumeration via
+# response timing).
+_DUMMY_HASH = _hash_password_scrypt(secrets.token_hex(8))
+
+
+# Session tokens: the client holds a random 64-hex token; dbo.sessions.token
+# stores sha256(token) hex, so a leaked sessions table can't be replayed.
+_TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
+# Server 1.0 stored raw tokens. A raw row is rewritten to its hash the first
+# time it is used. That fallback only accepts rows expiring before this date:
+# every 1.0 token does (30-day life, 1.1 ships before 2027), while hashes that
+# 1.1 writes from 2027-01-02 on expire later, so a stolen hash can't simply be
+# presented as a "raw" token. A 1.0 token that misses the window just means
+# one re-login.
+_LEGACY_TOKEN_CUTOFF = datetime(2027, 2, 1)
 
 
 def _new_token() -> str:
     return secrets.token_hex(32)  # 64 hex chars — fits NVARCHAR(64)
 
 
+def _token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()  # also 64 hex chars
+
+
 def _utc_now() -> datetime:
-    """Naive UTC `datetime.now()` — replacement for the deprecated
-    `datetime.utcnow()`. We keep tokens tz-naive on disk because
-    the SQL Server column is `datetime2` without offset, and the
-    expiry comparison stays self-consistent (we always compare two
-    naive-UTC values to each other)."""
-    from datetime import timezone
+    """Naive UTC now. Tokens are stored tz-naive because the SQL column is
+    datetime2 without offset; we only ever compare naive-UTC to naive-UTC."""
     return datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
 
@@ -233,34 +457,133 @@ def _token_expiry() -> str:
     return (_utc_now() + timedelta(days=TOKEN_DAYS)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _as_datetime(value) -> datetime:
+    return datetime.fromisoformat(value) if isinstance(value, str) else value
+
+
 def _get_user_from_token(token: str) -> Optional[Dict[str, Any]]:
+    select = ("SELECT s.user_id, s.expires_at, u.username, u.is_admin "
+              "FROM dbo.sessions s JOIN dbo.users u ON u.id = s.user_id "
+              "WHERE s.token = ?")
+    digest = _token_digest(token)
     with db() as conn:
-        cur = _exec(
-            conn,
-            "SELECT s.user_id, s.expires_at, u.username, u.is_admin "
-            "FROM dbo.sessions s JOIN dbo.users u ON u.id = s.user_id "
-            "WHERE s.token = ?",
-            token,
-        )
-        row = _one(cur)
-    if row is None:
-        return None
-    expiry = row["expires_at"]
-    if isinstance(expiry, str):
-        expiry = datetime.fromisoformat(expiry)
-    if expiry < _utc_now():
+        row = _one(_exec(conn, select, digest))
+        if row is None and _TOKEN_RE.match(token):
+            # Legacy 1.0 session holding the raw token: upgrade it in place.
+            row = _one(_exec(conn, select, token))
+            if row is not None:
+                if _as_datetime(row["expires_at"]) > _LEGACY_TOKEN_CUTOFF:
+                    row = None
+                else:
+                    _exec(conn, "UPDATE dbo.sessions SET token = ? WHERE token = ?",
+                          digest, token)
+    if row is None or _as_datetime(row["expires_at"]) < _utc_now():
         return None
     return row
+
+
+# ---- Login throttling -------------------------------------------------------
+# The server is reachable from the public internet through the tunnel, so
+# cap failed logins per username and per client IP. In-memory is enough for a
+# single-process server; a restart simply resets the counters.
+
+_LOGIN_WINDOW_S = 15 * 60
+_LOGIN_MAX_FAILS_PER_USER = 10
+_LOGIN_MAX_FAILS_PER_IP = 30
+_LOGIN_FAILS: Dict[str, List[float]] = {}
+_LOGIN_LOCK = Lock()
+
+
+def _client_ip(request: Request) -> str:
+    # Behind cloudflared every request arrives from localhost; Cloudflare puts
+    # the real client address in CF-Connecting-IP.
+    return (request.headers.get("CF-Connecting-IP")
+            or (request.client.host if request.client else "unknown"))
+
+
+def _login_keys(username: str, ip: str) -> List[tuple]:
+    return [("u:" + username.strip().lower(), _LOGIN_MAX_FAILS_PER_USER),
+            ("ip:" + ip, _LOGIN_MAX_FAILS_PER_IP)]
+
+
+def _login_blocked(username: str, ip: str) -> bool:
+    cutoff = time.time() - _LOGIN_WINDOW_S
+    with _LOGIN_LOCK:
+        for key, limit in _login_keys(username, ip):
+            recent = [t for t in _LOGIN_FAILS.get(key, []) if t > cutoff]
+            if recent:
+                _LOGIN_FAILS[key] = recent
+            else:
+                _LOGIN_FAILS.pop(key, None)
+            if len(recent) >= limit:
+                return True
+    return False
+
+
+def _record_login_failure(username: str, ip: str) -> None:
+    now = time.time()
+    with _LOGIN_LOCK:
+        for key, _limit in _login_keys(username, ip):
+            _LOGIN_FAILS.setdefault(key, []).append(now)
+
+
+def _clear_login_failures(username: str) -> None:
+    with _LOGIN_LOCK:
+        _LOGIN_FAILS.pop("u:" + username.strip().lower(), None)
 
 
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Stock Insights Portfolio Sync", version="2.0.0")
+class _CacheControlMiddleware:
+    """Mark every response without its own Cache-Control as `no-store`.
+
+    API responses carry per-user portfolio data and must never be cached by
+    the browser, the service worker or Cloudflare. The static PWA mount sets
+    its own header (see _PWAStaticFiles), so it is left alone.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                if "cache-control" not in headers:
+                    headers["Cache-Control"] = "no-store"
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    # Runs once when uvicorn starts serving (not on a bare import, so tests
+    # and `--setup` don't touch the schema through here).
+    _migrate_schema()
+    yield
+
+
+app = FastAPI(
+    title="Stock Insights Portfolio Sync",
+    version=SERVER_VERSION,
+    docs_url="/docs" if DOCS_ENABLED else None,
+    redoc_url="/redoc" if DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if DOCS_ENABLED else None,
+    lifespan=_lifespan,
+)
+app.add_middleware(_CacheControlMiddleware)
+# /trades for a long history is the largest payload; JSON compresses ~10x.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -293,6 +616,7 @@ def admin_user(user: dict = Depends(current_user)) -> dict:
 
 
 def _resolve_uid(user: dict, for_user_id: Optional[int]) -> int:
+    """Return the user id a request acts on; only admins may act for others."""
     if for_user_id is not None and for_user_id != user["user_id"]:
         if not user["is_admin"]:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin required to access other users")
@@ -308,13 +632,13 @@ class LoginRequest(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
     is_admin: bool = False
 
 
 class UpdatePasswordRequest(BaseModel):
-    new_password: str
+    new_password: str = Field(min_length=1)
 
 
 class AccountIn(BaseModel):
@@ -328,6 +652,11 @@ class AccountsUpdate(BaseModel):
     accounts: List[AccountIn]
 
 
+# Client-generated trade id: uuid4 hex (32 lowercase hex chars, no dashes).
+_UID_PATTERN = r"^[0-9a-f]{32}$"
+_TAG_MAX_LEN = 40
+
+
 class TradeIn(BaseModel):
     instrument: str
     share_count: int
@@ -338,6 +667,9 @@ class TradeIn(BaseModel):
     notes: str = ""
     is_pending: bool = False
     is_short: bool = False
+    tag: str = Field("", max_length=_TAG_MAX_LEN)
+    # Kept when given; the server generates one when it's missing (1.0 clients).
+    uid: Optional[str] = Field(None, pattern=_UID_PATTERN)
 
 
 class TradesBatch(BaseModel):
@@ -359,44 +691,51 @@ class WatchlistUpdate(BaseModel):
 # status pill so the user can see "Server v1.2.3 · 12ms" at a glance)
 # ---------------------------------------------------------------------------
 
-# Single source of truth for the server-side version. Bump alongside the
-# desktop's stock_insights/version.py when you ship coordinated changes
-# (new endpoints, schema migrations, etc.). Independent of APP_VERSION
-# because server + desktop can update on different cadences.
-SERVER_VERSION = "1.0.0"
-import time as _time
+# Every desktop client polls /health every few seconds and the route is
+# public, so the DB probe result is reused for a few seconds instead of
+# opening a SQL connection per hit.
+_HEALTH_TTL_S = 5.0
+_health_cache: Dict[str, Any] = {"at": 0.0, "db_ok": False}
+_HEALTH_LOCK = Lock()
 
-_SERVER_BOOT_TIME = _time.time()
+
+def _probe_db() -> bool:
+    now = time.monotonic()
+    with _HEALTH_LOCK:
+        if now - _health_cache["at"] < _HEALTH_TTL_S:
+            return _health_cache["db_ok"]
+        try:
+            with db() as conn:
+                _exec(conn, "SELECT 1").fetchone()
+            ok = True
+            if not _SCHEMA["ok"]:
+                # Pick up a migration the operator ran by hand, no restart needed.
+                _refresh_schema_state()
+        except Exception:
+            # Full ODBC text (server name, login, driver) goes to the log
+            # only — this endpoint is public.
+            log.exception("Health check: database probe failed")
+            ok = False
+        _health_cache.update(at=time.monotonic(), db_ok=ok)
+        return ok
 
 
 @app.get("/health")
 def health():
-    """Lightweight liveness probe + version surface.
+    """Liveness probe + version surface. Public; carries no sensitive data.
 
-    Returns the server version, process uptime, and whether a quick SQL
-    Server SELECT succeeds. Used by the desktop's status pill (polled
-    every few seconds) and by external monitoring (the response is the
-    same shape both consumers can parse).
-
-    No auth — the response carries no sensitive data, and requiring a
-    token would defeat the point of a network-edge health check.
+    Shape: {ok, server_version, uptime_seconds, db_ok, db_error, schema}.
+    Used by the desktop status pill (polled every few seconds) and external
+    monitoring. schema is "ok" or "needs_migration".
     """
-    db_ok = False
-    db_error = ""
-    try:
-        with db() as conn:
-            cur = _exec(conn, "SELECT 1")
-            cur.fetchone()
-            db_ok = True
-    except Exception as exc:
-        db_error = str(exc)[:200]  # truncate so a verbose ODBC error doesn't bloat the response
-
+    db_ok = _probe_db()
     return {
         "ok": db_ok,
         "server_version": SERVER_VERSION,
-        "uptime_seconds": int(_time.time() - _SERVER_BOOT_TIME),
+        "uptime_seconds": int(time.time() - _SERVER_BOOT_TIME),
         "db_ok": db_ok,
-        "db_error": db_error if not db_ok else "",
+        "db_error": "" if db_ok else "database unavailable (see server log)",
+        "schema": "ok" if _SCHEMA["ok"] else "needs_migration",
     }
 
 
@@ -405,7 +744,11 @@ def health():
 # ---------------------------------------------------------------------------
 
 @app.post("/auth/login")
-def login(body: LoginRequest):
+def login(body: LoginRequest, request: Request):
+    ip = _client_ip(request)
+    if _login_blocked(body.username, ip):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                            "Too many failed login attempts. Try again in a few minutes.")
     with db() as conn:
         cur = _exec(conn,
                     "SELECT id, username, password_hash, is_admin "
@@ -413,14 +756,32 @@ def login(body: LoginRequest):
                     body.username,
                     )
         user = _one(cur)
-    if user is None or not _verify_password(body.password, user["password_hash"]):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
-    token = _new_token()
-    with db() as conn:
+        stored = user["password_hash"] if user else _DUMMY_HASH
+        if not _verify_password(body.password, stored) or user is None:
+            _record_login_failure(body.username, ip)
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
+        token = _new_token()
+        # Expired sessions are never read again; prune them here so the
+        # table doesn't grow forever.
+        _exec(conn, "DELETE FROM dbo.sessions WHERE expires_at < ?", _utc_now())
         _exec(conn,
               "INSERT INTO dbo.sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-              token, int(user["id"]), _token_expiry(),
+              _token_digest(token), int(user["id"]), _token_expiry(),
               )
+    _clear_login_failures(body.username)
+    if _SCHEMA["password_wide"] and _needs_rehash(stored):
+        # Upgrade a legacy hash now that we know the password. Separate
+        # transaction, compare-and-set so a concurrent password change wins,
+        # and a failure here never fails the login.
+        try:
+            with db() as conn:
+                _exec(conn,
+                      "UPDATE dbo.users SET password_hash = ? WHERE id = ? AND password_hash = ?",
+                      _hash_password_scrypt(body.password), int(user["id"]), stored,
+                      )
+        except pyodbc.Error:
+            log.warning("Could not upgrade password hash for user id %s", user["id"],
+                        exc_info=True)
     return {
         "token": token,
         "user_id": int(user["id"]),
@@ -432,7 +793,9 @@ def login(body: LoginRequest):
 @app.post("/auth/logout")
 def logout(token: str = Depends(_bearer)):
     with db() as conn:
-        _exec(conn, "DELETE FROM dbo.sessions WHERE token = ?", token)
+        # Raw value too, for a 1.0 session that was never upgraded.
+        _exec(conn, "DELETE FROM dbo.sessions WHERE token IN (?, ?)",
+              _token_digest(token), token)
     return {"ok": True}
 
 
@@ -470,13 +833,22 @@ def create_user(body: CreateUserRequest, user: dict = Depends(admin_user)):
 
 
 @app.put("/users/{user_id}/password")
-def change_password(user_id: int, body: UpdatePasswordRequest, user: dict = Depends(current_user)):
+def change_password(
+        user_id: int, body: UpdatePasswordRequest,
+        user: dict = Depends(current_user), token: str = Depends(_bearer),
+):
     if user_id != user["user_id"] and not user["is_admin"]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot change another user's password")
     with db() as conn:
         _exec(conn,
               "UPDATE dbo.users SET password_hash = ? WHERE id = ?",
               _hash_password(body.new_password), user_id,
+              )
+        # A password change revokes every other session of that user (e.g. a
+        # stolen token); the caller's own session survives.
+        _exec(conn,
+              "DELETE FROM dbo.sessions WHERE user_id = ? AND token <> ? AND token <> ?",
+              user_id, _token_digest(token), token,
               )
     return {"ok": True}
 
@@ -486,6 +858,7 @@ def delete_user(user_id: int, user: dict = Depends(admin_user)):
     if user_id == user["user_id"]:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot delete yourself")
     with db() as conn:
+        _exec(conn, "DELETE FROM dbo.sessions WHERE user_id = ?", user_id)
         _exec(conn, "DELETE FROM dbo.users WHERE id = ?", user_id)
     return {"ok": True}
 
@@ -512,34 +885,41 @@ def replace_accounts(
         user: dict = Depends(current_user),
         for_user_id: Optional[int] = None,
 ):
+    """Make the user's account list match `body` (order = list order).
+
+    Accounts missing from the body are deleted (cascading to their trades),
+    existing ones are updated in place so their trades survive.
+    """
     uid = _resolve_uid(user, for_user_id)
     with db() as conn:
-        # Fetch existing accounts
         cur = _exec(conn, "SELECT id, name FROM dbo.accounts WHERE user_id = ?", uid)
         existing = {r["name"]: r["id"] for r in _all(cur)}
         new_names = {a.name for a in body.accounts}
 
-        # Delete removed accounts (cascades to trades)
-        for name, acct_id in existing.items():
-            if name not in new_names:
-                _exec(conn, "DELETE FROM dbo.accounts WHERE id = ?", acct_id)
-
-        # Insert or update remaining
+        removed = [(acct_id,) for name, acct_id in existing.items() if name not in new_names]
+        updates, inserts = [], []
         for pos, acct in enumerate(body.accounts):
+            presets = json.dumps(acct.goal_presets)
             if acct.name in existing:
-                _exec(conn,
-                      "UPDATE dbo.accounts SET goal_target = ?, goal_presets = ?, position = ? "
-                      "WHERE id = ?",
-                      acct.goal_target, json.dumps(acct.goal_presets),
-                      pos, existing[acct.name],
-                      )
+                updates.append((acct.goal_target, presets, pos, existing[acct.name]))
             else:
-                _exec(conn,
-                      "INSERT INTO dbo.accounts (user_id, name, goal_target, goal_presets, position) "
-                      "VALUES (?, ?, ?, ?, ?)",
-                      uid, acct.name, acct.goal_target,
-                      json.dumps(acct.goal_presets), pos,
-                      )
+                inserts.append((uid, acct.name, acct.goal_target, presets, pos))
+
+        cur = conn.cursor()
+        if removed:
+            cur.executemany("DELETE FROM dbo.accounts WHERE id = ?", removed)
+        if updates:
+            cur.executemany(
+                "UPDATE dbo.accounts SET goal_target = ?, goal_presets = ?, position = ? "
+                "WHERE id = ?",
+                updates,
+            )
+        if inserts:
+            cur.executemany(
+                "INSERT INTO dbo.accounts (user_id, name, goal_target, goal_presets, position) "
+                "VALUES (?, ?, ?, ?, ?)",
+                inserts,
+            )
     return {"ok": True}
 
 
@@ -561,22 +941,97 @@ def update_account_settings(
 # ---------------------------------------------------------------------------
 # Trades
 # ---------------------------------------------------------------------------
+#
+# Each trade carries a client-generated `uid` (uuid4 hex), stored in
+# dbo.trades.client_id and unique across the database. The per-trade routes
+# (PUT/DELETE /trades/{account}/{uid}) are idempotent, so the clients' offline
+# queue can replay them safely. The bulk PUT /trades/{account} stays for
+# restores and 1.0 clients.
+
+_TRADE_COLS = ("instrument, share_count, buy_price, sell_price, open_date, "
+               "close_date, notes, is_pending, is_short")
+_UidPath = Annotated[str, PathParam(pattern=_UID_PATTERN)]
+
+
+def _new_trade_uid() -> str:
+    return uuid.uuid4().hex
+
+
+def _require_trade_schema() -> None:
+    if not _SCHEMA["trade_cols"]:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            f"Server database needs migration ({_MIGRATION_HINT})")
+
+
+def _account_id(conn, user_id: int, account_name: str) -> int:
+    """Id of the user's account, auto-creating it if it doesn't exist yet."""
+    lookup = "SELECT id FROM dbo.accounts WHERE user_id = ? AND name = ?"
+    acct_id = _scalar(_exec(conn, lookup, user_id, account_name))
+    if acct_id is None:
+        # Re-select the id instead of SCOPE_IDENTITY(): pyodbc runs each
+        # parameterised execute() in its own scope, so a follow-up
+        # SCOPE_IDENTITY() returns NULL.
+        _exec(conn, "INSERT INTO dbo.accounts (user_id, name) VALUES (?, ?)",
+              user_id, account_name)
+        acct_id = _scalar(_exec(conn, lookup, user_id, account_name))
+    return int(acct_id)
+
+
+def _trade_values(t: TradeIn) -> tuple:
+    """TradeIn -> values in _TRADE_COLS order."""
+    return (t.instrument, t.share_count, t.buy_price, t.sell_price, t.open_date,
+            t.close_date, t.notes, int(t.is_pending), int(t.is_short))
+
+
+def _norm(v):
+    """Normalise a DB or request value so the two compare equal
+    (NULL vs "", date vs "YYYY-MM-DD", BIT vs bool, DECIMAL vs float)."""
+    if v is None or v == "":
+        return None
+    if hasattr(v, "isoformat"):
+        return v.isoformat()[:10]
+    if isinstance(v, (bool, int, float, decimal.Decimal)):
+        return round(float(v), 6)
+    return str(v)
+
+
+def _trade_key(values: Sequence) -> tuple:
+    """Content fingerprint used to keep uids/tags across a uid-less bulk save."""
+    return tuple(_norm(v) for v in values)
+
 
 @app.get("/trades")
 def get_trades(user: dict = Depends(current_user), for_user_id: Optional[int] = None):
-    uid = _resolve_uid(user, for_user_id)
+    owner = _resolve_uid(user, for_user_id)
+    trade_cols = _SCHEMA["trade_cols"]
+    extra = ", t.client_id AS uid, t.tag" if trade_cols else ""
     with db() as conn:
         cur = _exec(conn,
                     "SELECT t.id, a.name AS account, t.instrument, t.share_count, "
                     "       t.buy_price, t.sell_price, t.open_date, t.close_date, "
-                    "       t.notes, t.is_pending, t.is_short "
+                    "       t.notes, t.is_pending, t.is_short" + extra + " "
                     "FROM dbo.trades t "
                     "JOIN dbo.accounts a ON a.id = t.account_id "
                     "WHERE a.user_id = ? "
                     "ORDER BY t.id",
-                    uid,
+                    owner,
                     )
-        return _all(cur)
+        rows = _all(cur)
+        if trade_cols:
+            # Rows written without a uid (e.g. by a 1.0 server still running
+            # after the migration) get one now, so every row has a stable id.
+            missing = [r for r in rows if not r["uid"]]
+            for r in missing:
+                r["uid"] = _new_trade_uid()
+            if missing:
+                conn.cursor().executemany(
+                    "UPDATE dbo.trades SET client_id = ? WHERE id = ? AND client_id IS NULL",
+                    [(r["uid"], r["id"]) for r in missing],
+                )
+    for r in rows:
+        r["uid"] = r.get("uid") or ""
+        r["tag"] = r.get("tag") or ""
+    return rows
 
 
 @app.put("/trades/{account_name}")
@@ -584,45 +1039,144 @@ def replace_account_trades(
         account_name: str, body: TradesBatch,
         user: dict = Depends(current_user), for_user_id: Optional[int] = None,
 ):
-    """Atomically replace all trades for one account (other accounts untouched)."""
-    uid = _resolve_uid(user, for_user_id)
-    with db() as conn:
-        cur = _exec(conn,
-                    "SELECT id FROM dbo.accounts WHERE user_id = ? AND name = ?",
-                    uid, account_name,
-                    )
-        row = _one(cur)
-        if row is None:
-            # Auto-create the account if it doesn't exist yet
-            _exec(conn,
-                  "INSERT INTO dbo.accounts (user_id, name) VALUES (?, ?)",
-                  uid, account_name,
-                  )
-            acct_id = _last_id(conn)
-        else:
-            acct_id = int(row["id"])
+    """Atomically replace all trades for one account (other accounts untouched).
 
-        # Delete existing trades for this account
+    The account named in the URL is the one written; body.account_name is
+    accepted for compatibility but ignored. A trade's `uid` is kept when
+    given (a trade with that uid in another account of the same user is
+    moved here). A trade without a uid reuses the uid and tag of an identical
+    trade already in the account, so a 1.0 client's save doesn't churn uids
+    or wipe tags; otherwise it gets a new uid.
+    """
+    owner = _resolve_uid(user, for_user_id)
+    with db() as conn:
+        acct_id = _account_id(conn, owner, account_name)
+
+        if not _SCHEMA["trade_cols"]:
+            _exec(conn, "DELETE FROM dbo.trades WHERE account_id = ?", acct_id)
+            if body.trades:
+                conn.cursor().executemany(
+                    f"INSERT INTO dbo.trades (account_id, {_TRADE_COLS}) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(acct_id,) + _trade_values(t) for t in body.trades],
+                )
+            return {"ok": True}
+
+        supplied = list(dict.fromkeys(t.uid for t in body.trades if t.uid))
+        supplied_set = set(supplied)
+
+        # uid/tag of the current rows, by content, for uid-less incoming trades.
+        pool: Dict[tuple, List[tuple]] = {}
+        cur = _exec(conn,
+                    f"SELECT client_id, tag, {_TRADE_COLS} FROM dbo.trades "
+                    "WHERE account_id = ? ORDER BY id",
+                    acct_id)
+        for row in cur.fetchall():
+            cid, tag, values = row[0], row[1], tuple(row[2:])
+            if cid and cid not in supplied_set:
+                pool.setdefault(_trade_key(values), []).append((cid, tag or ""))
+
         _exec(conn, "DELETE FROM dbo.trades WHERE account_id = ?", acct_id)
 
-        # Bulk insert new trades
-        if body.trades:
-            cur2 = conn.cursor()
-            cur2.executemany(
-                "INSERT INTO dbo.trades "
-                "(account_id, instrument, share_count, buy_price, "
-                " sell_price, open_date, close_date, notes, is_pending, is_short) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        acct_id, t.instrument, t.share_count, t.buy_price,
-                        t.sell_price, t.open_date, t.close_date, t.notes,
-                        int(t.is_pending), int(t.is_short),
-                    )
-                    for t in body.trades
-                ],
+        # Supplied uids: move the user's own trades with those uids here, and
+        # never take over a uid that belongs to another user (e.g. an admin
+        # restoring user A's backup into user B) — those get a fresh uid.
+        taken = set()
+        for chunk in _chunks(supplied, 500):
+            ph = _placeholders(len(chunk))
+            _exec(conn,
+                  f"DELETE FROM dbo.trades WHERE client_id IN ({ph}) AND account_id IN "
+                  "(SELECT id FROM dbo.accounts WHERE user_id = ?)",
+                  *chunk, owner)
+            cur = _exec(conn, f"SELECT client_id FROM dbo.trades WHERE client_id IN ({ph})",
+                        *chunk)
+            taken.update(r[0] for r in cur.fetchall())
+        if taken:
+            log.warning("Bulk save for user %s: %d uid(s) belong to another user; "
+                        "new uids assigned", owner, len(taken))
+
+        rows, seen = [], set()
+        for t in body.trades:
+            values = _trade_values(t)
+            cid, tag = t.uid, t.tag
+            if cid is None:
+                match = pool.get(_trade_key(values))
+                if match:
+                    cid, old_tag = match.pop(0)
+                    tag = tag or old_tag
+            if cid is None or cid in seen or cid in taken:
+                cid = _new_trade_uid()
+            seen.add(cid)
+            rows.append((acct_id,) + values + (tag, cid))
+        if rows:
+            conn.cursor().executemany(
+                f"INSERT INTO dbo.trades (account_id, {_TRADE_COLS}, tag, client_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
             )
 
+    return {"ok": True}
+
+
+@app.put("/trades/{account_name}/{uid}")
+def upsert_trade(
+        account_name: str, uid: _UidPath, body: TradeIn,
+        user: dict = Depends(current_user), for_user_id: Optional[int] = None,
+):
+    """Insert or update one trade by uid, moving it to `account_name` if it
+    lives in another account (auto-created like the bulk route). Idempotent.
+    The uid in the URL wins over body.uid."""
+    _require_trade_schema()
+    owner = _resolve_uid(user, for_user_id)
+    values = _trade_values(body)
+    for attempt in (1, 2):
+        try:
+            with db() as conn:
+                acct_id = _account_id(conn, owner, account_name)
+                row = _one(_exec(conn,
+                                 "SELECT t.id, a.user_id FROM dbo.trades t "
+                                 "JOIN dbo.accounts a ON a.id = t.account_id "
+                                 "WHERE t.client_id = ?",
+                                 uid))
+                if row is not None and int(row["user_id"]) != owner:
+                    raise HTTPException(status.HTTP_409_CONFLICT,
+                                        "That trade uid belongs to another user")
+                if row is not None:
+                    _exec(conn,
+                          "UPDATE dbo.trades SET account_id = ?, instrument = ?, "
+                          "share_count = ?, buy_price = ?, sell_price = ?, open_date = ?, "
+                          "close_date = ?, notes = ?, is_pending = ?, is_short = ?, tag = ? "
+                          "WHERE id = ?",
+                          acct_id, *values, body.tag, int(row["id"]))
+                else:
+                    _exec(conn,
+                          f"INSERT INTO dbo.trades (account_id, {_TRADE_COLS}, tag, client_id) "
+                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          acct_id, *values, body.tag, uid)
+            return {"ok": True, "uid": uid}
+        except pyodbc.IntegrityError:
+            # Two saves of the same new trade raced and the other inserted
+            # first (UX_trades_client_id); the retry takes the update path.
+            if attempt == 2:
+                raise
+    raise AssertionError("unreachable")
+
+
+@app.delete("/trades/{account_name}/{uid}")
+def delete_trade(
+        account_name: str, uid: _UidPath,
+        user: dict = Depends(current_user), for_user_id: Optional[int] = None,
+):
+    """Delete one of the user's trades by uid. Idempotent: ok whether or not
+    it existed. Matched by uid alone (not account_name), so a delete queued
+    before a move still finds the trade."""
+    _require_trade_schema()
+    owner = _resolve_uid(user, for_user_id)
+    with db() as conn:
+        _exec(conn,
+              "DELETE FROM dbo.trades WHERE client_id = ? AND account_id IN "
+              "(SELECT id FROM dbo.accounts WHERE user_id = ?)",
+              uid, owner)
     return {"ok": True}
 
 
@@ -653,19 +1207,18 @@ def update_goal_group(
         for_user_id: Optional[int] = None,
 ):
     uid = _resolve_uid(user, for_user_id)
+    names = json.dumps(body.account_names)
     with db() as conn:
-        # Check existence first, then INSERT or UPDATE
-        cur = _exec(conn, "SELECT 1 FROM dbo.goal_group WHERE user_id = ?", uid)
-        exists = cur.fetchone() is not None
-        if exists:
-            _exec(conn,
-                  "UPDATE dbo.goal_group SET account_names = ?, shared_goal = ? WHERE user_id = ?",
-                  json.dumps(body.account_names), body.shared_goal, uid,
-                  )
-        else:
+        # UPDATE-then-INSERT: one round trip in the common case, and no
+        # check-then-insert gap for two concurrent saves to race through.
+        cur = _exec(conn,
+                    "UPDATE dbo.goal_group SET account_names = ?, shared_goal = ? WHERE user_id = ?",
+                    names, body.shared_goal, uid,
+                    )
+        if cur.rowcount == 0:
             _exec(conn,
                   "INSERT INTO dbo.goal_group (user_id, account_names, shared_goal) VALUES (?, ?, ?)",
-                  uid, json.dumps(body.account_names), body.shared_goal,
+                  uid, names, body.shared_goal,
                   )
     return {"ok": True}
 
@@ -707,26 +1260,22 @@ def update_watchlist(
 # Quotes  (live prices for the mobile / web client)
 # ---------------------------------------------------------------------------
 #
-# Primary source: Stooq. Free, unauthenticated, reliable, and crucially —
-# not Yahoo, which has been actively breaking yfinance for the past year.
-# Stooq returns CSV directly, so we hit them once with all symbols and
-# parse the result. yfinance is kept as a fallback for any symbol Stooq
-# couldn't price (e.g. very new IPOs, foreign exchanges).
+# Primary source: Stooq — free, unauthenticated, one CSV request for all
+# symbols, and not Yahoo (which keeps breaking yfinance). yfinance is the
+# fallback for anything Stooq couldn't price (new IPOs, foreign listings).
 #
-# Results are cached in-process for QUOTE_TTL seconds so rapid-fire
-# polling from the PWA doesn't spam either upstream.
-
-import csv
-import io
-import time
-from threading import Lock
+# Results — including misses — are cached in-process for QUOTE_TTL seconds so
+# rapid polling from the PWA doesn't spam either upstream, and an unpriceable
+# symbol doesn't trigger a slow yfinance download on every poll.
 
 try:
     import requests as _requests
 
     _REQ_OK = True
+    _HTTP = _requests.Session()  # reuses the TLS connection to Stooq
 except ImportError:
     _REQ_OK = False
+    _HTTP = None
 
 try:
     import yfinance as _yf
@@ -735,9 +1284,13 @@ try:
 except ImportError:
     _YF_OK = False
 
-_QUOTE_CACHE: Dict[str, tuple] = {}  # symbol -> (price, fetched_at)
+_QUOTE_CACHE: Dict[str, tuple] = {}  # symbol -> (price_or_None, fetched_at)
 _QUOTE_LOCK = Lock()
 QUOTE_TTL = 20.0  # seconds
+_MAX_QUOTE_SYMBOLS = 250
+# Tickers like AAPL, BRK.B, BTC-USD, ^GSPC, EURUSD=X. Anything else is
+# answered with null without reaching an upstream.
+_SYMBOL_RE = re.compile(r"^[A-Z0-9.\-^=]{1,20}$")
 
 _STOOQ_URL = "https://stooq.com/q/l/"
 _UA = (
@@ -761,15 +1314,11 @@ def _fetch_quotes_stooq(symbols: List[str]) -> Dict[str, Optional[float]]:
         "e": "csv",
     }
     try:
-        resp = _requests.get(
-            _STOOQ_URL, params=params,
-            headers={"User-Agent": _UA},
-            timeout=10,
-        )
+        resp = _HTTP.get(_STOOQ_URL, params=params, headers={"User-Agent": _UA}, timeout=10)
         resp.raise_for_status()
         text = resp.text
     except Exception as exc:
-        print(f"[quotes] Stooq fetch failed: {exc}")
+        log.warning("Stooq fetch failed: %s", exc)
         return out
 
     try:
@@ -777,8 +1326,11 @@ def _fetch_quotes_stooq(symbols: List[str]) -> Dict[str, Optional[float]]:
         # Map normalized symbol -> original casing supplied by caller
         original_for = {s.upper(): s for s in symbols}
         for row in reader:
-            # Stooq returns "NVDA.US" — strip the suffix
-            raw = (row.get("Symbol") or "").upper().split(".")[0]
+            # Stooq echoes "NVDA.US"; strip only that suffix so dotted
+            # tickers like BRK.B still map back.
+            raw = (row.get("Symbol") or "").upper()
+            if raw.endswith(".US"):
+                raw = raw[:-3]
             sym = original_for.get(raw)
             if not sym:
                 continue
@@ -789,12 +1341,12 @@ def _fetch_quotes_stooq(symbols: List[str]) -> Dict[str, Optional[float]]:
                 out[sym] = float(close)
             except ValueError:
                 pass
-    except Exception as exc:
-        print(f"[quotes] Stooq CSV parse failed: {exc}")
+    except csv.Error as exc:
+        log.warning("Stooq CSV parse failed: %s", exc)
 
     missing = [s for s, v in out.items() if v is None]
     if missing:
-        print(f"[quotes] Stooq missing: {missing}")
+        log.info("Stooq missing: %s", missing)
     return out
 
 
@@ -812,17 +1364,27 @@ def _fetch_quotes_yfinance(symbols: List[str]) -> Dict[str, Optional[float]]:
             progress=False, threads=False,
         )
     except Exception as exc:
-        print(f"[quotes] yfinance batch failed: {exc}")
+        log.warning("yfinance batch failed: %s", exc)
+        return out
+    if df is None or df.empty:
         return out
 
+    # Newer yfinance returns (ticker, field) MultiIndex columns even for a
+    # single ticker; older versions return flat columns for one ticker.
+    multi = getattr(df.columns, "nlevels", 1) > 1
+    tickers = set(df.columns.get_level_values(0)) if multi else set()
     for sym in symbols:
         try:
-            sub = df[sym] if (len(symbols) > 1 and sym in df) else df
-            close = sub["Close"].dropna()
+            if multi:
+                if sym not in tickers:
+                    continue
+                close = df[sym]["Close"].dropna()
+            else:
+                close = df["Close"].dropna()
             if len(close):
                 out[sym] = float(close.iloc[-1])
-        except Exception:
-            pass
+        except (KeyError, TypeError, ValueError) as exc:
+            log.info("yfinance: no price for %s (%s)", sym, exc)
     return out
 
 
@@ -841,6 +1403,8 @@ def get_quotes(symbols: str = "", user: dict = Depends(current_user)):
     requested = list(dict.fromkeys(requested))  # de-dupe, preserve order
     if not requested:
         return {}
+    if len(requested) > _MAX_QUOTE_SYMBOLS:
+        raise HTTPException(400, f"At most {_MAX_QUOTE_SYMBOLS} symbols per request")
 
     now = time.time()
     out: Dict[str, Optional[float]] = {}
@@ -848,6 +1412,9 @@ def get_quotes(symbols: str = "", user: dict = Depends(current_user)):
 
     with _QUOTE_LOCK:
         for sym in requested:
+            if not _SYMBOL_RE.match(sym):
+                out[sym] = None
+                continue
             cached = _QUOTE_CACHE.get(sym)
             if cached and (now - cached[1]) < QUOTE_TTL:
                 out[sym] = cached[0]
@@ -857,23 +1424,20 @@ def get_quotes(symbols: str = "", user: dict = Depends(current_user)):
     # Fetch outside the lock so concurrent requests don't block on one another.
     fresh: Dict[str, Optional[float]] = {}
     if to_fetch:
-        # Primary: Stooq
         fresh = _fetch_quotes_stooq(to_fetch)
-        # Fallback: yfinance for any symbol Stooq couldn't price
         still_missing = [s for s, v in fresh.items() if v is None]
         if still_missing and _YF_OK:
-            yf_results = _fetch_quotes_yfinance(still_missing)
-            for sym, price in yf_results.items():
+            for sym, price in _fetch_quotes_yfinance(still_missing).items():
                 if price is not None:
                     fresh[sym] = price
 
     with _QUOTE_LOCK:
         for sym, price in fresh.items():
-            if price is not None:
-                _QUOTE_CACHE[sym] = (price, now)
+            _QUOTE_CACHE[sym] = (price, now)
             out[sym] = price
 
-    return out
+    # Preserve request order in the response.
+    return {sym: out.get(sym) for sym in requested}
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +1457,28 @@ def get_quotes(symbols: str = "", user: dict = Depends(current_user)):
 # at "/" catches every path that hasn't already matched, so anything
 # below it would be unreachable.
 
+class _PWAStaticFiles(StaticFiles):
+    """StaticFiles that hides non-app files and sets revalidation headers.
+
+    The pwa/ folder also holds helper scripts and docs (*.py, *.md) that
+    should not be downloadable from the public tunnel. File names aren't
+    content-hashed, so everything is served `no-cache`: the browser keeps a
+    copy but revalidates with ETag/Last-Modified (a cheap 304). The service
+    worker's own versioned cache handles offline use.
+    """
+
+    _HIDDEN_SUFFIXES = {".py", ".pyc", ".md"}
+
+    async def get_response(self, path: str, scope) -> Any:
+        p = pathlib.PurePosixPath(path)
+        if p.suffix.lower() in self._HIDDEN_SUFFIXES or any(
+                part.startswith(".") or part == "__pycache__" for part in p.parts):
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+        response = await super().get_response(path, scope)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
 _PWA_DIR = pathlib.Path(os.environ.get(
     "PORTFOLIO_PWA_DIR",
     str(pathlib.Path(__file__).resolve().parent.parent / "pwa"),
@@ -900,7 +1486,7 @@ _PWA_DIR = pathlib.Path(os.environ.get(
 _PWA_MOUNTED = False
 if _PWA_DIR.is_dir():
     # html=True makes "/" serve "/index.html" automatically.
-    app.mount("/", StaticFiles(directory=str(_PWA_DIR), html=True), name="pwa")
+    app.mount("/", _PWAStaticFiles(directory=str(_PWA_DIR), html=True), name="pwa")
     _PWA_MOUNTED = True
 
 
@@ -908,16 +1494,15 @@ if _PWA_DIR.is_dir():
 # Connection test (called at startup)
 # ---------------------------------------------------------------------------
 
-def _test_connection():
-    """Verify we can reach SQL Server and the schema exists."""
+def _test_connection() -> int:
+    """Verify we can reach SQL Server and the schema exists; return user count."""
     try:
         with db() as conn:
-            cur = _exec(conn, "SELECT COUNT(*) FROM dbo.users")
-            count = _scalar(cur) or 0
+            count = _scalar(_exec(conn, "SELECT COUNT(*) FROM dbo.users")) or 0
         return int(count)
     except Exception as exc:
         print(f"\n[ERROR] Cannot connect to SQL Server: {exc}")
-        print("Check SQL_SERVER / SQL_USER / SQL_PASSWORD environment variables.")
+        print("Check PORTFOLIO_SQL_SERVER / PORTFOLIO_SQL_USER / PORTFOLIO_SQL_PASSWORD.")
         raise SystemExit(1)
 
 
@@ -927,25 +1512,21 @@ def _test_connection():
 
 def setup_admin():
     _test_connection()
+    # Know the password column width before hashing (scrypt vs legacy).
+    _migrate_schema()
     print("\n=== Stock Insights — First-time Setup ===")
     username = input("Username: ").strip()
-    password = input("Password: ").strip()
+    password = getpass.getpass("Password: ").strip()  # not echoed
     admin_rights = input("Admin rights? (Y/N): ").strip().upper()
     if not username or not password or not admin_rights:
-        print("Cancelled.");
+        print("Cancelled.")
         return
     try:
         with db() as conn:
-            if admin_rights == "Y":
-                _exec(conn,
-                      "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 1)",
-                      username, _hash_password(password),
-                      )
-            else:
-                _exec(conn,
-                      "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, 0)",
-                      username, _hash_password(password),
-                      )
+            _exec(conn,
+                  "INSERT INTO dbo.users (username, password_hash, is_admin) VALUES (?, ?, ?)",
+                  username, _hash_password(password), int(admin_rights == "Y"),
+                  )
         print(f"\nUser '{username}' created. Start the server with: python server.py\n")
     except pyodbc.IntegrityError:
         print(f"User '{username}' already exists.")
@@ -956,6 +1537,7 @@ def setup_admin():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Stock Insights Portfolio Sync Server")
     parser.add_argument("--setup", action="store_true", help="Create initial admin account and exit")
     parser.add_argument("--host", default=HOST)
@@ -969,7 +1551,8 @@ if __name__ == "__main__":
         print(f"\nStock Insights Portfolio Server  (SQL Server edition)")
         print(f"SQL Server : {SQL_SERVER}  /  {SQL_DATABASE}")
         print(f"Listening  : http://{args.host}:{args.port}")
-        print(f"API docs   : http://localhost:{args.port}/docs")
+        if DOCS_ENABLED:
+            print(f"API docs   : http://localhost:{args.port}/docs")
         if _PWA_MOUNTED:
             print(f"Mobile PWA : http://localhost:{args.port}/   (from {_PWA_DIR})")
         else:

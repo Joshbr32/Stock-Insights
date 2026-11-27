@@ -9,6 +9,9 @@
 # does NOT need anything here. Keep these two files separate so the
 # colonial-server box doesn't pull half a gigabyte of Qt wheels it never uses.
 #
+# Password hashing uses the stdlib's hashlib.scrypt, which needs Python built
+# against OpenSSL 1.1+ (every python.org installer is); no extra package.
+#
 # Python 3.10 – 3.12 recommended. pyodbc binary wheels for 3.13/3.14 ship
 # slightly later than CPython itself, so if pip can't find a wheel on a
 # brand-new Python, install Python 3.12 from python.org and rebuild the venv.
@@ -32,3 +35,12 @@ pydantic>=2.5
 # imports this defensively — if it's missing, .env is just ignored and
 # you fall back to real environment variables. ───────────────────────────────
 python-dotenv>=1.0
+
+# ── Live quotes (/quotes) ────────────────────────────────────────────────────
+# requests fetches prices from Stooq (the primary source). Without it /quotes
+# falls back to yfinance only, and returns 503 if neither is installed.
+requests>=2.31
+
+# Optional fallback for symbols Stooq can't price. Heavy (pulls pandas), so
+# it is left commented out; uncomment if you want the fallback.
+# yfinance>=0.2.40

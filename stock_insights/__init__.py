@@ -1,3 +1,5 @@
+"""Stock Insights desktop application package."""
+
 __all__ = [
     "api_client", "connection_dialog", "data", "logging_utils",
     "main_window", "portfolio", "portfolio_tab", "qml_bridge",

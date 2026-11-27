@@ -1,100 +1,75 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
+// Left column: watched symbols with their latest price.
+// Keyboard: Tab into the list, Up/Down to move, Delete to remove.
 Card {
     id: root
-    padding: 14
+    padding: 12
 
     SectionTitle {
+        Layout.leftMargin: 4
         title: "Watchlist"
-        // Bind to the count Q_PROPERTY so the subtitle updates when the
-        // model is reset (rowCount() is a method and won't notify).
-        subtitle: app.watchlist.count + (app.watchlist.count === 1 ? " symbol" : " symbols")
+        // `count` is a notifying property; rowCount() would not re-evaluate.
+        subtitle: app.watchlist.count === 1 ? "1 symbol" : app.watchlist.count + " symbols"
     }
 
-    Rectangle {
-        Layout.fillWidth: true
-        Layout.preferredHeight: 1
-        color: app.theme.border
-    }
-
-    Rectangle {
+    Item {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        color: "transparent"
-        clip: true
 
         ListView {
             id: list
             anchors.fill: parent
-            // Reserve a strip on the right so the floating scrollbar never
-            // sits on top of the row text.
-            anchors.rightMargin: 10
             model: app.watchlist
-            spacing: 1
+            clip: true
+            currentIndex: -1
             boundsBehavior: Flickable.StopAtBounds
+            activeFocusOnTab: true
+            keyNavigationEnabled: true
             ScrollBar.vertical: ThemedScrollBar { }
+            Keys.onDeletePressed: if (currentIndex >= 0) app.removeTicker(currentIndex)
+            Accessible.role: Accessible.List
+            Accessible.name: "Watchlist"
 
             delegate: Rectangle {
                 id: row
-                width: list.width
+                width: ListView.view.width
                 height: 32
-                radius: 4
+                radius: 6
+                property bool selected: ListView.isCurrentItem
+                color: row.selected ? app.theme.cardAlt : "transparent"
 
-                // Shared row-state model (see HoldingsTable / TradesTable):
-                //   selected → filled with app.theme.primary  (same hue as
-                //              the `+ Add` / `+ Trade` buttons, so "selected"
-                //              and "primary action" share a visual vocabulary)
-                //   hovered  → 1.5 px primary-colored outline around the
-                //              normal base, providing strong feedback without
-                //              competing with the selected fill
-                //   odd row  → subtle zebra stripe
-                //   even row → transparent (card bg shows through)
-                property bool selected: list.currentIndex === index
-                property bool hovered:  mouse.containsMouse
-
-                color: row.selected
-                    ? app.theme.primary
-                    : (index % 2 === 0 ? "transparent"
-                                       : Qt.lighter(app.theme.cardAlt, 1.02))
-                border.color: row.hovered && !row.selected
-                    ? app.theme.primary : "transparent"
-                border.width: 1.5
-
-                Behavior on color        { ColorAnimation { duration: 100 } }
-                Behavior on border.color { ColorAnimation { duration: 100 } }
+                // Hover tint: same tone as selection, lighter.
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 6
+                    color: app.theme.cardAlt
+                    opacity: mouse.containsMouse && !row.selected ? 0.6 : 0
+                }
 
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 10
-                    anchors.rightMargin: 10
-                    spacing: 12
+                    anchors.rightMargin: 12
+                    spacing: 8
 
                     Label {
                         text: model.symbol
-                        // When the row is filled with the primary accent,
-                        // switch text to textOnColor so it stays readable.
-                        color: row.selected ? app.theme.textOnColor : app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale
+                        color: app.theme.text
+                        font.pixelSize: 13 * app.theme.fontScale
                         font.weight: Font.DemiBold
                         Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
                         elide: Label.ElideRight
                     }
                     Label {
-                        text: model.priceText
-                        color: row.selected
-                            ? app.theme.textOnColor
-                            : (model.price === undefined || model.price === null
-                                ? app.theme.textMuted : app.theme.text)
-                        font.pointSize: 10 * app.theme.fontScale
-                        Layout.fillHeight: true
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
+                        text: model.price === undefined || model.price === null ? "No price" : model.priceText
+                        color: model.price === undefined || model.price === null
+                               ? app.theme.textMuted : app.theme.text
+                        font.pixelSize: 13 * app.theme.fontScale
+                        horizontalAlignment: Text.AlignRight
                     }
                 }
 
@@ -103,9 +78,23 @@ Card {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: list.currentIndex = index
+                    onClicked: { list.currentIndex = index; list.forceActiveFocus() }
                 }
             }
+
+            // Focus ring around the list when it holds keyboard focus.
+            FocusRing { shown: list.activeFocus && list.currentIndex < 0; controlRadius: 6; anchors.margins: 0 }
+        }
+
+        Label {
+            anchors.centerIn: parent
+            width: parent.width - 24
+            visible: app.watchlist.count === 0
+            text: "Your watchlist is empty. Add a symbol to see its price here."
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+            color: app.theme.textMuted
+            font.pixelSize: 13 * app.theme.fontScale
         }
     }
 
@@ -114,16 +103,17 @@ Card {
         spacing: 8
 
         ToolButton2 {
-            text: "+ Add"
-            primary: true
+            text: "Add symbol"
             Layout.fillWidth: true
             onClicked: app.addTicker()
         }
         ToolButton2 {
-            text: "− Remove"
+            text: "Remove"
             Layout.fillWidth: true
             enabled: list.currentIndex >= 0
             onClicked: app.removeTicker(list.currentIndex)
+            ToolTip.visible: hovered && !enabled
+            ToolTip.text: "Select a symbol first"
         }
     }
 }

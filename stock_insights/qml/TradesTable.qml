@@ -1,34 +1,33 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
+// Trade history for the selected date range (set in Performance).
+// Double-click or Enter edits; right-click or the Menu key opens the trade
+// menu; Delete asks to delete. Search + status narrow the list in place.
 Card {
     id: root
     property var account: null
-    padding: 16
+    readonly property int rowH: 32
 
-    // Single source of truth for column layout. RowLayout enforces children
-    // fit within the parent — no horizontal overflow even at very narrow
-    // window widths. All columns are left-aligned to keep cell text
-    // visually grouped on the left side of the column.
     readonly property var cols: [
-        { key: "instrument",  label: "Instrument", weight: 1.5 },
-        { key: "shareCount",  label: "Qty",        weight: 0.7 },
-        { key: "status",      label: "Status",     weight: 0.9 },
-        { key: "buyPrice",    label: "Buy",        weight: 1.0 },
-        { key: "sellPrice",   label: "Sell",       weight: 1.0 },
-        { key: "tradeProfit", label: "Profit",     weight: 1.2 },
-        { key: "openDate",    label: "Open",       weight: 1.0 },
-        { key: "closeDate",   label: "Close",      weight: 1.0 },
-        { key: "daysToClose", label: "Days",       weight: 0.6 },
+        { key: "instrument",  label: "Symbol",  w: 1.1 },
+        { key: "statusText",  label: "Status",  w: 0.9 },
+        { key: "shareCount",  label: "Shares",  w: 0.7, right: true },
+        { key: "buyPrice",    label: "Entry",   w: 1.0, right: true },
+        { key: "sellPrice",   label: "Exit",    w: 1.0, right: true },
+        { key: "tradeProfit", label: "Profit",  w: 1.1, right: true, pl: true },
+        { key: "returnText",  label: "Return",  w: 0.9, right: true, pl: true },
+        { key: "openDate",    label: "Opened",  w: 1.0, right: true },
+        { key: "closeDate",   label: "Closed",  w: 1.0, right: true },
+        { key: "daysToClose", label: "Days",    w: 0.6, right: true }
     ]
-    // Reserved strip at the right edge of each row so the scrollbar
-    // overlay sits in this gap rather than over the rightmost column.
-    readonly property int scrollPad: 12
+    // Display label -> TradesModel status code (the filter matches codes).
+    readonly property var statusLabels: ["All statuses", "Pending", "Open", "Short", "Closed", "Covered"]
+    readonly property var statusCodes: ["", "WAITING", "OPEN", "SHORT", "CLOSED", "COVERED"]
+    readonly property bool filtered: account && (account.textFilter.length > 0 || account.statusFilter.length > 0)
 
-    // Friendly label for the active date range, so the user always knows
-    // which window the metrics + this table are filtered to.
     function _rangeLabel(key) {
         if (key === "week")  return "this week"
         if (key === "month") return "this month"
@@ -38,15 +37,13 @@ Card {
     }
 
     SectionTitle {
-        title: "Trade History"
+        title: "Trade history"
         subtitle: account && account.loaded
-            ? (account.totalTradeCount
-               + (account.totalTradeCount === 1 ? " trade" : " trades")
-               + "   •   " + _rangeLabel(account.dateRangeKey || "all"))
+            ? (account.totalTradeCount === 1 ? "1 trade, " : account.totalTradeCount + " trades, ")
+              + _rangeLabel(account.dateRangeKey || "all")
             : ""
     }
 
-    // ── Filter row ──────────────────────────────────────────────────────────
     RowLayout {
         Layout.fillWidth: true
         spacing: 8
@@ -54,288 +51,212 @@ Card {
         TextField {
             id: filterField
             Layout.fillWidth: true
-            placeholderText: "Filter by instrument, status, notes…"
+            implicitHeight: 32
+            leftPadding: 10
+            placeholderText: "Search symbol, status or notes"
             placeholderTextColor: app.theme.textMuted
             color: app.theme.text
+            font.pixelSize: 13 * app.theme.fontScale
             selectByMouse: true
+            selectionColor: app.theme.primary
+            selectedTextColor: app.theme.textOnColor
             text: account ? account.textFilter : ""
             onTextEdited: if (account) account.setTextFilter(text)
+            Keys.onEscapePressed: if (account) { text = ""; account.setTextFilter("") }
+            Accessible.name: "Search trades"
             background: Rectangle {
-                radius: 8
-                color: app.theme.card
-                border.color: filterField.activeFocus ? app.theme.secondary : app.theme.border
-                border.width: 1
+                radius: 6
+                color: app.theme.cardAlt
+                border.width: filterField.activeFocus ? 2 : 1
+                border.color: filterField.activeFocus ? app.theme.primary : app.theme.border
             }
         }
         ThemedComboBox {
             id: statusCombo
-            Layout.preferredWidth: 150
-            model: ["All statuses", "WAITING", "OPEN", "SHORT", "CLOSED", "COVERED"]
+            Layout.preferredWidth: 140
+            model: root.statusLabels
             currentIndex: {
-                if (!account) return 0
-                var s = account.statusFilter
-                if (!s) return 0
-                var i = model.indexOf(s)
+                if (!account || !account.statusFilter) return 0
+                var i = root.statusCodes.indexOf(account.statusFilter)
                 return i >= 0 ? i : 0
             }
-            onActivated: function(index) {
-                if (!account) return
-                account.setStatusFilter(index === 0 ? "" : model[index])
+            onActivated: function (index) {
+                if (account) account.setStatusFilter(root.statusCodes[index])
             }
-        }
-        ToolButton2 {
-            text: "+ Trade"
-            primary: true
-            onClicked: app.addTrade()
+            Accessible.name: "Status filter"
         }
     }
 
-    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: app.theme.border }
-
-    // ── Header row ──────────────────────────────────────────────────────────
-    Rectangle {
-        Layout.fillWidth: true
-        Layout.preferredHeight: 28
-        color: "transparent"
-
-        RowLayout {
-            anchors.fill: parent
-            anchors.rightMargin: root.scrollPad
-            spacing: 0
-
-            Repeater {
-                model: root.cols
-                Label {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.preferredWidth: modelData.weight * 1000
-                    Layout.minimumWidth: 30
-                    text: modelData.label
-                    color: app.theme.textMuted
-                    font.pointSize: 9 * app.theme.fontScale
-                    font.weight: Font.DemiBold
-                    horizontalAlignment: Text.AlignLeft
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: 8
-                    rightPadding: 8
-                    elide: Label.ElideRight
-                }
-            }
-        }
-    }
-
-    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: app.theme.border }
-
-    // ── Body ────────────────────────────────────────────────────────────────
-    Rectangle {
+    ColumnLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        // 3 trade rows × 32 px + a couple px of breathing room ≈ 100.
-        // Below this the body clips partial rows — scrollbar reveals the rest.
-        Layout.minimumHeight: 100
-        color: "transparent"
-        clip: true
+        spacing: 0
 
-        ListView {
-            id: list
-            anchors.fill: parent
-            spacing: 1
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ThemedScrollBar { }
-            model: account ? account.trades : null
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: root.rowH
+            color: app.theme.cardAlt
+            radius: 6
 
-            delegate: Rectangle {
-                id: row
-                width: list.width                       // full width — alt-row backgrounds fill the row
-                height: 32
-                radius: 4
-
-                // Shared row-state model (see WatchlistPane / HoldingsTable).
-                //   selected → filled with app.theme.primary
-                //   hovered  → 1.5 px primary outline around the normal base
-                //   odd row  → subtle zebra stripe
-                //   even row → transparent (card bg shows through)
-                property bool selected: list.currentIndex === index
-                property bool hovered:  rowMouse.containsMouse
-
-                color: row.selected
-                    ? app.theme.primary
-                    : (index % 2 === 0 ? "transparent"
-                                       : Qt.lighter(app.theme.cardAlt, 1.02))
-                border.color: row.hovered && !row.selected
-                    ? app.theme.primary : "transparent"
-                border.width: 1.5
-
-                Behavior on color        { ColorAnimation { duration: 100 } }
-                Behavior on border.color { ColorAnimation { duration: 100 } }
-
-                // Status tints are hidden when the row is selected — on a
-                // primary-filled row they'd conflict with the selection
-                // color; the Status column text + color of the fill still
-                // convey "this row is selected and waiting/short".
-                Rectangle {
-                    visible: model.status === "WAITING" && !row.selected
-                    anchors.fill: parent
-                    color: "#a0700a"; opacity: 0.16
-                }
-                Rectangle {
-                    visible: (model.status === "SHORT" || model.status === "COVERED") && !row.selected
-                    anchors.fill: parent
-                    color: "#1e3a5f"; opacity: 0.18
-                }
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.rightMargin: root.scrollPad   // scrollbar gap
-                    spacing: 0
-
-                    // Col 0 — Instrument
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 4
+                anchors.rightMargin: 4 + 10
+                spacing: 0
+                Repeater {
+                    model: root.cols
                     Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1500; Layout.minimumWidth: 30
-                        text: model.instrument
-                        // When the row is filled with `primary`, switch
-                        // text to textOnColor so it stays readable.
-                        color: row.selected ? app.theme.textOnColor : app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale; font.weight: Font.DemiBold
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: modelData.w * 1000
+                        Layout.minimumWidth: 24
+                        text: modelData.label
+                        color: app.theme.textMuted
+                        font.pixelSize: 12 * app.theme.fontScale
+                        font.weight: Font.DemiBold
+                        horizontalAlignment: modelData.right ? Text.AlignRight : Text.AlignLeft
+                        leftPadding: 8
+                        rightPadding: 8
                         elide: Label.ElideRight
-                    }
-                    // Col 1 — Qty
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 700; Layout.minimumWidth: 30
-                        text: model.shareCount
-                        color: row.selected ? app.theme.textOnColor : app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 2 — Status
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 900; Layout.minimumWidth: 30
-                        text: model.status
-                        color: row.selected ? app.theme.textOnColor : app.theme.textMuted
-                        font.pointSize: 9 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 3 — Buy
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1000; Layout.minimumWidth: 30
-                        text: model.buyPrice
-                        color: row.selected ? app.theme.textOnColor : app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 4 — Sell
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1000; Layout.minimumWidth: 30
-                        text: model.sellPrice
-                        color: row.selected ? app.theme.textOnColor : app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 5 — Profit (sign-colored, with selected override)
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1200; Layout.minimumWidth: 30
-                        text: model.tradeProfit
-                        color: row.selected
-                            ? app.theme.textOnColor
-                            : (model.profitSign > 0 ? app.theme.good
-                               : model.profitSign < 0 ? app.theme.bad
-                               : app.theme.text)
-                        font.pointSize: 10 * app.theme.fontScale; font.weight: Font.DemiBold
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 6 — Open
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1000; Layout.minimumWidth: 30
-                        text: model.openDate
-                        color: row.selected ? app.theme.textOnColor : app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 7 — Close
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1000; Layout.minimumWidth: 30
-                        text: model.closeDate
-                        color: row.selected ? app.theme.textOnColor : app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 8 — Days
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 600; Layout.minimumWidth: 30
-                        text: model.daysToClose
-                        color: row.selected ? app.theme.textOnColor : app.theme.textMuted
-                        font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                }
-
-                MouseArea {
-                    id: rowMouse
-                    anchors.fill: parent
-                    hoverEnabled: true              // drives the row's hover-highlight color
-                    cursorShape: Qt.PointingHandCursor
-                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                    onDoubleClicked: app.editTrade(model.sourceIndex)
-                    onClicked: function (mouse) {
-                        list.currentIndex = index
-                        if (mouse.button === Qt.RightButton) {
-                            app.showTradeMenu(model.sourceIndex)
-                        }
                     }
                 }
             }
         }
 
-        // Empty state — only after first data load.
-        Label {
-            anchors.centerIn: parent
-            visible: account && account.loaded && account.trades.rowCount() === 0
-            text: account && (account.textFilter.length > 0 || account.statusFilter.length > 0)
-                ? "No trades match the current filter"
-                : "No trades yet — click + Trade to add one"
-            color: app.theme.textMuted
-            font.pointSize: 10 * app.theme.fontScale
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: root.rowH * 3
+
+            ListView {
+                id: list
+                anchors.fill: parent
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                currentIndex: -1
+                activeFocusOnTab: true
+                keyNavigationEnabled: true
+                ScrollBar.vertical: ThemedScrollBar { }
+                model: account ? account.trades : null
+                Accessible.role: Accessible.Table
+                Accessible.name: "Trade history"
+
+                Keys.onReturnPressed: if (currentItem) app.editTrade(currentItem.sourceIndex)
+                Keys.onEnterPressed: if (currentItem) app.editTrade(currentItem.sourceIndex)
+                Keys.onMenuPressed: if (currentItem) app.showTradeMenu(currentItem.sourceIndex)
+                Keys.onDeletePressed: if (currentItem) app.deleteTrade(currentItem.sourceIndex)
+
+                delegate: Rectangle {
+                    id: row
+                    readonly property int sourceIndex: model.sourceIndex
+                    readonly property var rowModel: model
+                    readonly property bool selected: ListView.isCurrentItem
+                    width: ListView.view.width
+                    height: root.rowH
+                    color: selected || mouse.containsMouse ? app.theme.cardAlt : "transparent"
+
+                    // Selected row: 2 px primary bar on the left edge, so the
+                    // selection reads without tinting the P/L colours.
+                    Rectangle {
+                        visible: row.selected
+                        width: 2
+                        height: parent.height - 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        radius: 1
+                        color: app.theme.primary
+                    }
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 1
+                        color: app.theme.border
+                    }
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 4
+                        anchors.rightMargin: 4 + 10
+                        spacing: 0
+                        Repeater {
+                            model: root.cols
+                            Label {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                Layout.preferredWidth: modelData.w * 1000
+                                Layout.minimumWidth: 24
+                                text: row.rowModel[modelData.key]
+                                color: modelData.pl
+                                    ? (row.rowModel.profitSign > 0 ? app.theme.good
+                                       : row.rowModel.profitSign < 0 ? app.theme.bad : app.theme.textMuted)
+                                    : (modelData.key === "statusText" || modelData.key === "daysToClose"
+                                       || text === "—") ? app.theme.textMuted : app.theme.text
+                                font.pixelSize: 13 * app.theme.fontScale
+                                font.weight: modelData.key === "instrument" || modelData.key === "tradeProfit"
+                                             ? Font.DemiBold : Font.Normal
+                                font.italic: modelData.key === "statusText" && row.rowModel.isPending
+                                horizontalAlignment: modelData.right ? Text.AlignRight : Text.AlignLeft
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 8
+                                rightPadding: 8
+                                elide: Label.ElideRight
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        id: mouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onDoubleClicked: app.editTrade(model.sourceIndex)
+                        onClicked: function (mouse) {
+                            list.currentIndex = index
+                            list.forceActiveFocus()
+                            if (mouse.button === Qt.RightButton) app.showTradeMenu(model.sourceIndex)
+                        }
+                    }
+
+                    ToolTip.visible: mouse.containsMouse && model.notes.length > 0
+                    ToolTip.delay: 600
+                    ToolTip.text: model.notes
+                }
+            }
+
+            // Empty states — only after the first data load.
+            ColumnLayout {
+                anchors.centerIn: parent
+                width: Math.min(parent.width - 32, 420)
+                visible: account && account.loaded && list.count === 0
+                spacing: 8
+                Label {
+                    Layout.fillWidth: true
+                    text: root.filtered ? "No trades match your search" : "No trades yet"
+                    color: app.theme.text
+                    font.pixelSize: 13 * app.theme.fontScale
+                    font.weight: Font.DemiBold
+                    horizontalAlignment: Text.AlignHCenter
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: root.filtered
+                        ? "Try another symbol or status, or clear the filters to see every trade."
+                        : "Log a trade to start tracking your progress toward your goal."
+                    color: app.theme.textMuted
+                    font.pixelSize: 13 * app.theme.fontScale
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                }
+                ToolButton2 {
+                    Layout.alignment: Qt.AlignHCenter
+                    visible: root.filtered
+                    text: "Clear filters"
+                    onClicked: {
+                        filterField.text = ""
+                        account.setTextFilter("")
+                        account.setStatusFilter("")
+                    }
+                }
+            }
         }
     }
-
-    // Edit / Delete are accessible via the right-click context menu on any
-    // trade row, plus double-click to edit. The dedicated action-buttons
-    // row was redundant and pushed the card content past the visible
-    // bottom edge at smaller window heights.
 }

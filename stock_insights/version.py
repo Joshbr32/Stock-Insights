@@ -19,7 +19,7 @@ Recommended free hosting for version.json:
   • Any static web host / Dropbox public link
 """
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/Joshbr32/Stock-Insights/Portfolio/version.json"

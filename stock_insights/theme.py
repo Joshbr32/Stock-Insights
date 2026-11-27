@@ -1,10 +1,29 @@
+"""theme.py — colour tokens, fonts and the global widget stylesheet.
+
+One source of truth for how the desktop app looks:
+
+* ``_THEMES`` holds the token sets (light + dark) for every selectable theme.
+  "Default" is the Harbor palette from ``docs/design/design-system.md``; the
+  other eight keep their own palettes but expose the same token names.
+* ``ThemeManager`` picks the active token set (theme + light/dark mode),
+  installs a QPalette + QSS on the QApplication and main window, polls the OS
+  light/dark setting, and emits ``themeApplied`` so the QML ThemeController
+  (qml_bridge.py) can refresh its bound tokens.
+* ``resolve_fonts()`` picks the UI / display font families once via
+  QFontDatabase (Segoe UI Variable Text/Display -> Segoe UI -> default).
+
+Qt widget dialogs owned by other modules rely on the QSS generated here, so
+selectors and object names (#leftPane, #watchTable, #menuStatusCorner, ...)
+must stay stable.
+"""
+
 import ctypes
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from PySide6.QtCore import QTimer, QObject, QPointF, Qt, Signal
-from PySide6.QtGui import QPalette, QColor, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QPainter, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle
 
 if sys.platform.startswith("win"):
@@ -13,15 +32,54 @@ if sys.platform.startswith("win"):
 # ---------------------------------------------------------------------------
 # Named theme colour tokens
 # ---------------------------------------------------------------------------
-# Tokens used in _themed_stylesheet / palette:
-#   bg, card, card2, text, text_muted, button, primary, secondary, border
-#
-# Tokens used for profit/loss text and row tinting (wired via ThemeManager methods):
-#   good   — profit / positive P/L text colour (must contrast with 'card' bg)
-#   bad    — loss / negative P/L text colour   (must contrast with 'card' bg)
+# Every theme provides, for both "light" and "dark":
+#   bg, card, card2, text, text_muted, border   — surfaces and text
+#   primary, text_on_color                      — interactive accent + text on it
+#   button, secondary                           — widget button fill, selection
+#   good, bad                                   — gain / loss text (contrast on card)
+#   pace                                        — goal pace marker (QML only, never text)
+#   focus                                       — 2 px focus ring in widget dialogs
+# `pace` and `focus` are derived below for themes that don't set them.
+
+_HARBOR = {
+    "light": {
+        "bg": "#E8ECEF",
+        "card": "#F8FAFB",
+        "card2": "#EEF2F5",
+        "text": "#15202B",
+        "text_muted": "#566472",
+        "border": "#D3DAE0",
+        "primary": "#2C55C9",
+        "text_on_color": "#FFFFFF",
+        "pace": "#B07610",
+        "good": "#0B7A5C",
+        "bad": "#B83A2E",
+        # Widget-only helpers: secondary buttons sit on card2, selection and
+        # focus reuse the primary accent.
+        "button": "#EEF2F5",
+        "secondary": "#2C55C9",
+        "focus": "#2C55C9",
+    },
+    "dark": {
+        "bg": "#161D24",
+        "card": "#1F2830",
+        "card2": "#27323C",
+        "text": "#E4EAF0",
+        "text_muted": "#93A2B0",
+        "border": "#33404B",
+        "primary": "#7FA2FF",
+        "text_on_color": "#0E1620",
+        "pace": "#F0B43C",
+        "good": "#4CC9A0",
+        "bad": "#FF7B6B",
+        "button": "#27323C",
+        "secondary": "#7FA2FF",
+        "focus": "#7FA2FF",
+    },
+}
 
 _THEMES: dict = {
-    "Default": None,  # uses the built-in dark/light stylesheets below
+    "Default": _HARBOR,
 
     "Warm Earth": {
         "light": {
@@ -274,29 +332,72 @@ _THEMES: dict = {
     },
 }
 
+# Derive the tokens older palettes don't define, so every theme exposes the
+# same names (QML binds to all of them).
+for _modes in _THEMES.values():
+    for _t in _modes.values():
+        _t.setdefault("pace", _t["secondary"])
+        _t.setdefault("focus", _t["secondary"])
+del _modes, _t
+
 THEME_NAMES = list(_THEMES.keys())
 
 # Font size presets (pt)
 FONT_SIZES = {"Small": 9, "Normal": 11, "Large": 13, "X-Large": 16}
 FONT_SIZE_LABELS = list(FONT_SIZES.keys())
 
+# Shape + spacing for the widget stylesheet (Harbor: panels 10, controls 6).
 _UI = {
-    "panel_radius": 14,
-    "card_radius": 12,
+    "panel_radius": 10,
+    "card_radius": 10,
     "group_radius": 10,
-    "control_radius": 8,
-    "title_radius": 7,
-    "splitter_radius": 6,
+    "control_radius": 6,
+    "title_radius": 6,
+    "splitter_radius": 2,
     "cell_hpad": 10,
     "cell_vpad": 6,
     "header_hpad": 10,
     "header_vpad": 8,
     "control_hpad": 10,
     "control_vpad": 5,
-    "button_hpad": 12,
-    "button_vpad": 8,
+    "button_hpad": 14,
+    "button_vpad": 7,
+    "row_height": 32,
 }
 
+# ---------------------------------------------------------------------------
+# Fonts
+# ---------------------------------------------------------------------------
+
+_TEXT_FONT_CANDIDATES = ("Segoe UI Variable Text", "Segoe UI")
+_DISPLAY_FONT_CANDIDATES = ("Segoe UI Variable Display", "Segoe UI")
+_resolved_fonts: Optional[Dict[str, str]] = None
+
+
+def resolve_fonts() -> Dict[str, str]:
+    """Return ``{"text": family, "display": family}``, resolved once.
+
+    Needs a QGuiApplication. Falls back to the platform's general font when
+    neither Segoe family is installed (e.g. non-Windows dev machines).
+    """
+    global _resolved_fonts
+    if _resolved_fonts is not None:
+        return _resolved_fonts
+    if QGuiApplication.instance() is None:
+        return {"text": "", "display": ""}
+    installed = set(QFontDatabase.families())
+    fallback = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
+
+    def pick(candidates) -> str:
+        return next((f for f in candidates if f in installed), fallback)
+
+    _resolved_fonts = {"text": pick(_TEXT_FONT_CANDIDATES), "display": pick(_DISPLAY_FONT_CANDIDATES)}
+    return _resolved_fonts
+
+
+# ---------------------------------------------------------------------------
+# Windows accessibility probes
+# ---------------------------------------------------------------------------
 
 def _windows_high_contrast_enabled() -> bool:
     if not sys.platform.startswith("win"):
@@ -312,12 +413,26 @@ def _windows_high_contrast_enabled() -> bool:
         hc.cbSize = ctypes.sizeof(HIGHCONTRAST)
         ctypes.windll.user32.SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, ctypes.byref(hc), 0)
         return bool(hc.dwFlags & 0x00000001)
-    except Exception:
+    except (OSError, AttributeError):
+        return False
+
+
+def reduce_motion_enabled() -> bool:
+    """True when Windows "Show animations in Windows" is off."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        SPI_GETCLIENTAREAANIMATION = 0x1042
+        enabled = ctypes.c_int(1)
+        ctypes.windll.user32.SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(enabled), 0)
+        return not bool(enabled.value)
+    except (OSError, AttributeError):
         return False
 
 
 class ChevronProxyStyle(QProxyStyle):
-    """Draw clearer chevrons for Qt arrow indicators across the app."""
+    """Draw clearer chevrons for Qt arrow indicators across the app, and give
+    every item view the Harbor 32 px row height."""
 
     _ARROW_DIRECTIONS = {
         QStyle.PrimitiveElement.PE_IndicatorArrowDown: "down",
@@ -325,6 +440,13 @@ class ChevronProxyStyle(QProxyStyle):
         QStyle.PrimitiveElement.PE_IndicatorArrowLeft: "left",
         QStyle.PrimitiveElement.PE_IndicatorArrowRight: "right",
     }
+
+    def pixelMetric(self, metric, option=None, widget=None):
+        # Table rows are vertical header sections; QHeaderView reads this
+        # when it is created, so every table built after apply() gets 32 px.
+        if metric == QStyle.PixelMetric.PM_HeaderDefaultSectionSizeVertical:
+            return _UI["row_height"]
+        return super().pixelMetric(metric, option, widget)
 
     def drawPrimitive(self, element, option, painter, widget=None):
         direction = self._ARROW_DIRECTIONS.get(element)
@@ -381,6 +503,8 @@ class ChevronProxyStyle(QProxyStyle):
 
 class ThemeManager(QObject):
     override_mode: str = "System"  # Colour Mode: System / Light / Dark
+    # Kept for the Settings checkbox. Harbor (Default) uses its own fixed
+    # primary, so the Windows accent no longer recolours the app.
     match_system_accent: bool = True
     theme_name: str = "Default"  # Theme: Default / Warm Earth / Forest / etc.
     font_size_label: str = "Normal"  # Font Size: Small / Normal / Large / X-Large
@@ -396,8 +520,8 @@ class ThemeManager(QObject):
         self._last_state = None
         self._timer: Optional[QTimer] = None
         self._chevron_style: Optional[ChevronProxyStyle] = None
-        self._fixed_light_accent = (10, 102, 194)
-        self._fixed_dark_accent = (96, 165, 250)
+        self._fixed_light_accent = (44, 85, 201)  # Harbor primary, light
+        self._fixed_dark_accent = (127, 162, 255)  # Harbor primary, dark
 
     def _assets_dir(self) -> Path:
         if getattr(sys, "frozen", False):
@@ -419,7 +543,7 @@ class ThemeManager(QObject):
                                 r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
                 v, _ = winreg.QueryValueEx(k, "AppsUseLightTheme")
                 return bool(v)
-        except Exception:
+        except OSError:
             return False
 
     def _windows_accent_rgb(self) -> Tuple[int, int, int]:
@@ -428,13 +552,13 @@ class ThemeManager(QObject):
                                 r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent") as k:
                 v, _ = winreg.QueryValueEx(k, "AccentColor")
                 return v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF
-        except Exception:
+        except OSError:
             pass
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM") as k:
                 v, _ = winreg.QueryValueEx(k, "ColorizationColor")
                 return (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
-        except Exception:
+        except OSError:
             pass
         try:
             color = ctypes.c_uint()
@@ -442,7 +566,7 @@ class ThemeManager(QObject):
             if ctypes.windll.dwmapi.DwmGetColorizationColor(ctypes.byref(color), ctypes.byref(opaque)) == 0:
                 v = color.value
                 return (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
-        except Exception:
+        except (OSError, AttributeError):
             pass
         return self._fixed_light_accent
 
@@ -477,6 +601,9 @@ class ThemeManager(QObject):
         app = QApplication.instance()
         if app is not None:
             f = app.font()
+            family = resolve_fonts()["text"]
+            if family:
+                f.setFamily(family)
             f.setPointSize(pt)
             app.setFont(f)
 
@@ -486,6 +613,24 @@ class ThemeManager(QObject):
         if sys.platform.startswith("win"):
             return self._windows_is_light()
         return False
+
+    def is_light(self) -> bool:
+        """True when the light variant of the active theme is in use."""
+        return self._is_light()
+
+    def tokens(self) -> Dict[str, str]:
+        """Copy of the active token dict (theme + light/dark), see _THEMES."""
+        return dict(self._tokens())
+
+    @staticmethod
+    def font_families() -> Dict[str, str]:
+        """``{"text": ..., "display": ...}`` resolved by resolve_fonts()."""
+        return dict(resolve_fonts())
+
+    @staticmethod
+    def reduce_motion() -> bool:
+        """True when the OS asks apps to skip non-essential animation."""
+        return reduce_motion_enabled()
 
     def current_state(self) -> tuple:
         is_light = self._is_light()
@@ -503,39 +648,34 @@ class ThemeManager(QObject):
         """Stop the OS-theme poll timer. Call this before the window is torn
         down so a pending tick cannot repaint a dying widget."""
         if self._timer is not None:
+            # stop() is enough: a stopped QTimer never fires. Disconnecting
+            # here only produced a libpyside RuntimeWarning when nothing was
+            # connected yet.
             self._timer.stop()
-            try:
-                self._timer.timeout.disconnect()
-            except Exception:
-                pass
 
     def _maybe_update_theme(self):
         if self.current_state() != self._last_state:
             self.apply()
 
+    def _refresh_window(self) -> None:
+        refresh = getattr(self.win, "update_ui", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:  # a broken refresh hook must not break theming
+                import logging
+                logging.getLogger(__name__).exception("update_ui hook raised")
+
     def apply(self):
         if sys.platform.startswith("win") and _windows_high_contrast_enabled():
             self.win.setStyleSheet("")
-            refresh = getattr(self.win, "update_ui", None)
-            if callable(refresh):
-                try:
-                    refresh()
-                except Exception:
-                    pass
+            self._refresh_window()
             return
 
-        is_light, r, g, b, msa, tn, fsl = self.current_state()
-        self._last_state = (is_light, r, g, b, msa, tn, fsl)
-
-        theme_data = _THEMES.get(tn)
-        if theme_data is None:
-            accent = QColor(r, g, b)
-            palette = self._default_light_palette(accent) if is_light else self._default_dark_palette(accent)
-            stylesheet = self._default_light_stylesheet(accent) if is_light else self._default_dark_stylesheet(accent)
-        else:
-            tokens = theme_data["light" if is_light else "dark"]
-            palette = self._themed_palette(tokens)
-            stylesheet = self._themed_stylesheet(tokens)
+        self._last_state = self.current_state()
+        tokens = self._tokens()
+        palette = self._themed_palette(tokens)
+        stylesheet = self._themed_stylesheet(tokens)
 
         app = QApplication.instance()
         if app is not None:
@@ -557,88 +697,63 @@ class ThemeManager(QObject):
         try:
             self.win.style().unpolish(self.win)
             self.win.style().polish(self.win)
-        except Exception:
+        except RuntimeError:  # window already being destroyed
             pass
-        refresh = getattr(self.win, "update_ui", None)
-        if callable(refresh):
-            try:
-                refresh()
-            except Exception:
-                pass
+        self._refresh_window()
         self.win.update()
         self._apply_font()
         self.themeApplied.emit()
 
     # ---- Colour accessor methods used by portfolio_tab / main_window ----
 
-    def _tokens(self) -> Optional[dict]:
-        """Return active theme tokens, or None for Default theme."""
-        td = _THEMES.get(self.theme_name)
-        if td is None:
-            return None
+    def _tokens(self) -> dict:
+        """Active token dict (shared, do not mutate). Every theme, Default
+        included, now has tokens — the Optional return is historical."""
+        td = _THEMES.get(self.theme_name) or _THEMES["Default"]
         return td["light" if self._is_light() else "dark"]
 
     def profit_color(self) -> str:
         """Hex color for positive P/L text in tables — contrasts with card background."""
-        t = self._tokens()
-        if t:
-            return t["good"]
-        return "#4a9a30" if self._is_light() else "#6ee78a"
+        return self._tokens()["good"]
 
     def text_color(self) -> str:
-        t = self._tokens()
-        if t:
-            return t["text"]
-        return "#0f1115" if self._is_light() else "#eaeef2"
+        return self._tokens()["text"]
 
     def border_color(self) -> str:
-        t = self._tokens()
-        if t:
-            return t["border"]
-        return "#e5e7eb" if self._is_light() else "#232833"
+        return self._tokens()["border"]
 
     def button_color(self) -> str:
-        t = self._tokens()
-        if t:
-            return t["button"]
-        return "#ffffff" if self._is_light() else "#1f2430"
+        return self._tokens()["button"]
 
     def selected_surface_color(self) -> str:
-        t = self._tokens()
-        if t:
-            return t["primary"]
-        return "#f5f7fb" if self._is_light() else "#1f2430"
+        return self._tokens()["primary"]
 
     def selected_text_color(self) -> str:
-        t = self._tokens()
-        if t:
-            return t["text_on_color"]
-        return "#0f1115" if self._is_light() else "#eaeef2"
+        return self._tokens()["text_on_color"]
 
     def focus_border_color(self) -> str:
-        t = self._tokens()
-        if t:
-            return t["secondary"]
-        is_light, r, g, b, *_ = self.current_state()
-        return QColor(r, g, b).name()
+        return self._tokens()["focus"]
 
     def loss_color(self) -> str:
         """Hex color for negative P/L text in tables — contrasts with card background."""
-        t = self._tokens()
-        if t:
-            return t["bad"]
-        return "#cc2222" if self._is_light() else "#f87171"
+        return self._tokens()["bad"]
+
+    def pace_color(self) -> str:
+        """Goal-pace marker colour. Reserved for the pace rail / curve line."""
+        return self._tokens()["pace"]
 
     def waiting_row_tint(self) -> Tuple[int, int, int, int]:
-        """RGBA tint for WAITING/Pending order rows."""
-        # Amber tint — slightly lighter in light themes
-        return (160, 110, 10, 55) if self._is_light() else (180, 130, 0, 75)
+        """RGBA tint for WAITING/Pending order rows — a neutral wash of the
+        muted text colour (amber is reserved for the goal pace marker)."""
+        c = QColor(self._tokens()["text_muted"])
+        return c.red(), c.green(), c.blue(), 38
 
     def short_row_tint(self) -> Tuple[int, int, int, int]:
-        """RGBA tint for SHORT position rows."""
-        return (20, 80, 180, 45) if self._is_light() else (40, 100, 210, 65)
+        """RGBA tint for SHORT position rows — a light wash of primary."""
+        c = QColor(self._tokens()["primary"])
+        return c.red(), c.green(), c.blue(), 30 if self._is_light() else 40
 
-    # ---- Named-theme builders ----
+    # ---- Palette + stylesheet builders ----
 
     def _themed_palette(self, t: dict) -> QPalette:
         p = QPalette()
@@ -654,9 +769,14 @@ class ThemeManager(QObject):
         p.setColor(QPalette.HighlightedText, QColor(t["text_on_color"]))
         p.setColor(QPalette.WindowText, QColor(t["text"]))
         p.setColor(QPalette.PlaceholderText, QColor(t["text_muted"]))
+        p.setColor(QPalette.Link, QColor(t["primary"]))
+        p.setColor(QPalette.Mid, QColor(t["border"]))
         return p
 
     def _themed_stylesheet(self, t: dict) -> str:
+        """Global QSS for widget dialogs. No shadows; panels 10, controls 6;
+        focus is a 2 px ring in `focus` (padding shrinks by 1 px on focus so
+        the content does not jump)."""
         bg = t["bg"]
         card = t["card"]
         card2 = t["card2"]
@@ -664,101 +784,95 @@ class ThemeManager(QObject):
         muted = t["text_muted"]
         btn = t["button"]
         pri = t["primary"]
-        sec = t["secondary"]
         brd = t["border"]
         toc = t["text_on_color"]
-        panel_radius = _UI["panel_radius"]
-        card_radius = _UI["card_radius"]
-        group_radius = _UI["group_radius"]
-        control_radius = _UI["control_radius"]
-        title_radius = _UI["title_radius"]
-        splitter_radius = _UI["splitter_radius"]
-        cell_hpad = _UI["cell_hpad"]
-        cell_vpad = _UI["cell_vpad"]
-        header_hpad = _UI["header_hpad"]
-        header_vpad = _UI["header_vpad"]
-        control_hpad = _UI["control_hpad"]
-        control_vpad = _UI["control_vpad"]
-        button_hpad = _UI["button_hpad"]
-        button_vpad = _UI["button_vpad"]
+        foc = t["focus"]
+        u = _UI
+        cr = u["control_radius"]
+        cvp, chp = u["control_vpad"], u["control_hpad"]
+        bvp, bhp = u["button_vpad"], u["button_hpad"]
         chevron_down = self._chevron_asset("down")
         chevron_up = self._chevron_asset("up")
         return f"""
         QMainWindow {{ background: {bg}; color: {text}; }}
         QWidget {{ background: {card}; color: {text}; }}
-        #leftPane {{ background: {bg}; border: 1px solid {brd}; border-radius: {panel_radius}px; }}
-        #leftTitle {{ color: {muted}; font-size: 14px; font-weight: 700; padding: 4px 2px; }}
-        #watchTableCard {{ background: {card}; border: 1px solid {brd}; border-radius: {card_radius}px; }}
-        #watchTable {{ background: transparent; border: none; border-radius: {card_radius}px;
-                       alternate-background-color: {card2};
-                       selection-background-color: {sec}; selection-color: {toc}; }}
-        #watchTable::item {{ padding: {cell_vpad}px {cell_hpad}px; border-bottom: 1px solid {brd}; }}
-        #watchTable::item:selected {{ background: {sec}; color: {toc}; }}
+        #leftPane {{ background: {bg}; border: 1px solid {brd}; border-radius: {u["panel_radius"]}px; }}
+        #leftTitle {{ color: {muted}; font-size: 14px; font-weight: 600; padding: 4px 2px; }}
+        #watchTableCard {{ background: {card}; border: 1px solid {brd}; border-radius: {u["card_radius"]}px; }}
+        #watchTable {{ background: transparent; border: none; border-radius: {u["card_radius"]}px;
+                       selection-background-color: {pri}; selection-color: {toc}; }}
+        #watchTable::item {{ padding: 0px {u["cell_hpad"]}px; border-bottom: 1px solid {brd}; }}
+        #watchTable::item:selected {{ background: {pri}; color: {toc}; }}
         #watchTable QHeaderView {{ background: transparent; border: none; }}
         #watchTable QHeaderView::section {{ background: {card2}; color: {muted};
                                            border: none; border-bottom: 1px solid {brd};
-                                           padding: {header_vpad}px {header_hpad}px; font-weight: 700; }}
-        #watchTable QHeaderView::section:first {{ border-top-left-radius: {card_radius}px; }}
-        #watchTable QHeaderView::section:last {{ border-top-right-radius: {card_radius}px; }}
-        QToolTip {{ color: {text}; background: {card}; border: 1px solid {brd}; }}
+                                           padding: {u["header_vpad"]}px {u["header_hpad"]}px; font-weight: 600; }}
+        #watchTable QHeaderView::section:first {{ border-top-left-radius: {u["card_radius"]}px; }}
+        #watchTable QHeaderView::section:last {{ border-top-right-radius: {u["card_radius"]}px; }}
+        QToolTip {{ color: {text}; background: {card}; border: 1px solid {brd}; border-radius: {cr}px; padding: 4px 6px; }}
         QDialog {{ background: {bg}; }}
         QScrollArea {{ background: {bg}; border: none; }}
         QScrollArea > QWidget > QWidget {{ background: {bg}; }}
-        QLineEdit {{ background: {card}; border: 1px solid {brd}; border-radius: {control_radius}px;
-                     padding: {control_vpad}px {control_hpad}px; min-height: 22px; color: {text}; }}
-        QLineEdit:focus {{ border: 1px solid {sec}; }}
+        QLineEdit, QPlainTextEdit, QTextEdit {{ background: {card}; border: 1px solid {brd}; border-radius: {cr}px;
+                     padding: {cvp}px {chp}px; color: {text};
+                     selection-background-color: {pri}; selection-color: {toc}; }}
+        QLineEdit {{ min-height: 22px; }}
+        QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{ border: 2px solid {foc}; padding: {cvp - 1}px {chp - 1}px; }}
         QPushButton {{ background: {btn}; border: 1px solid {brd}; color: {text};
-                       border-radius: {control_radius}px; padding: {button_vpad}px {button_hpad}px; font-weight: 600; }}
-        QPushButton:hover {{ background: {pri}; }}
-        QPushButton:pressed {{ background: {sec}; color: {toc}; }}
-        QPushButton:focus {{ outline: none; border: 1px solid {sec}; }}
+                       border-radius: {cr}px; padding: {bvp}px {bhp}px; font-weight: 600; min-height: 18px; }}
+        QPushButton:hover {{ background: {card2}; border-color: {muted}; }}
+        QPushButton:pressed {{ background: {brd}; }}
+        QPushButton:default {{ background: {pri}; border-color: {pri}; color: {toc}; }}
+        QPushButton:focus {{ outline: none; border: 2px solid {foc}; padding: {bvp - 1}px {bhp - 1}px; }}
+        QPushButton:disabled {{ color: {muted}; }}
+        QPushButton:default:disabled {{ background: {card2}; border-color: {brd}; color: {muted}; }}
+        QPushButton:checked {{ background: {pri}; border-color: {pri}; color: {toc}; }}
         QPushButton[flat="true"] {{ background: transparent; border: none; color: {muted}; }}
-        QTabBar::tab {{ background: {card}; color: {text}; padding: 8px 14px;
-                        border: 1px solid {brd};
-                        border-top-left-radius: {control_radius}px; border-top-right-radius: {control_radius}px;
-                        margin-right: 6px; margin-top: 0px; }}
-        QTabBar::tab:selected {{ background: {pri}; color: {toc}; border-color: {sec}; margin-bottom: -1px; }}
-        QTabWidget::pane {{ border: 1px solid {brd}; border-radius: {card_radius}px;
-                            margin-top: 0px; top: -1px; background: {bg}; }}
-        QGroupBox {{ border: 1px solid {brd}; border-radius: {group_radius}px; margin-top: 16px;
+        QTabBar::tab {{ background: transparent; color: {muted}; padding: 8px 14px;
+                        border: none; border-bottom: 2px solid transparent;
+                        margin-right: 4px; margin-top: 0px; font-weight: 600; }}
+        QTabBar::tab:hover {{ color: {text}; }}
+        QTabBar::tab:selected {{ color: {text}; border-bottom: 2px solid {pri}; }}
+        QTabWidget::pane {{ border: 1px solid {brd}; border-radius: {u["card_radius"]}px;
+                            margin-top: 0px; top: -1px; background: {card}; }}
+        QGroupBox {{ border: 1px solid {brd}; border-radius: {u["group_radius"]}px; margin-top: 16px;
                      background: {card}; }}
-        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 8px;
-                            color: {muted}; background: {card};
-                            border: 1px solid {brd}; border-radius: {title_radius}px; }}
-        QTableWidget {{ background: {card}; gridline-color: {brd}; color: {text};
+        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 6px;
+                            color: {muted}; background: transparent; font-weight: 600; }}
+        QTableWidget, QTableView, QTreeView, QListView {{ background: {card}; gridline-color: {brd}; color: {text};
                         alternate-background-color: {card2}; border: 1px solid {brd};
-                        border-radius: {control_radius}px; }}
-        QHeaderView::section {{ background: {card2}; color: {text}; border: 0px; padding: {cell_vpad}px {cell_hpad}px; }}
-        QTableCornerButton::section {{ background: {card2}; border: 0px; border-top-left-radius: {control_radius}px; }}
-        QTableWidget::item:selected {{ background: {sec}; color: {toc}; }}
+                        border-radius: {cr}px; selection-background-color: {pri}; selection-color: {toc}; }}
+        QTreeView::item, QListView::item {{ min-height: {u["row_height"]}px; }}
+        QHeaderView::section {{ background: {card2}; color: {muted}; border: 0px; border-bottom: 1px solid {brd};
+                                padding: {u["cell_vpad"]}px {u["cell_hpad"]}px; font-weight: 600; }}
+        QTableCornerButton::section {{ background: {card2}; border: 0px; border-top-left-radius: {cr}px; }}
+        QTableWidget::item:selected, QTableView::item:selected {{ background: {pri}; color: {toc}; }}
         QComboBox {{ background: {card}; color: {text}; border: 1px solid {brd};
-                     border-radius: {control_radius}px; padding: {control_vpad}px 34px {control_vpad}px {control_hpad}px; min-height: 22px; }}
-        QComboBox:focus {{ border: 1px solid {sec}; }}
+                     border-radius: {cr}px; padding: {cvp}px 34px {cvp}px {chp}px; min-height: 22px; }}
+        QComboBox:focus {{ border: 2px solid {foc}; padding: {cvp - 1}px 33px {cvp - 1}px {chp - 1}px; }}
         QComboBox::drop-down {{
             subcontrol-origin: padding; subcontrol-position: top right;
-            width: 26px; background: {card2}; border-left: 1px solid {brd};
-            border-top-right-radius: {control_radius}px; border-bottom-right-radius: {control_radius}px;
+            width: 26px; background: transparent; border: none;
         }}
-        QComboBox::drop-down:hover {{ background: {btn}; }}
         QComboBox::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
         QComboBox QAbstractItemView {{ background: {card}; color: {text};
-            selection-background-color: {sec}; selection-color: {toc};
-            border: 1px solid {brd}; }}
+            selection-background-color: {pri}; selection-color: {toc};
+            border: 1px solid {brd}; border-radius: {cr}px; outline: none; }}
         QSpinBox, QDoubleSpinBox {{ background: {card}; color: {text}; border: 1px solid {brd};
-                                    border-radius: {control_radius}px; padding: {control_vpad}px 32px {control_vpad}px {control_hpad}px; min-height: 22px; }}
-        QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {sec}; }}
+                                    border-radius: {cr}px; padding: {cvp}px 32px {cvp}px {chp}px; min-height: 22px; }}
+        QSpinBox:focus, QDoubleSpinBox:focus {{ border: 2px solid {foc}; padding: {cvp - 1}px 31px {cvp - 1}px {chp - 1}px; }}
         QSpinBox::up-button, QDoubleSpinBox::up-button {{
             subcontrol-origin: border; subcontrol-position: top right;
             width: 22px; background: {card2}; border-left: 1px solid {brd};
-            border-bottom: 1px solid {brd}; border-top-right-radius: {control_radius}px;
+            border-bottom: 1px solid {brd}; border-top-right-radius: {cr}px;
         }}
         QSpinBox::down-button, QDoubleSpinBox::down-button {{
             subcontrol-origin: border; subcontrol-position: bottom right;
             width: 22px; background: {card2}; border-left: 1px solid {brd};
-            border-bottom-right-radius: {control_radius}px;
+            border-bottom-right-radius: {cr}px;
         }}
         QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {btn}; }}
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {brd}; }}
         QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
             image: url("{chevron_up}"); width: 12px; height: 12px;
         }}
@@ -766,276 +880,42 @@ class ThemeManager(QObject):
             image: url("{chevron_down}"); width: 12px; height: 12px;
         }}
         QDateEdit {{ background: {card}; color: {text}; border: 1px solid {brd};
-                     border-radius: {control_radius}px; padding: {control_vpad}px 34px {control_vpad}px {control_hpad}px; min-height: 22px; }}
-        QDateEdit:focus {{ border: 1px solid {sec}; }}
+                     border-radius: {cr}px; padding: {cvp}px 34px {cvp}px {chp}px; min-height: 22px; }}
+        QDateEdit:focus {{ border: 2px solid {foc}; padding: {cvp - 1}px 33px {cvp - 1}px {chp - 1}px; }}
         QDateEdit::drop-down {{
             subcontrol-origin: padding; subcontrol-position: top right;
-            width: 26px; background: {card2}; border-left: 1px solid {brd};
-            border-top-right-radius: {control_radius}px; border-bottom-right-radius: {control_radius}px;
+            width: 26px; background: transparent; border: none;
         }}
-        QDateEdit::drop-down:hover {{ background: {btn}; }}
         QDateEdit::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
-        QCheckBox {{ color: {text}; spacing: 6px; }}
-        QCheckBox::indicator {{ border: 1px solid {brd}; border-radius: 4px;
-                                background: {card}; width: 14px; height: 14px; }}
-        QCheckBox::indicator:checked {{ background: {sec}; border-color: {sec}; }}
-        QMenu {{ background: {card}; color: {text}; border: 1px solid {brd}; }}
-        QMenu::item {{ padding: 6px 18px 6px 18px; }}
-        QMenu::item:selected {{ background: {sec}; color: {toc}; }}
+        QCheckBox, QRadioButton {{ color: {text}; spacing: 8px; background: transparent; border: none; }}
+        QCheckBox::indicator {{ border: 1px solid {muted}; border-radius: 4px;
+                                background: {card}; width: 16px; height: 16px; }}
+        QCheckBox::indicator:checked {{ background: {pri}; border-color: {pri}; }}
+        QCheckBox:focus {{ outline: none; }}
+        QCheckBox::indicator:focus {{ border: 2px solid {foc}; }}
+        QMenu {{ background: {card}; color: {text}; border: 1px solid {brd}; border-radius: {cr}px; padding: 4px; }}
+        QMenu::item {{ padding: 7px 18px 7px 14px; border-radius: 4px; }}
+        QMenu::item:selected {{ background: {card2}; color: {text}; }}
+        QMenu::item:disabled {{ color: {muted}; }}
         QMenu::separator {{ height: 1px; background: {brd}; margin: 4px 6px; }}
-        QProgressBar {{ background: {card}; border: 1px solid {brd}; border-radius: {control_radius}px;
+        QProgressBar {{ background: {card2}; border: none; border-radius: {cr}px;
                         text-align: center; color: {text}; }}
-        QProgressBar::chunk {{ background-color: {sec}; border-radius: {control_radius}px; }}
-        QScrollBar:vertical {{ background: {bg}; width: 8px; border-radius: 4px; }}
-        QScrollBar::handle:vertical {{ background: {brd}; border-radius: 4px; min-height: 20px; }}
+        QProgressBar::chunk {{ background-color: {pri}; border-radius: {cr}px; }}
+        QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+        QScrollBar::handle:vertical {{ background: {brd}; border-radius: 3px; min-height: 24px; }}
+        QScrollBar::handle:vertical:hover {{ background: {muted}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
-        QSplitter::handle {{ background: {brd}; border-radius: {splitter_radius}px; margin: 4px 2px; }}
+        QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
+        QScrollBar::handle:horizontal {{ background: {brd}; border-radius: 3px; min-width: 24px; }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0px; }}
+        QSplitter::handle {{ background: {brd}; border-radius: {u["splitter_radius"]}px; margin: 4px 2px; }}
         QStatusBar {{ background: {bg}; color: {muted}; }}
         QMenuBar {{ background: {bg}; color: {text}; border-bottom: 1px solid {brd}; padding-bottom: 2px; }}
-        QMenuBar::item:selected {{ background: {pri}; color: {toc}; }}
+        QMenuBar::item {{ padding: 4px 10px; border-radius: 4px; }}
+        QMenuBar::item:selected {{ background: {card2}; color: {text}; }}
         #menuStatusCorner {{ background: {bg}; border: none; }}
         #menuStatusCorner QLabel {{ background: transparent; padding: 0px; border: none; text-decoration: none; }}
         QLabel {{ color: {text}; background: transparent; }}
-        """
-
-    # ---- Default theme builders (original, unchanged) ----
-
-    def _default_dark_palette(self, accent: QColor) -> QPalette:
-        p = QPalette()
-        p.setColor(QPalette.Window, QColor("#0f1115"))
-        p.setColor(QPalette.Base, QColor("#14171d"))
-        p.setColor(QPalette.AlternateBase, QColor("#171a21"))
-        p.setColor(QPalette.ToolTipBase, QColor("#10131a"))
-        p.setColor(QPalette.ToolTipText, QColor("#eaeef2"))
-        p.setColor(QPalette.Text, QColor("#eaeef2"))
-        p.setColor(QPalette.Button, QColor("#1f2430"))
-        p.setColor(QPalette.ButtonText, QColor("#eaeef2"))
-        p.setColor(QPalette.Highlight, accent)
-        p.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-        p.setColor(QPalette.WindowText, QColor("#eaeef2"))
-        p.setColor(QPalette.PlaceholderText, QColor("#a9b1bd"))
-        return p
-
-    def _default_light_palette(self, accent: QColor) -> QPalette:
-        p = QPalette()
-        p.setColor(QPalette.Window, QColor("#ffffff"))
-        p.setColor(QPalette.Base, QColor("#f8fafc"))
-        p.setColor(QPalette.AlternateBase, QColor("#eef2f7"))
-        p.setColor(QPalette.ToolTipBase, QColor("#f3f5f7"))
-        p.setColor(QPalette.ToolTipText, QColor("#0f1115"))
-        p.setColor(QPalette.Text, QColor("#0f1115"))
-        p.setColor(QPalette.Button, QColor("#ffffff"))
-        p.setColor(QPalette.ButtonText, QColor("#0f1115"))
-        p.setColor(QPalette.Highlight, accent)
-        p.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-        p.setColor(QPalette.WindowText, QColor("#0f1115"))
-        p.setColor(QPalette.PlaceholderText, QColor("#4b5563"))
-        return p
-
-    def _default_dark_stylesheet(self, accent: QColor) -> str:
-        acc = accent.name()
-        chevron_down = self._chevron_asset("down")
-        chevron_up = self._chevron_asset("up")
-        return f"""
-        QMainWindow {{ background: #0f1115; color: #eaeef2; }}
-        #leftPane {{ background: #0f1115; border: 1px solid #232833; border-radius: 14px; }}
-        #leftTitle {{ color: #a9b1bd; font-size: 14px; font-weight: 700; padding: 4px 2px; }}
-        #watchTableCard {{ background: #10131a; border: 1px solid #232833; border-radius: 12px; }}
-        #watchTable {{ background: transparent; border: none; border-radius: 12px;
-                       alternate-background-color: #14171d;
-                       selection-background-color: {acc}; selection-color: white; }}
-        #watchTable::item {{ padding: 6px 8px; border-bottom: 1px solid #232833; }}
-        #watchTable::item:selected {{ background: {acc}; color: white; }}
-        #watchTable QHeaderView {{ background: transparent; border: none; }}
-        #watchTable QHeaderView::section {{ background: #171a21; color: #a9b1bd;
-                                           border: none; border-bottom: 1px solid #232833;
-                                           padding: 8px 10px; font-weight: 700; }}
-        #watchTable QHeaderView::section:first {{ border-top-left-radius: 12px; }}
-        #watchTable QHeaderView::section:last {{ border-top-right-radius: 12px; }}
-        QToolTip {{ color: #eaeef2; background: #10131a; border: 1px solid #232833; }}
-        QLineEdit {{ background: #171a21; border: 1px solid #232833; border-radius: 8px;
-                     padding: 5px 10px; min-height: 22px; color: #eaeef2; }}
-        QLineEdit:focus {{ border: 1px solid {acc}; }}
-        QPushButton {{ background: #1f2430; border: 1px solid #2b3240; color: #eaeef2;
-                       border-radius: 8px; padding: 8px 12px; font-weight: 600; }}
-        QPushButton:hover {{ background: #262d3a; }}
-        QPushButton:pressed {{ background: #2b3240; }}
-        QPushButton:focus {{ outline: none; border: 1px solid {acc}; }}
-        QTabBar::tab {{ background: #171a21; color: #eaeef2; padding: 8px 14px;
-                        border: 1px solid #232833;
-                        border-top-left-radius: 8px; border-top-right-radius: 8px;
-                        margin-right: 6px; margin-top: 0px; }}
-        QTabBar::tab:selected {{ background: #1f2430; border-color: {acc}; margin-bottom: -1px; }}
-        QTabWidget::pane {{ border: 1px solid #232833; border-radius: 12px;
-                            margin-top: 0px; top: -1px; background: #0f1115; }}
-        QGroupBox {{ border: 1px solid #232833; border-radius: 10px; margin-top: 16px; }}
-        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 8px;
-                            color: #a9b1bd; background: #171a21;
-                            border: 1px solid #232833; border-radius: 7px; }}
-        QTableWidget {{ background: #0f1115; gridline-color: #232833; color: #eaeef2;
-                        alternate-background-color: #14171d; border: 1px solid #232833;
-                        border-radius: 8px; }}
-        QHeaderView::section {{ background: #171a21; color: #eaeef2; border: 0px; padding: 6px; }}
-        QTableCornerButton::section {{ background: #171a21; border: 0px; border-top-left-radius: 8px; }}
-        QTableWidget::item:selected {{ background: {acc}; color: white; }}
-        QComboBox {{ background: #171a21; color: #eaeef2; border: 1px solid #232833;
-                     border-radius: 8px; padding: 5px 34px 5px 10px; min-height: 22px; }}
-        QComboBox:focus {{ border: 1px solid {acc}; }}
-        QComboBox::drop-down {{
-            subcontrol-origin: padding; subcontrol-position: top right;
-            width: 26px; background: #1f2430; border-left: 1px solid #232833;
-            border-top-right-radius: 8px; border-bottom-right-radius: 8px;
-        }}
-        QComboBox::drop-down:hover {{ background: #262d3a; }}
-        QComboBox::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
-        QComboBox QAbstractItemView {{ background: #171a21; color: #eaeef2;
-            selection-background-color: {acc}; selection-color: white;
-            border: 1px solid #232833; }}
-        QSpinBox, QDoubleSpinBox {{ background: #171a21; color: #eaeef2; border: 1px solid #232833;
-                                    border-radius: 8px; padding: 5px 32px 5px 10px; min-height: 22px; }}
-        QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {acc}; }}
-        QSpinBox::up-button, QDoubleSpinBox::up-button {{
-            subcontrol-origin: border; subcontrol-position: top right;
-            width: 22px; background: #1f2430; border-left: 1px solid #232833;
-            border-bottom: 1px solid #232833; border-top-right-radius: 8px;
-        }}
-        QSpinBox::down-button, QDoubleSpinBox::down-button {{
-            subcontrol-origin: border; subcontrol-position: bottom right;
-            width: 22px; background: #1f2430; border-left: 1px solid #232833;
-            border-bottom-right-radius: 8px;
-        }}
-        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: #262d3a; }}
-        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-            image: url("{chevron_up}"); width: 12px; height: 12px;
-        }}
-        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-            image: url("{chevron_down}"); width: 12px; height: 12px;
-        }}
-        QDateEdit {{ background: #171a21; color: #eaeef2; border: 1px solid #232833;
-                     border-radius: 8px; padding: 5px 34px 5px 10px; min-height: 22px; }}
-        QDateEdit:focus {{ border: 1px solid {acc}; }}
-        QDateEdit::drop-down {{
-            subcontrol-origin: padding; subcontrol-position: top right;
-            width: 26px; background: #1f2430; border-left: 1px solid #232833;
-            border-top-right-radius: 8px; border-bottom-right-radius: 8px;
-        }}
-        QDateEdit::drop-down:hover {{ background: #262d3a; }}
-        QDateEdit::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
-        QMenu {{ background: #171a21; color: #eaeef2; border: 1px solid #232833; }}
-        QMenu::item {{ padding: 6px 18px 6px 18px; }}
-        QMenu::item:selected {{ background: {acc}; color: white; }}
-        QMenu::separator {{ height: 1px; background: #232833; margin: 4px 6px; }}
-        QProgressBar {{ background: #171a21; border: 1px solid #232833; border-radius: 8px;
-                        text-align: center; color: #eaeef2; }}
-        QProgressBar::chunk {{ background-color: {acc}; border-radius: 8px; }}
-        QSplitter::handle {{ background: #232833; border-radius: 6px; margin: 4px 2px; }}
-        QMenuBar {{ background: #0f1115; color: #eaeef2; border-bottom: 1px solid #232833; padding-bottom: 2px; }}
-        QMenuBar::item:selected {{ background: #1f2430; color: #eaeef2; }}
-        #menuStatusCorner {{ background: #0f1115; border: none; }}
-        #menuStatusCorner QLabel {{ background: transparent; padding: 0px; border: none; text-decoration: none; }}
-        """
-
-    def _default_light_stylesheet(self, accent: QColor) -> str:
-        acc = accent.name()
-        chevron_down = self._chevron_asset("down")
-        chevron_up = self._chevron_asset("up")
-        return f"""
-        QMainWindow {{ background: #ffffff; color: #0f1115; }}
-        #leftPane {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; }}
-        #leftTitle {{ color: #374151; font-size: 14px; font-weight: 700; padding: 4px 2px; }}
-        #watchTableCard {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; }}
-        #watchTable {{ background: transparent; border: none; border-radius: 12px;
-                       alternate-background-color: #f8fafc;
-                       selection-background-color: {acc}; selection-color: white; }}
-        #watchTable::item {{ padding: 6px 8px; border-bottom: 1px solid #e5e7eb; }}
-        #watchTable::item:selected {{ background: {acc}; color: white; }}
-        #watchTable QHeaderView {{ background: transparent; border: none; }}
-        #watchTable QHeaderView::section {{ background: #f3f4f6; color: #374151;
-                                           border: none; border-bottom: 1px solid #e5e7eb;
-                                           padding: 8px 10px; font-weight: 700; }}
-        #watchTable QHeaderView::section:first {{ border-top-left-radius: 12px; }}
-        #watchTable QHeaderView::section:last {{ border-top-right-radius: 12px; }}
-        QToolTip {{ color: #0f1115; background: #f3f5f7; border: 1px solid #e5e7eb; }}
-        QLineEdit {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px;
-                     padding: 5px 10px; min-height: 22px; color: #0f1115; }}
-        QLineEdit:focus {{ border: 1px solid {acc}; }}
-        QPushButton {{ background: #ffffff; border: 1px solid #e5e7eb; color: #0f1115;
-                       border-radius: 8px; padding: 8px 12px; font-weight: 600; }}
-        QPushButton:hover {{ background: #f5f7fb; }}
-        QPushButton:pressed {{ background: #eef2f7; }}
-        QPushButton:focus {{ outline: none; border: 1px solid {acc}; }}
-        QTabBar::tab {{ background: #ffffff; color: #0f1115; padding: 8px 14px;
-                        border: 1px solid #e5e7eb;
-                        border-top-left-radius: 8px; border-top-right-radius: 8px;
-                        margin-right: 6px; margin-top: 0px; }}
-        QTabBar::tab:selected {{ background: #f5f7fb; border-color: {acc}; margin-bottom: -1px; }}
-        QTabWidget::pane {{ border: 1px solid #e5e7eb; border-radius: 12px;
-                            margin-top: 0px; top: -1px; background: #ffffff; }}
-        QGroupBox {{ border: 1px solid #e5e7eb; border-radius: 10px; margin-top: 16px; }}
-        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 8px;
-                            color: #374151; background: #ffffff;
-                            border: 1px solid #e5e7eb; border-radius: 7px; }}
-        QTableWidget {{ background: #ffffff; gridline-color: #e5e7eb; color: #0f1115;
-                        alternate-background-color: #f8fafc; border: 1px solid #e5e7eb;
-                        border-radius: 8px; }}
-        QHeaderView::section {{ background: #f3f4f6; color: #0f1115; border: 0px; padding: 6px; }}
-        QTableCornerButton::section {{ background: #f3f4f6; border: 0px; border-top-left-radius: 8px; }}
-        QTableWidget::item:selected {{ background: {acc}; color: white; }}
-        QComboBox {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb;
-                     border-radius: 8px; padding: 5px 34px 5px 10px; min-height: 22px; }}
-        QComboBox:focus {{ border: 1px solid {acc}; }}
-        QComboBox::drop-down {{
-            subcontrol-origin: padding; subcontrol-position: top right;
-            width: 26px; background: #f3f4f6; border-left: 1px solid #e5e7eb;
-            border-top-right-radius: 8px; border-bottom-right-radius: 8px;
-        }}
-        QComboBox::drop-down:hover {{ background: #eef2f7; }}
-        QComboBox::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
-        QComboBox QAbstractItemView {{ background: #ffffff; color: #0f1115;
-            selection-background-color: {acc}; selection-color: white;
-            border: 1px solid #e5e7eb; }}
-        QSpinBox, QDoubleSpinBox {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb;
-                                    border-radius: 8px; padding: 5px 32px 5px 10px; min-height: 22px; }}
-        QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {acc}; }}
-        QSpinBox::up-button, QDoubleSpinBox::up-button {{
-            subcontrol-origin: border; subcontrol-position: top right;
-            width: 22px; background: #f3f4f6; border-left: 1px solid #e5e7eb;
-            border-bottom: 1px solid #e5e7eb; border-top-right-radius: 8px;
-        }}
-        QSpinBox::down-button, QDoubleSpinBox::down-button {{
-            subcontrol-origin: border; subcontrol-position: bottom right;
-            width: 22px; background: #f3f4f6; border-left: 1px solid #e5e7eb;
-            border-bottom-right-radius: 8px;
-        }}
-        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: #eef2f7; }}
-        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-            image: url("{chevron_up}"); width: 12px; height: 12px;
-        }}
-        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-            image: url("{chevron_down}"); width: 12px; height: 12px;
-        }}
-        QDateEdit {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb;
-                     border-radius: 8px; padding: 5px 34px 5px 10px; min-height: 22px; }}
-        QDateEdit:focus {{ border: 1px solid {acc}; }}
-        QDateEdit::drop-down {{
-            subcontrol-origin: padding; subcontrol-position: top right;
-            width: 26px; background: #f3f4f6; border-left: 1px solid #e5e7eb;
-            border-top-right-radius: 8px; border-bottom-right-radius: 8px;
-        }}
-        QDateEdit::drop-down:hover {{ background: #eef2f7; }}
-        QDateEdit::down-arrow {{ image: url("{chevron_down}"); width: 12px; height: 12px; }}
-        QMenu {{ background: #ffffff; color: #0f1115; border: 1px solid #e5e7eb; }}
-        QMenu::item {{ padding: 6px 18px 6px 18px; }}
-        QMenu::item:selected {{ background: {acc}; color: white; }}
-        QMenu::separator {{ height: 1px; background: #e5e7eb; margin: 4px 6px; }}
-        QProgressBar {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px;
-                        text-align: center; color: #0f1115; }}
-        QProgressBar::chunk {{ background-color: {acc}; border-radius: 8px; }}
-        QSplitter::handle {{ background: #e5e7eb; border-radius: 6px; margin: 4px 2px; }}
-        QMenuBar {{ background: #ffffff; color: #0f1115; border-bottom: 1px solid #e5e7eb; padding-bottom: 2px; }}
-        QMenuBar::item:selected {{ background: #eef2f7; color: #0f1115; }}
-        #menuStatusCorner {{ background: #ffffff; border: none; }}
-        #menuStatusCorner QLabel {{ background: transparent; padding: 0px; border: none; text-decoration: none; }}
+        QLabel:disabled {{ color: {muted}; }}
+        QFrame[role="panel"] {{ border-radius: 10px; }}
         """
