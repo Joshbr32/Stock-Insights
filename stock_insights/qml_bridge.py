@@ -1,25 +1,35 @@
-"""qml_bridge.py — Adapters that expose the existing Trade / Holding /
-portfolio-math layer to QML.
+"""qml_bridge.py — view-model layer that exposes trades, holdings, goal and
+theme data to the QML scene (stock_insights/qml/*.qml).
 
 Architecture
 ────────────
     AppController (root, exposed to QML as `app`)
-        ├── ThemeController        — color tokens driven by ThemeManager
+        ├── ThemeController        — cached colour tokens + fonts from ThemeManager
         ├── WatchlistModel         — QAbstractListModel (symbol + live price)
         └── accounts: [AccountController]
                 ├── HoldingsModel  — QAbstractListModel
                 ├── TradesModel    — QAbstractListModel
-                ├── goal:     dict exposed as Q_PROPERTY
-                ├── analytics: dict exposed as Q_PROPERTY
-                └── summary:   dict exposed as Q_PROPERTY
+                ├── goal / pace / summary   (notify: metricsChanged)
+                └── analytics / equity curve / tags (notify: analyticsChanged)
 
-All heavy computation still lives in `portfolio.py`. This module is just a
-view-model layer — it watches trades + marks and feeds formatted strings
-(and raw numbers where QML wants them) into the QML scene.
+All P/L maths lives in `portfolio.py`; this module only caches inputs,
+calls those pure functions, and formats strings for display.
+
+Update paths (cheapest first) — keep them separate, they run on the UI thread:
+  * marks tick   -> AppController.apply_marks -> AccountController.update_marks:
+                    holdings + summary + goal/pace only. No store reads, no
+                    trade-row rebuild, no equity-curve repaint.
+  * filter change (date range / tag / text / status) -> trade-side only.
+  * trades saved -> AppController.refresh_all_accounts (reads the store).
+Signals fire only when the published values actually changed, so an
+unchanged marks tick does not re-evaluate any QML binding.
 """
 
 from __future__ import annotations
 
+import logging
+from collections import defaultdict
+from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import (
@@ -41,45 +51,94 @@ from .portfolio import (
     compute_realized_pl_by_symbol,
     compute_trade_analytics,
     compute_trade_rows,
+    filter_trades_by_date_range_with_orig_index,
 )
-from .theme import FONT_SIZES
+from .theme import FONT_SIZES, reduce_motion_enabled, resolve_fonts
+
+_log = logging.getLogger(__name__)
+
+MINUS = "−"  # real minus sign; design rule: never a hyphen for negatives
+DASH = "—"
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 # ---------------------------------------------------------------------------
-# Formatting helpers (keep parity with portfolio_tab.py)
+# Formatting helpers. Unsigned values (prices, costs, values) never show "+";
+# P/L values are signed. symbol_history_dialog.py keeps the older "$ x" style.
 # ---------------------------------------------------------------------------
 
 def _money(value: Optional[float]) -> str:
-    return "—" if value is None else f"$ {float(value):,.2f}"
+    """$1,234.56 / −$1,234.56 — for prices, costs and market values."""
+    if value is None:
+        return DASH
+    v = float(value)
+    return f"{MINUS if v < 0 else ''}${abs(v):,.2f}"
+
+
+def _signed_money(value: Optional[float]) -> str:
+    """+$412.50 / −$88.00 / $0.00 — for profit and loss."""
+    if value is None:
+        return DASH
+    v = float(value)
+    if abs(v) < 0.005:
+        return "$0.00"
+    return f"{'+' if v > 0 else MINUS}${abs(v):,.2f}"
 
 
 def _goal_money(value: Optional[float]) -> str:
-    return "—" if value is None else f"$ {float(value):,.0f}"
+    """Whole dollars, for goal targets and pace amounts."""
+    if value is None:
+        return DASH
+    v = float(value)
+    return f"{MINUS if v < 0 else ''}${abs(v):,.0f}"
 
 
 def _pct(value: Optional[float]) -> str:
-    return "—" if value is None else f"{float(value):,.2f}%"
+    return DASH if value is None else f"{float(value):,.1f}%"
+
+
+def _signed_pct(value: Optional[float]) -> str:
+    if value is None:
+        return DASH
+    v = float(value)
+    if abs(v) < 0.05:
+        return "0.0%"
+    return f"{'+' if v > 0 else MINUS}{abs(v):,.1f}%"
+
+
+def _arrow_pct(value: Optional[float]) -> str:
+    """▲ 4.2% / ▼ 1.3% — table change column, so colour is never the only cue."""
+    if value is None:
+        return DASH
+    v = float(value)
+    if abs(v) < 0.05:
+        return "0.0%"
+    return f"{'▲' if v > 0 else '▼'} {abs(v):,.1f}%"
 
 
 def _int(value: Optional[int]) -> str:
-    return "—" if value is None else f"{int(value):,d}"
+    return DASH if value is None else f"{int(value):,d}"
 
 
-def _date(value) -> str:
-    return "—" if value is None else value.isoformat()
+def _date(value: Optional[date], today: Optional[date] = None) -> str:
+    """'Mar 7' this year, 'Mar 7, 2025' otherwise."""
+    if value is None:
+        return DASH
+    today = today or date.today()
+    text = f"{_MONTHS[value.month - 1]} {value.day}"
+    return text if value.year == today.year else f"{text}, {value.year}"
 
 
 def _preset_label(value: float) -> str:
     if value >= 1_000_000:
-        return f"{(value / 1_000_000):g}M"
+        return f"${(value / 1_000_000):g}M"
     if value >= 1_000:
-        return f"{(value / 1_000):g}K"
-    return f"{value:g}"
+        return f"${(value / 1_000):g}K"
+    return f"${value:g}"
 
 
 def _sign(value: Optional[float]) -> int:
-    """Return +1 / -1 / 0 — used by QML to color metric values
-    green (profit), red (loss), or neutral."""
+    """+1 / -1 / 0 — QML colours values good / bad / neutral from this."""
     if value is None or value == 0:
         return 0
     return 1 if value > 0 else -1
@@ -87,8 +146,22 @@ def _sign(value: Optional[float]) -> int:
 
 def _profit_factor_text(value: Optional[float]) -> str:
     if value is None:
-        return "—"
-    return f"{value:,.2f}x"
+        return DASH
+    return f"{value:,.2f}"
+
+
+_STATUS_TEXT = {
+    "WAITING": "Pending",
+    "OPEN": "Open",
+    "SHORT": "Short",
+    "CLOSED": "Closed",
+    "COVERED": "Covered",
+}
+
+
+def _ms(d: date, at: time = time(16, 0)) -> float:
+    """ms-since-epoch for QtCharts DateTimeAxis (local time)."""
+    return float(int(datetime.combine(d, at).timestamp() * 1000))
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +198,7 @@ class WatchlistModel(QAbstractListModel):
             return row["price"]
         if role == self.PriceTextRole:
             p = row["price"]
-            return "—" if p is None else f"{p:,.2f}"
+            return DASH if p is None else f"{p:,.2f}"
         return None
 
     def roleNames(self) -> Dict[int, QByteArray]:
@@ -136,6 +209,8 @@ class WatchlistModel(QAbstractListModel):
         }
 
     def set_symbols(self, symbols: List[str]) -> None:
+        if symbols == self.symbols():
+            return  # avoid a reset (and lost selection/scroll) when nothing changed
         previous = len(self._rows)
         self.beginResetModel()
         self._rows = [{"symbol": s, "price": None} for s in symbols]
@@ -145,8 +220,7 @@ class WatchlistModel(QAbstractListModel):
 
     def update_prices(self, marks: Dict[str, Dict[str, Optional[float]]]) -> None:
         for i, row in enumerate(self._rows):
-            info = marks.get(row["symbol"], {})
-            new_price = info.get("price")
+            new_price = marks.get(row["symbol"], {}).get("price")
             if new_price != row["price"]:
                 row["price"] = new_price
                 idx = self.index(i)
@@ -157,6 +231,10 @@ class WatchlistModel(QAbstractListModel):
 
 
 class HoldingsModel(QAbstractListModel):
+    """Open positions. `_rows` is a list of dicts keyed like the role table
+    below; main_window reads `_rows[i]["instrument"]` to build the marks
+    ticker list, so keep that key."""
+
     InstrumentRole = Qt.UserRole + 1
     QtyTextRole = Qt.UserRole + 2
     AvgCostRole = Qt.UserRole + 3
@@ -166,6 +244,20 @@ class HoldingsModel(QAbstractListModel):
     MarketValueRole = Qt.UserRole + 7
     WeightRole = Qt.UserRole + 8
     IsShortRole = Qt.UserRole + 9
+    UnrealizedPctRole = Qt.UserRole + 10
+
+    _KEYS = {
+        InstrumentRole: ("instrument", b"instrument"),
+        QtyTextRole: ("qty_text", b"qtyText"),
+        AvgCostRole: ("avg_cost", b"avgCost"),
+        MarkRole: ("mark", b"mark"),
+        UnrealizedPlRole: ("unrealized", b"unrealizedPl"),
+        UnrealizedSignRole: ("unrealized_sign", b"unrealizedSign"),
+        MarketValueRole: ("market_value", b"marketValue"),
+        WeightRole: ("weight", b"weight"),
+        IsShortRole: ("is_short", b"isShort"),
+        UnrealizedPctRole: ("unrealized_pct", b"unrealizedPctText"),
+    }
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -177,55 +269,47 @@ class HoldingsModel(QAbstractListModel):
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if not index.isValid() or not (0 <= index.row() < len(self._rows)):
             return None
-        r = self._rows[index.row()]
-        if role == self.InstrumentRole: return r["instrument"]
-        if role == self.QtyTextRole: return r["qty_text"]
-        if role == self.AvgCostRole: return r["avg_cost"]
-        if role == self.MarkRole: return r["mark"]
-        if role == self.UnrealizedPlRole: return r["unrealized"]
-        if role == self.UnrealizedSignRole: return r["unrealized_sign"]
-        if role == self.MarketValueRole: return r["market_value"]
-        if role == self.WeightRole: return r["weight"]
-        if role == self.IsShortRole: return r["is_short"]
-        return None
+        key = self._KEYS.get(role)
+        return None if key is None else self._rows[index.row()][key[0]]
 
     def roleNames(self) -> Dict[int, QByteArray]:
+        return {role: QByteArray(name) for role, (_k, name) in self._KEYS.items()}
+
+    @staticmethod
+    def _row(h) -> Dict[str, Any]:
+        is_short = h.qty < 0
+        basis = abs(float(h.avg_cost) * h.qty)
+        pct = (float(h.unrealized_pl) / basis * 100.0) if basis > 0 and h.mark is not None else None
         return {
-            self.InstrumentRole: QByteArray(b"instrument"),
-            self.QtyTextRole: QByteArray(b"qtyText"),
-            self.AvgCostRole: QByteArray(b"avgCost"),
-            self.MarkRole: QByteArray(b"mark"),
-            self.UnrealizedPlRole: QByteArray(b"unrealizedPl"),
-            self.UnrealizedSignRole: QByteArray(b"unrealizedSign"),
-            self.MarketValueRole: QByteArray(b"marketValue"),
-            self.WeightRole: QByteArray(b"weight"),
-            self.IsShortRole: QByteArray(b"isShort"),
+            "instrument": h.instrument,
+            "qty_text": f"{abs(h.qty):,d}",
+            "avg_cost": _money(h.avg_cost),
+            "mark": DASH if h.mark is None else _money(h.mark),
+            "unrealized": _signed_money(h.unrealized_pl) if h.mark is not None else DASH,
+            "unrealized_sign": _sign(h.unrealized_pl) if h.mark is not None else 0,
+            "unrealized_pct": _arrow_pct(pct),
+            "market_value": _money(h.market_value),
+            "weight": _pct(h.weight_pct),
+            "is_short": is_short,
         }
 
     def set_rows(self, views) -> None:
-        self.beginResetModel()
-        out: List[Dict[str, Any]] = []
-        for h in views:
-            is_short = h.qty < 0
-            qty_text = f"{abs(h.qty):,d} (SHORT)" if is_short else f"{h.qty:,d}"
-            sign = 0
-            if h.unrealized_pl > 0:
-                sign = 1
-            elif h.unrealized_pl < 0:
-                sign = -1
-            out.append({
-                "instrument": h.instrument,
-                "qty_text": qty_text,
-                "avg_cost": _money(h.avg_cost),
-                "mark": "—" if h.mark is None else f"$ {float(h.mark):,.2f}",
-                "unrealized": _money(h.unrealized_pl),
-                "unrealized_sign": sign,
-                "market_value": _money(h.market_value),
-                "weight": _pct(h.weight_pct),
-                "is_short": is_short,
-            })
-        self._rows = out
-        self.endResetModel()
+        out = [self._row(h) for h in views]
+        same_shape = len(out) == len(self._rows) and all(
+            a["instrument"] == b["instrument"] and a["is_short"] == b["is_short"]
+            for a, b in zip(out, self._rows))
+        if not same_shape:
+            self.beginResetModel()
+            self._rows = out
+            self.endResetModel()
+            return
+        # Same positions, new marks: update in place so delegates (hover,
+        # scroll position) survive the 20-second marks tick.
+        for i, new in enumerate(out):
+            if new != self._rows[i]:
+                self._rows[i] = new
+                idx = self.index(i)
+                self.dataChanged.emit(idx, idx)
 
 
 class TradesModel(QAbstractListModel):
@@ -244,6 +328,9 @@ class TradesModel(QAbstractListModel):
     SourceIndexRole = Qt.UserRole + 13
     IsPendingRole = Qt.UserRole + 14
     IsShortRole = Qt.UserRole + 15
+    StatusTextRole = Qt.UserRole + 16
+    ReturnTextRole = Qt.UserRole + 17
+    TagRole = Qt.UserRole + 18
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -255,13 +342,14 @@ class TradesModel(QAbstractListModel):
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if not index.isValid() or not (0 <= index.row() < len(self._rows)):
             return None
-        r = self._rows[index.row()]
-        return r.get(_TRADE_ROLE_KEY.get(role))
+        return self._rows[index.row()].get(_TRADE_ROLE_KEY.get(role))
 
     def roleNames(self) -> Dict[int, QByteArray]:
         return _TRADE_ROLE_NAMES
 
     def set_rows(self, rows: List[Dict[str, Any]]) -> None:
+        if rows == self._rows:
+            return
         self.beginResetModel()
         self._rows = rows
         self.endResetModel()
@@ -273,41 +361,29 @@ class TradesModel(QAbstractListModel):
         return None
 
 
-_TRADE_ROLE_KEY = {
-    TradesModel.InstrumentRole: "instrument",
-    TradesModel.ShareCountRole: "share_count",
-    TradesModel.StatusRole: "status",
-    TradesModel.BuyPriceRole: "buy_price",
-    TradesModel.SellPriceRole: "sell_price",
-    TradesModel.TradeProfitRole: "trade_profit",
-    TradesModel.ProfitSignRole: "profit_sign",
-    TradesModel.OpenDateRole: "open_date",
-    TradesModel.CloseDateRole: "close_date",
-    TradesModel.DaysRole: "days",
-    TradesModel.AvgDailyRole: "avg_daily",
-    TradesModel.NotesRole: "notes",
-    TradesModel.SourceIndexRole: "source_index",
-    TradesModel.IsPendingRole: "is_pending",
-    TradesModel.IsShortRole: "is_short",
+# role -> (row-dict key, QML role name)
+_TRADE_ROLES = {
+    TradesModel.InstrumentRole: ("instrument", "instrument"),
+    TradesModel.ShareCountRole: ("share_count", "shareCount"),
+    TradesModel.StatusRole: ("status", "status"),
+    TradesModel.BuyPriceRole: ("buy_price", "buyPrice"),
+    TradesModel.SellPriceRole: ("sell_price", "sellPrice"),
+    TradesModel.TradeProfitRole: ("trade_profit", "tradeProfit"),
+    TradesModel.ProfitSignRole: ("profit_sign", "profitSign"),
+    TradesModel.OpenDateRole: ("open_date", "openDate"),
+    TradesModel.CloseDateRole: ("close_date", "closeDate"),
+    TradesModel.DaysRole: ("days", "daysToClose"),
+    TradesModel.AvgDailyRole: ("avg_daily", "avgDaily"),
+    TradesModel.NotesRole: ("notes", "notes"),
+    TradesModel.SourceIndexRole: ("source_index", "sourceIndex"),
+    TradesModel.IsPendingRole: ("is_pending", "isPending"),
+    TradesModel.IsShortRole: ("is_short", "isShort"),
+    TradesModel.StatusTextRole: ("status_text", "statusText"),
+    TradesModel.ReturnTextRole: ("return_text", "returnText"),
+    TradesModel.TagRole: ("tag", "tag"),
 }
-_TRADE_ROLE_NAMES = {role: QByteArray(name.encode("ascii"))
-                     for role, name in {
-                         TradesModel.InstrumentRole: "instrument",
-                         TradesModel.ShareCountRole: "shareCount",
-                         TradesModel.StatusRole: "status",
-                         TradesModel.BuyPriceRole: "buyPrice",
-                         TradesModel.SellPriceRole: "sellPrice",
-                         TradesModel.TradeProfitRole: "tradeProfit",
-                         TradesModel.ProfitSignRole: "profitSign",
-                         TradesModel.OpenDateRole: "openDate",
-                         TradesModel.CloseDateRole: "closeDate",
-                         TradesModel.DaysRole: "daysToClose",
-                         TradesModel.AvgDailyRole: "avgDaily",
-                         TradesModel.NotesRole: "notes",
-                         TradesModel.SourceIndexRole: "sourceIndex",
-                         TradesModel.IsPendingRole: "isPending",
-                         TradesModel.IsShortRole: "isShort",
-                     }.items()}
+_TRADE_ROLE_KEY = {role: key for role, (key, _n) in _TRADE_ROLES.items()}
+_TRADE_ROLE_NAMES = {role: QByteArray(name.encode("ascii")) for role, (_k, name) in _TRADE_ROLES.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -317,18 +393,19 @@ _TRADE_ROLE_NAMES = {role: QByteArray(name.encode("ascii"))
 class AccountController(QObject):
     """Exposes one account's computed data to QML.
 
-    Whole-object property bags (goal, analytics, summary, presets) are plain
-    QVariantMap / QVariantList so QML can bind to them directly as
-    `account.goal.realized` etc.
+    Property bags (goal, pace, analytics, summary, presets) are plain
+    QVariantMap / QVariantList so QML binds to them as `account.goal.realized`.
 
-    Filter state (textFilter, statusFilter) lives here per-account so that
-    switching tabs preserves each account's filter independently. When the
-    filter changes the underlying TradesModel is reset with the filtered
-    subset — so hidden rows are *removed* from the model rather than just
-    hidden in the delegate, which means no gaps in the list view.
+    Filter state (text, status, date range, tag) lives here per account so
+    switching tabs keeps each account's filters. Filtered-out rows are
+    removed from the TradesModel (not hidden in the delegate), so the list
+    has no gaps.
     """
 
+    # goal, pace, summary, presets, realized/progress raws — mark-dependent
     metricsChanged = Signal()
+    # analytics, equity curve, tags, trade count — trade/filter-dependent
+    analyticsChanged = Signal()
     filterChanged = Signal()
     loadedChanged = Signal()
 
@@ -337,47 +414,46 @@ class AccountController(QObject):
         self._name = name
         self._holdings = HoldingsModel(self)
         self._trades = TradesModel(self)
+        # Published, mark-dependent state (metricsChanged)
         self._goal: Dict[str, Any] = {}
-        self._analytics: Dict[str, str] = {}
+        self._pace: Dict[str, Any] = {}
         self._summary: Dict[str, str] = {}
         self._presets: List[Dict[str, Any]] = []
         self._goal_target_value: float = 500_000.0
-        # Raw numeric values used by QML progress bars / gauges. Kept
-        # separately from the formatted `goal` string dict so visual widgets
-        # don't have to parse currency strings back to numbers.
         self._realized_raw: float = 0.0
         self._goal_progress_pct: float = 0.0
+        # Published, trade-dependent state (analyticsChanged)
+        self._analytics: Dict[str, Any] = {}
         self._est_yearly_raw: Optional[float] = None
-        # Equity-curve points: list of {x, y} for QML's LineSeries. x is
-        # ms-since-epoch so QtCharts.DateTimeAxis can plot it directly.
+        # {x: ms-since-epoch, y: cumulative realized $} for QtCharts.
         self._equity_curve: List[Dict[str, float]] = []
-        # Full unfiltered trade list — kept so we can re-apply filter without
-        # round-tripping through the data store.
+        self._equity_min_y: float = 0.0
+        self._equity_max_y: float = 0.0
+        self._pace_line: List[Dict[str, float]] = []
+        self._available_tags: List[str] = []
+        # Unfiltered trade rows for the current date/tag range, so text /
+        # status filter changes never recompute analytics.
         self._all_trade_rows: List[Dict[str, Any]] = []
         self._text_filter: str = ""
         self._status_filter: str = ""
-        # Date-range filter applied to BOTH the trades table and the
-        # Performance Analytics metrics. Per-account state — switching
-        # account tabs preserves each tab's selected range.
-        # Valid keys: "all" / "week" / "month" / "30d" / "ytd"
+        # Date range for the trades table + analytics:
+        # "all" / "week" / "month" / "30d" / "ytd"
         self._date_range: str = "all"
-        # Equity-curve resampling mode. "trades" = one point per closed
-        # trade (default; matches how the curve was originally built);
-        # "daily" = bucket cumulative-realized at end-of-day, smoothing
-        # out clusters of same-day closes. Per-account state.
+        # "trades" = one curve point per close; "daily" = end-of-day buckets.
         self._equity_curve_mode: str = "trades"
-        # Strategy-tag filter applied alongside the date-range filter.
-        # Empty string = "show all tags". When set, analytics + the
-        # trade list are restricted to trades whose `tag` matches.
-        self._tag_filter: str = ""
-        # Last computed inputs (full trade list + marks) — used so that
-        # changing the date range only requires re-filtering, not a fresh
-        # store round-trip.
+        self._tag_filter: str = ""  # "" = all tags
+        # Cached inputs so filter/marks changes never go back to the store.
         self._last_trades: List[Trade] = []
         self._last_goal_trades: List[Trade] = []
         self._last_marks: Dict[str, Optional[float]] = {}
         self._last_goal_target: float = 500_000.0
         self._last_presets: List[float] = []
+        # Mark-independent intermediates, rebuilt only when trades change.
+        self._holdings_base = []
+        self._realized_base: Dict[str, float] = {}
+        self._goal_holdings_base = []
+        self._goal_realized_base: Dict[str, float] = {}
+        self._goal_has_closed = False
         self._loaded: bool = False
 
     @Property(str, constant=True)
@@ -396,8 +472,16 @@ class AccountController(QObject):
     def goal(self) -> Dict[str, Any]:
         return self._goal
 
+    # Pace rail data: expected-by-today vs realized. Keys: state
+    # ("ahead"/"behind"/"reached"/"start" = no closed trades/"none" = no goal), sentence, targetText, endText,
+    # expectedText, realizedText, fraction (realized/target, 0..1),
+    # paceFraction (expected/target, 0..1).
     @Property("QVariantMap", notify=metricsChanged)
-    def analytics(self) -> Dict[str, str]:
+    def pace(self) -> Dict[str, Any]:
+        return self._pace
+
+    @Property("QVariantMap", notify=analyticsChanged)
+    def analytics(self) -> Dict[str, Any]:
         return self._analytics
 
     @Property("QVariantMap", notify=metricsChanged)
@@ -412,9 +496,6 @@ class AccountController(QObject):
     def goalTargetValue(self) -> float:
         return self._goal_target_value
 
-    # Raw realized profit and progress-to-goal percentage — used by QML
-    # visual widgets (progress bars etc.) that need real numbers, not
-    # formatted currency strings.
     @Property(float, notify=metricsChanged)
     def realizedRaw(self) -> float:
         return self._realized_raw
@@ -423,39 +504,37 @@ class AccountController(QObject):
     def goalProgressPct(self) -> float:
         return self._goal_progress_pct
 
-    @Property(float, notify=metricsChanged)
+    @Property(float, notify=analyticsChanged)
     def estYearlyRaw(self) -> float:
         return 0.0 if self._est_yearly_raw is None else float(self._est_yearly_raw)
 
-    # ── Equity-curve points ───────────────────────────────────────────────
-    # List of {x: <ms-since-epoch>, y: <cumulative realized $>} dicts, one
-    # per closed trade in the current date range, ordered by close_date.
-    # QML's QtCharts.LineSeries can iterate this directly via an append loop.
-    @Property("QVariantList", notify=metricsChanged)
+    # ── Equity curve: one point per closed trade (or per day) in range ──
+    @Property("QVariantList", notify=analyticsChanged)
     def equityCurve(self) -> List[Dict[str, float]]:
-        return list(self._equity_curve)
+        return self._equity_curve
 
-    @Property(float, notify=metricsChanged)
+    @Property(float, notify=analyticsChanged)
     def equityCurveMinY(self) -> float:
-        if not self._equity_curve:
-            return 0.0
-        return min(0.0, min(p["y"] for p in self._equity_curve))
+        return self._equity_min_y
 
-    @Property(float, notify=metricsChanged)
+    @Property(float, notify=analyticsChanged)
     def equityCurveMaxY(self) -> float:
-        if not self._equity_curve:
-            return 0.0
-        return max(0.0, max(p["y"] for p in self._equity_curve))
+        return self._equity_max_y
 
-    # Sign of the realized P/L — used by the Goal Dashboard's Realized
-    # Profit hero to color the number green (profit), red (loss), or neutral.
+    # Straight goal-pace line [{x, y}, {x, y}] from Jan 1 ($0) to today
+    # (expected-by-now). Empty unless the range is "all"/"ytd", the curve
+    # has data and there is a positive goal — otherwise it would compare
+    # a sub-range curve against a full-year pace.
+    @Property("QVariantList", notify=analyticsChanged)
+    def equityPaceLine(self) -> List[Dict[str, float]]:
+        return self._pace_line
+
     @Property(int, notify=metricsChanged)
     def realizedSign(self) -> int:
         return _sign(self._realized_raw)
 
-    # ── Loaded flag — false until update() has been called at least once.
-    # QML uses this to suppress the "No trades yet" placeholder during the
-    # brief window between QML mounting and the first data refresh.
+    # False until update() has run once, so QML can suppress empty states
+    # in the gap between mounting and the first data load.
     @Property(bool, notify=loadedChanged)
     def loaded(self) -> bool:
         return self._loaded
@@ -469,11 +548,10 @@ class AccountController(QObject):
     def statusFilter(self) -> str:
         return self._status_filter
 
-    @Property(int, notify=metricsChanged)
+    @Property(int, notify=analyticsChanged)
     def totalTradeCount(self) -> int:
         return len(self._all_trade_rows)
 
-    # ── Date-range filter ────────────────────────────────────────────────
     @Property(str, notify=filterChanged)
     def dateRangeKey(self) -> str:
         return self._date_range
@@ -486,14 +564,8 @@ class AccountController(QObject):
         if new != self._date_range:
             self._date_range = new
             self.filterChanged.emit()
-            # Re-run the full recompute against cached inputs — analytics
-            # depends on the date-filtered set, so this isn't just a re-render.
-            self._recompute_with_current_filter()
+            self._recompute_trade_side()
 
-    # ── Strategy-tag filter ──────────────────────────────────────────────
-    # Empty string = "all tags". When set, analytics + the trade list
-    # narrow to trades whose `.tag` matches. UI populates the combo
-    # from `availableTags`.
     @Property(str, notify=filterChanged)
     def tagFilter(self) -> str:
         return self._tag_filter
@@ -504,24 +576,14 @@ class AccountController(QObject):
         if new != self._tag_filter:
             self._tag_filter = new
             self.filterChanged.emit()
-            self._recompute_with_current_filter()
+            self._recompute_trade_side()
 
-    # List of distinct non-empty tags present in the cached trades,
-    # sorted alphabetically. Used to populate the tag-filter combo.
-    @Property("QVariantList", notify=metricsChanged)
+    # Distinct non-empty tags in the account, sorted case-insensitively.
+    @Property("QVariantList", notify=analyticsChanged)
     def availableTags(self) -> List[str]:
-        tags = set()
-        for t in self._last_trades:
-            v = (getattr(t, "tag", "") or "").strip()
-            if v:
-                tags.add(v)
-        return sorted(tags, key=str.lower)
+        return self._available_tags
 
-    # ── Equity-curve resampling mode ─────────────────────────────────────
-    # "trades" = one point per closed trade (highest fidelity, can look
-    # noisy with 100+ trades). "daily" = bucket by date, end-of-day
-    # cumulative — smoother, easier to read in dense histories.
-    @Property(str, notify=metricsChanged)
+    @Property(str, notify=analyticsChanged)
     def equityCurveMode(self) -> str:
         return self._equity_curve_mode
 
@@ -532,9 +594,7 @@ class AccountController(QObject):
             new = "trades"
         if new != self._equity_curve_mode:
             self._equity_curve_mode = new
-            # Only the curve depends on this — recompute everything is
-            # fine and keeps the wiring simple.
-            self._recompute_with_current_filter()
+            self._recompute_trade_side()
 
     @Slot(str)
     def setTextFilter(self, text: str) -> None:
@@ -552,96 +612,54 @@ class AccountController(QObject):
             self.filterChanged.emit()
             self._reapply_filter()
 
+    # ── Computation ─────────────────────────────────────────────────────────
+
     def _build_equity_curve(self, trades: List[Trade]) -> List[Dict[str, float]]:
-        """Build (x: ms-since-epoch, y: cumulative realized $) points from
-        the date-filtered trade list.
+        """(x: ms-since-epoch, y: cumulative realized $) from closed trades.
 
-        Only closed trades contribute. The curve always starts at zero on
-        the first close date so the line visually rises from the origin
-        rather than appearing to start mid-air.
-
-        Two modes, controlled by `self._equity_curve_mode`:
-          • "trades" (default) — one point per closed trade.
-          • "daily" — collapse same-day closes into a single end-of-day
-            cumulative point. Better for dense trade histories where the
-            per-trade zigzag becomes unreadable.
+        Seeded with a $0 point the day before the first close so the line
+        rises from the axis. "daily" mode sums same-day closes into one
+        end-of-day point, which reads better on dense histories.
         """
-        from datetime import datetime, time, timedelta
-
         closed = [
             t for t in trades
             if t.is_closed and t.close_date is not None
-               and t.trade_profit is not None and not t.is_pending
+            and t.trade_profit is not None and not t.is_pending
         ]
         if not closed:
             return []
-        # Stable sort by close_date so cumulative addition makes sense.
         closed.sort(key=lambda t: t.close_date)
-
-        # Seed with a zero point one day before the first close, so the
-        # line clearly starts on the x-axis and then climbs.
-        first_close = closed[0].close_date
-        seed_date = first_close - timedelta(days=1)
-        seed_ms = int(datetime.combine(seed_date, time(0, 0)).timestamp() * 1000)
-        points: List[Dict[str, float]] = [{"x": float(seed_ms), "y": 0.0}]
-
+        points: List[Dict[str, float]] = [
+            {"x": _ms(closed[0].close_date - timedelta(days=1), time(0, 0)), "y": 0.0}]
+        running = 0.0
         if self._equity_curve_mode == "daily":
-            # Group profits by close_date, sum within each day, then
-            # emit one point per unique day at end-of-trading.
-            from collections import defaultdict
             daily_pl: Dict[date, float] = defaultdict(float)
             for t in closed:
                 daily_pl[t.close_date] += float(t.trade_profit or 0.0)
-            running = 0.0
-            for d in sorted(daily_pl.keys()):
+            for d in sorted(daily_pl):
                 running += daily_pl[d]
-                ms = int(datetime.combine(d, time(16, 0)).timestamp() * 1000)
-                points.append({"x": float(ms), "y": float(running)})
+                points.append({"x": _ms(d), "y": running})
         else:
-            # "trades" — one point per closed trade
-            running = 0.0
             for t in closed:
                 running += float(t.trade_profit or 0.0)
-                ms = int(datetime.combine(t.close_date, time(16, 0)).timestamp() * 1000)
-                points.append({"x": float(ms), "y": float(running)})
+                points.append({"x": _ms(t.close_date), "y": running})
         return points
 
-    def _date_filtered_with_orig_index(
-            self, trades: List[Trade],
-    ) -> List[tuple[int, Trade]]:
-        """Thin wrapper around the pure helper in portfolio.py — the
-        actual filter logic lives there so it can be unit-tested without
-        instantiating the Qt event loop / AccountController.
-
-        Index preservation is the critical invariant tested in
-        `tests/test_portfolio.py::TestDateRangeFilter` — see that suite
-        for the full spec of what this filter is supposed to guarantee.
-        """
-        from .portfolio import filter_trades_by_date_range_with_orig_index
-        return filter_trades_by_date_range_with_orig_index(
-            trades, self._date_range,
-        )
+    def _date_filtered_with_orig_index(self, trades: List[Trade]) -> List[tuple]:
+        """Index-preserving date filter (logic + tests live in portfolio.py).
+        The original index is what edit/delete/move handlers use."""
+        return filter_trades_by_date_range_with_orig_index(trades, self._date_range)
 
     def _reapply_filter(self) -> None:
         rows = self._all_trade_rows
         text = self._text_filter.lower()
         status = self._status_filter
         if text or status:
-            filtered: List[Dict[str, Any]] = []
-            for r in rows:
-                if status and r.get("status") != status:
-                    continue
-                if text:
-                    haystack = " ".join((
-                        r.get("instrument", ""),
-                        r.get("status", ""),
-                        r.get("notes", ""),
-                        r.get("tag", ""),
-                    )).lower()
-                    if text not in haystack:
-                        continue
-                filtered.append(r)
-            rows = filtered
+            rows = [
+                r for r in rows
+                if (not status or r["status"] == status)
+                and (not text or text in r["haystack"])
+            ]
         self._trades.set_rows(rows)
 
     def update(
@@ -652,197 +670,251 @@ class AccountController(QObject):
             goal_target: float,
             presets: List[float],
     ) -> None:
-        # Cache the inputs so setDateRange can re-filter without going
-        # back to the data store.
+        """Full refresh after the trade list (or goal settings) changed."""
         self._last_trades = list(account_trades)
         self._last_goal_trades = list(goal_trades)
         self._last_marks = dict(marks)
         self._last_goal_target = float(goal_target)
         self._last_presets = list(presets)
-        self._recompute_with_current_filter()
+        # Holdings and the goal are deliberately NOT date/tag-filtered: they
+        # are "what you own now" and "your annual progress".
+        self._holdings_base = compute_holdings_from_trades(self._last_trades)
+        self._realized_base = compute_realized_pl_by_symbol(self._last_trades)
+        self._goal_holdings_base = compute_holdings_from_trades(self._last_goal_trades)
+        self._goal_realized_base = compute_realized_pl_by_symbol(self._last_goal_trades)
+        self._goal_has_closed = any(t.is_closed and not t.is_pending for t in self._last_goal_trades)
+        tags = sorted({(t.tag or "").strip() for t in self._last_trades} - {""}, key=str.lower)
+        self._available_tags = tags
+        self._recompute_trade_side(emit=False)
+        self._recompute_mark_side(force_emit=True)
+        self.analyticsChanged.emit()
+        if not self._loaded:
+            self._loaded = True
+            self.loadedChanged.emit()
+
+    def update_marks(self, marks: Dict[str, Optional[float]]) -> None:
+        """Marks-only refresh: holdings, summary, goal and pace. Cheap."""
+        if marks == self._last_marks:
+            return
+        self._last_marks = dict(marks)
+        if self._loaded:  # before the first update() there is nothing to price
+            self._recompute_mark_side()
 
     def _recompute_with_current_filter(self) -> None:
-        """Recompute holdings / analytics / trade rows / goal from the
-        cached inputs, applying the current `_date_range` filter to the
-        sets that should respect it (analytics + trade history).
+        """Recompute everything from the cached inputs (kept for callers
+        that predate the split update paths)."""
+        self._recompute_trade_side()
+        self._recompute_mark_side()
 
-        Holdings, the goal-group computation, and the goal dashboard's
-        annual target/progress are intentionally NOT date-filtered — they
-        are by-definition snapshots of "what you currently own" and
-        "your annual progress".
-        """
+    def _recompute_trade_side(self, emit: bool = True) -> None:
+        """Analytics, equity curve and trade rows for the current date range
+        and tag. Independent of marks."""
         account_trades = self._last_trades
-        goal_trades = self._last_goal_trades
-        marks = self._last_marks
-        goal_target = self._last_goal_target
-        presets = self._last_presets
-
-        # Apply the date filter only to the trade list that feeds Trade
-        # History + Performance Analytics. Pending trades are kept
-        # regardless of range — they don't have a fillable date yet.
-        #
-        # Map preserves the ORIGINAL position of each surviving trade in
-        # `account_trades` — the edit/delete/move handlers identify
-        # trades by that index, so the in-filter `source_index` exposed
-        # to QML must be the original-list index, not the position in
-        # the filtered subset.
         ranged_with_idx = self._date_filtered_with_orig_index(account_trades)
-        # Layer the tag filter on top of the date filter. Empty string =
-        # "no tag restriction", so most users see no behavior change.
         if self._tag_filter:
             target = self._tag_filter
-            ranged_with_idx = [
-                (i, t) for (i, t) in ranged_with_idx
-                if (getattr(t, "tag", "") or "").strip() == target
-            ]
+            ranged_with_idx = [(i, t) for (i, t) in ranged_with_idx if (t.tag or "").strip() == target]
         ranged_trades = [t for _, t in ranged_with_idx]
         orig_indices = [i for i, _ in ranged_with_idx]
 
-        holdings = compute_holdings_from_trades(account_trades)  # NOT filtered
-        realized = compute_realized_pl_by_symbol(account_trades)  # NOT filtered
-        holding_views, summary = compute_portfolio(holdings, marks, realized)
-        analytics = compute_trade_analytics(ranged_trades)  # filtered
+        analytics = compute_trade_analytics(ranged_trades)
+        curve = self._build_equity_curve(ranged_trades)
+        self._equity_curve = curve
+        ys = [p["y"] for p in curve]
+        self._equity_min_y = min(0.0, min(ys)) if ys else 0.0
+        self._equity_max_y = max(0.0, max(ys)) if ys else 0.0
+        self._pace_line = self._build_pace_line(curve)
 
-        # Equity curve — one point per closed trade in the date range,
-        # ordered by close_date, y = running cumulative realized P/L.
-        # x is ms-since-epoch so QML's QtCharts.DateTimeAxis can plot it.
-        self._equity_curve = self._build_equity_curve(ranged_trades)
-
-        goal_holdings = compute_holdings_from_trades(goal_trades)
-        goal_realized = compute_realized_pl_by_symbol(goal_trades)
-        _, goal_summary = compute_portfolio(goal_holdings, marks, goal_realized)
-        goal = compute_goal_progress(
-            goal_trades, goal_target, unrealized_profit=goal_summary.unrealized_pl,
-        )
-
-        trade_rows = compute_trade_rows(ranged_trades)
+        today = date.today()
         enriched: List[Dict[str, Any]] = []
-        for r in trade_rows:
+        for r in compute_trade_rows(ranged_trades):
             original_index = orig_indices[r.index]
             source = account_trades[original_index]
-            profit_sign = 0
-            if r.trade_profit is not None:
-                profit_sign = 1 if r.trade_profit > 0 else (-1 if r.trade_profit < 0 else 0)
+            basis = float(r.buy_price) * int(r.share_count)
+            ret = (float(r.trade_profit) / basis * 100.0) if (r.trade_profit is not None and basis > 0) else None
+            notes = source.notes or ""
+            tag = r.tag or ""
             enriched.append({
                 "instrument": r.instrument,
                 "share_count": f"{r.share_count:,d}",
                 "status": r.status,
+                "status_text": _STATUS_TEXT.get(r.status, r.status.title()),
                 "buy_price": _money(r.buy_price),
                 "sell_price": _money(r.sell_price),
-                "trade_profit": _money(r.trade_profit),
-                "profit_sign": profit_sign,
-                "open_date": _date(r.open_date),
-                "close_date": _date(r.close_date),
+                "trade_profit": _signed_money(r.trade_profit),
+                "profit_sign": _sign(r.trade_profit),
+                "return_text": _arrow_pct(ret),
+                "open_date": _date(r.open_date, today),
+                "close_date": _date(r.close_date, today),
                 "days": _int(r.days_to_close),
-                "avg_daily": _money(r.avg_daily_return),
-                "notes": source.notes or "",
-                "tag": r.tag or "",
+                "avg_daily": _signed_money(r.avg_daily_return),
+                "notes": notes,
+                "tag": tag,
                 "source_index": original_index,
                 "is_pending": bool(source.is_pending),
                 "is_short": bool(source.is_short),
+                # Pre-lowered search text for the filter box (hot path while typing).
+                "haystack": " ".join((r.instrument, r.status, notes, tag)).lower(),
             })
+        # Newest activity first (pending orders on top): the user is
+        # usually checking what they just did. source_index is unaffected.
+        def _recency(row: Dict[str, Any]):
+            t = account_trades[row["source_index"]]
+            when = t.close_date or t.open_date or date.min
+            return (not t.is_pending, -when.toordinal(), -row["source_index"])
 
-        self._holdings.set_rows(holding_views)
-        # Store the full set so filter changes don't have to re-fetch from
-        # the data store, then publish the filtered subset to QML.
+        enriched.sort(key=_recency)
         self._all_trade_rows = enriched
         self._reapply_filter()
 
-        self._goal_target_value = float(goal_target)
-        # Raw progress metrics for visual widgets (progress bar, gauges).
-        self._realized_raw = float(goal.realized_profit)
-        if goal_target > 0:
-            pct = (self._realized_raw / goal_target) * 100.0
-            # Clamp to [0, 100] so the progress bar never exceeds the track
-            # when you've already blown past your goal (still profitable!).
-            self._goal_progress_pct = max(0.0, min(100.0, pct))
-        else:
-            self._goal_progress_pct = 0.0
         self._est_yearly_raw = analytics.est_yearly_profit
-        self._presets = [
-            {"label": _preset_label(p), "value": float(p)}
-            for p in presets
-        ]
-        # Year-End Forecast — realized so far plus a straight projection of
-        # the current avg-daily-profit over the remaining trading days. Shown
-        # where "Realized Profit" used to live in the grid (which is now the
-        # hero, so no point duplicating).
-        year_end_forecast: Optional[float]
-        if goal.avg_daily_profit is not None and goal.business_days_remaining >= 0:
-            year_end_forecast = (
-                    float(goal.realized_profit)
-                    + float(goal.avg_daily_profit) * int(goal.business_days_remaining)
-            )
-        else:
-            year_end_forecast = None
-
-        self._goal = {
-            "target": _goal_money(goal.goal_target),
-            "realized": _money(goal.realized_profit),
-            "unrealized": _money(goal.unrealized_profit),
-            "remaining": _money(goal.remaining_profit),
-            "monthly": _money(goal.monthly_profit_to_goal),
-            "weekly": _money(goal.weekly_profit_to_goal),
-            "daily": _money(goal.daily_profit_to_goal),
-            "avgDaily": _money(goal.avg_daily_profit),
-            "catchUp": _money(goal.profit_to_match_daily_avg),
-            "daysElapsed": f"{goal.business_days_elapsed:,d}",
-            "daysRemaining": f"{goal.business_days_remaining:,d}",
-            "yearEndForecast": _money(year_end_forecast),
-            "yearEndForecastSign": _sign(year_end_forecast),
-            "unrealizedSign": _sign(goal.unrealized_profit),
-            "remainingSign": _sign(goal.remaining_profit),
-        }
         self._analytics = {
-            # Counts (always non-negative, neutral color)
             "openTrades": f"{analytics.open_trades:,d}",
             "closedTrades": f"{analytics.closed_trades:,d}",
-            # Trade-quality block — always-positive / always-negative metrics
-            # get a fixed sign; variable-sign metrics get _sign() based on the
-            # raw numeric value so coloring matches the actual data.
             "winRate": _pct(analytics.win_rate_pct),
             "winRateSign": 0,
             "profitFactor": _profit_factor_text(analytics.profit_factor),
             "profitFactorSign": 0 if analytics.profit_factor is None
             else (1 if analytics.profit_factor >= 1.0 else -1),
-            "avgProfit": _money(analytics.avg_profit_per_trade),
+            "avgProfit": _signed_money(analytics.avg_profit_per_trade),
             "avgProfitSign": _sign(analytics.avg_profit_per_trade),
-            "avgWin": _money(analytics.avg_win),
+            "avgTradeValue": _money(analytics.avg_trade_value),
+            "avgWin": _signed_money(analytics.avg_win),
             "avgWinSign": _sign(analytics.avg_win),
-            "avgLoss": _money(analytics.avg_loss),
+            "avgLoss": _signed_money(analytics.avg_loss),
             "avgLossSign": _sign(analytics.avg_loss),
-            "bestTrade": _money(analytics.best_trade),
+            "bestTrade": _signed_money(analytics.best_trade),
             "bestTradeSign": _sign(analytics.best_trade),
-            "worstTrade": _money(analytics.worst_trade),
+            "worstTrade": _signed_money(analytics.worst_trade),
             "worstTradeSign": _sign(analytics.worst_trade),
-            # Pace + projection
-            "avgRoi": _pct(analytics.avg_roi_pct),
+            "avgRoi": _signed_pct(analytics.avg_roi_pct),
             "avgRoiSign": _sign(analytics.avg_roi_pct),
-            "avgDailyReturn": _money(analytics.avg_daily_closed_profit),
+            "avgDailyReturn": _signed_money(analytics.avg_daily_closed_profit),
             "avgDailyReturnSign": _sign(analytics.avg_daily_closed_profit),
-            "estYearly": _money(analytics.est_yearly_profit),
+            "estYearly": _signed_money(analytics.est_yearly_profit),
             "estYearlySign": _sign(analytics.est_yearly_profit),
-            # Drawdown — peak-to-trough decline along the realized
-            # equity curve. Always reported as a positive dollar
-            # amount; the sign field flips negative so the AnalyticsPanel
-            # tints these red (drawdown is by definition a "bad" metric).
-            "maxDrawdown": _money(analytics.max_drawdown),
+            # Drawdowns are reported as positive amounts by portfolio.py;
+            # shown as losses (−$x) since that is what they are.
+            "maxDrawdown": _signed_money(-analytics.max_drawdown) if analytics.max_drawdown else _money(
+                analytics.max_drawdown),
             "maxDrawdownSign": -1 if analytics.max_drawdown else 0,
-            "currentDrawdown": _money(analytics.current_drawdown),
-            "currentDrawdownSign": (
-                -1 if (analytics.current_drawdown or 0) > 0 else 0
-            ),
+            "currentDrawdown": _signed_money(-analytics.current_drawdown) if analytics.current_drawdown else _money(
+                analytics.current_drawdown),
+            "currentDrawdownSign": -1 if (analytics.current_drawdown or 0) > 0 else 0,
         }
-        self._summary = {
+        if emit:
+            self.analyticsChanged.emit()
+
+    def _build_pace_line(self, curve: List[Dict[str, float]]) -> List[Dict[str, float]]:
+        expected = self._pace.get("expectedRaw") if self._pace else None
+        if not curve or self._date_range not in ("all", "ytd") or not self._last_goal_target or expected is None:
+            return []
+        today = date.today()
+        return [{"x": _ms(date(today.year, 1, 1), time(0, 0)), "y": 0.0},
+                {"x": _ms(today), "y": float(expected)}]
+
+    def _recompute_mark_side(self, force_emit: bool = False) -> None:
+        """Holdings, portfolio summary, goal progress and pace. These are
+        the only outputs that depend on live marks."""
+        marks = self._last_marks
+        goal_target = self._last_goal_target
+
+        holding_views, summary = compute_portfolio(self._holdings_base, marks, self._realized_base)
+        self._holdings.set_rows(holding_views)
+
+        _, goal_summary = compute_portfolio(self._goal_holdings_base, marks, self._goal_realized_base)
+        goal = compute_goal_progress(
+            self._last_goal_trades, goal_target, unrealized_profit=goal_summary.unrealized_pl)
+
+        realized = float(goal.realized_profit)
+        progress = max(0.0, min(100.0, realized / goal_target * 100.0)) if goal_target > 0 else 0.0
+
+        # Year-end forecast: realized so far + avg daily profit × days left.
+        if goal.avg_daily_profit is not None and goal.business_days_remaining >= 0:
+            year_end_forecast: Optional[float] = (
+                    realized + float(goal.avg_daily_profit) * int(goal.business_days_remaining))
+        else:
+            year_end_forecast = None
+
+        new_goal = {
+            "target": _goal_money(goal.goal_target),
+            "realized": _signed_money(goal.realized_profit),
+            "unrealized": _signed_money(goal.unrealized_profit),
+            "remaining": _money(goal.remaining_profit),
+            "monthly": _money(goal.monthly_profit_to_goal),
+            "weekly": _money(goal.weekly_profit_to_goal),
+            "daily": _money(goal.daily_profit_to_goal),
+            "avgDaily": _signed_money(goal.avg_daily_profit),
+            "catchUp": _money(goal.profit_to_match_daily_avg),
+            "daysElapsed": f"{goal.business_days_elapsed:,d}",
+            "daysRemaining": f"{goal.business_days_remaining:,d}",
+            "yearEndForecast": _signed_money(year_end_forecast),
+            "yearEndForecastSign": _sign(year_end_forecast),
+            "unrealizedSign": _sign(goal.unrealized_profit),
+            "remainingSign": _sign(goal.remaining_profit),
+        }
+        new_pace = self._pace_map(goal, realized, goal_target, self._goal_has_closed)
+        new_summary = {
             "marketValue": _money(summary.market_value),
             "costBasis": _money(summary.cost_basis),
-            "unrealizedPl": _money(summary.unrealized_pl),
-            "totalPl": _money(summary.total_pl),
+            "unrealizedPl": _signed_money(summary.unrealized_pl),
+            "unrealizedSign": _sign(summary.unrealized_pl),
+            "totalPl": _signed_money(summary.total_pl),
+            "positions": f"{summary.positions:,d}",
         }
-        self.metricsChanged.emit()
-        if not self._loaded:
-            self._loaded = True
-            self.loadedChanged.emit()
+        new_presets = [{"label": _preset_label(p), "value": float(p)} for p in self._last_presets]
+
+        changed = force_emit or (
+                new_goal != self._goal or new_pace != self._pace or new_summary != self._summary
+                or new_presets != self._presets or goal_target != self._goal_target_value
+                or realized != self._realized_raw)
+        pace_moved = new_pace.get("expectedRaw") != self._pace.get("expectedRaw")
+        self._goal, self._pace, self._summary, self._presets = new_goal, new_pace, new_summary, new_presets
+        self._goal_target_value = float(goal_target)
+        self._realized_raw = realized
+        self._goal_progress_pct = progress
+        if changed:
+            self.metricsChanged.emit()
+        if pace_moved and not force_emit:
+            # The pace line on the equity curve follows the expected value.
+            self._pace_line = self._build_pace_line(self._equity_curve)
+            self.analyticsChanged.emit()
+        elif force_emit:
+            self._pace_line = self._build_pace_line(self._equity_curve)
+
+    @staticmethod
+    def _pace_map(goal, realized: float, target: float, has_closed: bool = True) -> Dict[str, Any]:
+        """Data for the pace rail. Pace = target × elapsed / total trading
+        days this year, the same "expected by now" compute_goal_progress uses."""
+        elapsed, remaining = goal.business_days_elapsed, goal.business_days_remaining
+        total = elapsed + remaining
+        if target <= 0 or total <= 0:
+            return {"state": "none", "sentence": "Set a goal to track your pace", "fraction": 0.0,
+                    "paceFraction": 0.0, "targetText": DASH, "endText": "", "expectedText": DASH,
+                    "realizedText": _signed_money(realized), "expectedRaw": None}
+        expected = target * elapsed / total
+        delta = realized - expected
+        if not has_closed:
+            # A brand-new account is not "behind"; it just hasn't started.
+            state, sentence = "start", "Close a trade to start your pace"
+        elif realized >= target:
+            state, sentence = "reached", "Goal reached"
+        elif delta >= 0:
+            state, sentence = "ahead", f"{_goal_money(delta)} ahead of pace"
+        else:
+            state, sentence = "behind", f"{_goal_money(-delta)} behind pace"
+        return {
+            "state": state,
+            "sentence": sentence,
+            "fraction": max(0.0, min(1.0, realized / target)),
+            "paceFraction": max(0.0, min(1.0, expected / target)),
+            "targetText": _goal_money(target),
+            "endText": "by Dec 31",
+            "expectedText": _goal_money(expected),
+            "expectedRaw": float(expected),
+            "realizedText": _goal_money(realized),
+            "deltaRaw": float(delta),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -850,119 +922,129 @@ class AccountController(QObject):
 # ---------------------------------------------------------------------------
 
 class ThemeController(QObject):
-    """Exposes color tokens from ThemeManager to QML as Q_PROPERTYs.
+    """Colour tokens, fonts and motion preference for QML (`app.theme.*`).
 
-    QML binds to `theme.bg`, `theme.card`, etc. When the user changes theme
-    via Settings, MainWindow calls `refresh()` and every binding updates.
+    Tokens are cached in refresh(): the getters used to call into
+    ThemeManager (which reads the Windows registry for System mode) on
+    every binding evaluation — hundreds of registry reads per theme change.
+    MainWindow connects ThemeManager.themeApplied -> refresh().
     """
 
     themeChanged = Signal()
 
+    _FALLBACK = {
+        "bg": "#E8ECEF", "card": "#F8FAFB", "card2": "#EEF2F5", "text": "#15202B",
+        "text_muted": "#566472", "button": "#EEF2F5", "primary": "#2C55C9",
+        "secondary": "#2C55C9", "border": "#D3DAE0", "good": "#0B7A5C",
+        "bad": "#B83A2E", "text_on_color": "#FFFFFF", "pace": "#B07610",
+    }
+
     def __init__(self, theme_manager, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._theme = theme_manager
+        self._cache: Dict[str, str] = dict(self._FALLBACK)
+        self._fonts: Dict[str, str] = {"text": "", "display": ""}
+        self._font_scale = 1.0
+        self._is_light = True
+        self._reduce_motion = False
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            tokens = self._theme._tokens()
+            self._is_light = bool(self._theme._is_light())
+        except Exception:  # theme manager half-initialised: keep previous values
+            _log.exception("ThemeController: could not read theme tokens")
+            tokens = None
+        if tokens:
+            self._cache = {**self._FALLBACK, **tokens}
+        self._fonts = dict(resolve_fonts())
+        self._reduce_motion = reduce_motion_enabled()
+        self._font_scale = float(FONT_SIZES.get(getattr(self._theme, "font_size_label", "Normal"), 11)) / 11.0
 
     def refresh(self) -> None:
+        self._load()
         self.themeChanged.emit()
 
-    def _tokens(self) -> Optional[Dict[str, str]]:
-        try:
-            return self._theme._tokens()
-        except Exception:
-            return None
-
-    def _fallback(self, name: str) -> str:
-        try:
-            is_light = self._theme._is_light()
-        except Exception:
-            is_light = False
-        if is_light:
-            table = {
-                "bg": "#ffffff", "card": "#f8fafc",
-                "card2": "#eef2f7", "text": "#0f1115",
-                "text_muted": "#4b5563", "button": "#ffffff",
-                "primary": "#0a66c2", "secondary": "#0a66c2",
-                "border": "#e5e7eb", "good": "#15803d",
-                "bad": "#b91c1c", "text_on_color": "#ffffff",
-            }
-        else:
-            table = {
-                "bg": "#0f1115", "card": "#151922",
-                "card2": "#1b2029", "text": "#e6eaf2",
-                "text_muted": "#a0a8b5", "button": "#1f2430",
-                "primary": "#60a5fa", "secondary": "#60a5fa",
-                "border": "#242a36", "good": "#6ee78a",
-                "bad": "#f87171", "text_on_color": "#0b0f15",
-            }
-        return table.get(name, "#000000")
-
     def _color(self, name: str) -> str:
-        tokens = self._tokens()
-        if tokens and name in tokens:
-            return tokens[name]
-        return self._fallback(name)
+        return self._cache.get(name, "#000000")
 
     # Color Q_PROPERTYs. All change signals share themeChanged.
     @Property(str, notify=themeChanged)
     def bg(self) -> str:
-        return self._color("bg")
+        return self._cache["bg"]
 
     @Property(str, notify=themeChanged)
     def card(self) -> str:
-        return self._color("card")
+        return self._cache["card"]
 
     @Property(str, notify=themeChanged)
     def cardAlt(self) -> str:
-        return self._color("card2")
+        return self._cache["card2"]
 
     @Property(str, notify=themeChanged)
     def text(self) -> str:
-        return self._color("text")
+        return self._cache["text"]
 
     @Property(str, notify=themeChanged)
     def textMuted(self) -> str:
-        return self._color("text_muted")
+        return self._cache["text_muted"]
 
     @Property(str, notify=themeChanged)
     def button(self) -> str:
-        return self._color("button")
+        return self._cache["button"]
 
     @Property(str, notify=themeChanged)
     def primary(self) -> str:
-        return self._color("primary")
+        return self._cache["primary"]
 
     @Property(str, notify=themeChanged)
     def secondary(self) -> str:
-        return self._color("secondary")
+        return self._cache["secondary"]
 
     @Property(str, notify=themeChanged)
     def border(self) -> str:
-        return self._color("border")
+        return self._cache["border"]
 
     @Property(str, notify=themeChanged)
     def good(self) -> str:
-        return self._color("good")
+        return self._cache["good"]
 
     @Property(str, notify=themeChanged)
     def bad(self) -> str:
-        return self._color("bad")
+        return self._cache["bad"]
 
     @Property(str, notify=themeChanged)
     def textOnColor(self) -> str:
-        return self._color("text_on_color")
+        return self._cache["text_on_color"]
 
-    # ── Font-size scale ────────────────────────────────────────────────────
-    # All QML Labels multiply their "designed" point size by this scale so
-    # the Settings > Appearance > Font Size dropdown actually affects the
-    # QML scene (QApplication.setFont doesn't propagate into QML Labels
-    # that use hard-coded pointSize).
+    # Goal-pace amber. Only the pace rail tick and equity-curve pace line use it.
+    @Property(str, notify=themeChanged)
+    def pace(self) -> str:
+        return self._cache["pace"]
+
+    @Property(bool, notify=themeChanged)
+    def isLight(self) -> bool:
+        return self._is_light
+
+    # Resolved once by theme.resolve_fonts(): UI text and >= 20 px numbers.
+    @Property(str, notify=themeChanged)
+    def fontFamily(self) -> str:
+        return self._fonts.get("text", "")
+
+    @Property(str, notify=themeChanged)
+    def displayFontFamily(self) -> str:
+        return self._fonts.get("display", "")
+
+    @Property(bool, notify=themeChanged)
+    def reduceMotion(self) -> bool:
+        return self._reduce_motion
+
+    # QML sizes are designed at "Normal" (11 pt) and multiplied by this, so
+    # the Settings font-size choice reaches the QML scene.
     @Property(float, notify=themeChanged)
     def fontScale(self) -> float:
-        try:
-            pt = FONT_SIZES.get(self._theme.font_size_label, 11)
-        except Exception:
-            pt = 11
-        return float(pt) / 11.0
+        return self._font_scale
 
 
 # ---------------------------------------------------------------------------
@@ -974,10 +1056,7 @@ class AppController(QObject):
     currentAccountChanged = Signal()
     statusChanged = Signal()
     adminChanged = Signal()
-    # Fires when a user toggle in the View menu shows/hides one of the
-    # portfolio view's optional cards (currently just the equity curve).
-    # QML cards bind their `visible:` to the corresponding property and
-    # re-evaluate when this notify fires.
+    # View-menu toggles (currently only the equity curve card).
     viewPrefsChanged = Signal()
 
     def __init__(self, store, theme_manager, parent: Optional[QObject] = None):
@@ -989,16 +1068,12 @@ class AppController(QObject):
         self._accounts: List[AccountController] = []
         self._current_index = 0
         self._marks_by_symbol: Dict[str, Dict[str, Optional[float]]] = {}
-        self._status_text = "● Connecting…"
+        self._status_text = "Connecting…"
         self._status_color = "#9ca3af"
         self._username = str(store.username)
         self._is_admin = bool(store.is_admin)
-
-        # View-menu preferences. Defaults to "shown"; MainWindow overrides
-        # this from QSettings during startup so the user's choice persists
-        # across launches.
+        # MainWindow overrides this from QSettings before QML mounts.
         self._equity_curve_visible: bool = True
-
         # Python-side callbacks wired by MainWindow after __init__.
         self._callbacks: Dict[str, Callable] = {}
 
@@ -1052,10 +1127,7 @@ class AppController(QObject):
         return self._status_color
 
     # ---- view-menu preferences ----
-    # `equityCurveVisible` is bound by PortfolioView.qml's EquityCurveCard.
-    # MainWindow drives the value via set_equity_curve_visible() — the
-    # menu QAction toggles, MainWindow persists to QSettings + calls this
-    # setter, which emits viewPrefsChanged so the QML binding re-evaluates.
+    # MainWindow's QAction persists the choice and calls the setter.
 
     @Property(bool, notify=viewPrefsChanged)
     def equityCurveVisible(self) -> bool:
@@ -1078,42 +1150,59 @@ class AppController(QObject):
     # ---- account management ----
 
     def rebuild_accounts(self) -> None:
-        """(Re)create AccountControllers to match the store's account list."""
+        """(Re)create AccountControllers to match the store's account list.
+        Existing controllers are reused by name so their filter state and
+        QML delegates survive an account add/rename elsewhere."""
         try:
             names = self._store.get_account_names()
         except Exception:
+            _log.exception("get_account_names failed; showing a Default account")
             names = ["Default"]
-        self._accounts = [AccountController(n, self) for n in names]
+        if names == [a.name for a in self._accounts]:
+            return
+        existing = {a.name: a for a in self._accounts}
+        self._accounts = [existing.get(n) or AccountController(n, self) for n in names]
         if self._current_index >= len(self._accounts):
             self._current_index = max(0, len(self._accounts) - 1)
         self.accountsChanged.emit()
         self.currentAccountChanged.emit()
 
+    def _price_marks(self) -> Dict[str, Optional[float]]:
+        return {sym: info.get("price") for sym, info in self._marks_by_symbol.items()}
+
     def refresh_all_accounts(self) -> None:
+        """Re-read trades + goal settings from the store and recompute every
+        account. Call after a save; marks ticks use apply_marks instead.
+        NOTE: with RemoteDataStore this can hit the network on the UI thread
+        when its cache was just invalidated by a save."""
         try:
             trades = self._store.get_all_trades()
         except Exception:
+            _log.exception("get_all_trades failed")
             trades = []
         try:
             shared_names, _ = self._store.get_goal_group()
             shared_set = set(shared_names)
         except Exception:
+            _log.exception("get_goal_group failed")
             shared_set = set()
 
-        marks = {sym: info.get("price") for sym, info in self._marks_by_symbol.items()}
+        by_account: Dict[str, List[Trade]] = defaultdict(list)
+        for t in trades:
+            by_account[(t.account or "").strip()].append(t)
+        shared_trades = [t for name in shared_set for t in by_account.get(name, [])]
+        marks = self._price_marks()
 
         for account in self._accounts:
-            account_trades = [t for t in trades if (t.account or "").strip() == account.name]
+            account_trades = by_account.get(account.name, [])
             try:
                 target = float(self._store.get_goal_target(account.name))
                 presets = list(self._store.get_goal_presets(account.name))
             except Exception:
+                _log.exception("goal settings for %r failed; using defaults", account.name)
                 target = 500_000.0
                 presets = [250_000.0, 500_000.0, 1_000_000.0]
-            goal_trades = (
-                [t for t in trades if (t.account or "").strip() in shared_set]
-                if account.name in shared_set else account_trades
-            )
+            goal_trades = shared_trades if account.name in shared_set else account_trades
             account.update(
                 account_trades=account_trades,
                 goal_trades=goal_trades,
@@ -1134,12 +1223,16 @@ class AppController(QObject):
     # ---- marks ----
 
     def apply_marks(self, marks: Dict[str, Dict[str, Optional[float]]]) -> None:
+        """Merge a marks payload and refresh only mark-dependent views.
+        No store access: trades have not changed on a price tick."""
         for sym, info in marks.items():
             existing = dict(self._marks_by_symbol.get(sym, {}))
             existing.update(info)
             self._marks_by_symbol[sym] = existing
         self._watchlist.update_prices(self._marks_by_symbol)
-        self.refresh_all_accounts()
+        price_marks = self._price_marks()
+        for account in self._accounts:
+            account.update_marks(price_marks)
 
     # ---- slots QML calls back into ----
 
@@ -1203,6 +1296,5 @@ class AppController(QObject):
             return
         try:
             cb(*args)
-        except Exception:
-            import logging
-            logging.getLogger(__name__).exception("callback '%s' raised", name)
+        except Exception:  # a failing handler must not unwind into QML
+            _log.exception("callback '%s' raised", name)

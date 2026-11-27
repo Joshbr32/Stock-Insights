@@ -1,9 +1,10 @@
-"""Per-account QWidget portfolio view.
+"""Per-account QWidget portfolio view (legacy).
 
-The "main" desktop UI is QML-based now (see main_window.py + the qml/
-folder). PortfolioTab is the legacy QWidget version, still used by
-admin_dialogs.UserPortfolioViewer for the read-only "view another
-user" feature.
+The main desktop UI is QML (main_window.py + qml/). PortfolioTab is the
+older QWidget version, still used read-only by
+admin_dialogs.UserPortfolioViewer ("View a user's portfolio"). The edit
+paths (add/edit/delete trades, presets, context menus) are kept for
+read_only=False callers, but nothing in the app uses them today.
 
 The dialog classes that used to live here (TradeEditDialog,
 GoalDashboardOptionsDialog, MarkDown, DoubleDown, Fulfill, Trade
@@ -50,13 +51,9 @@ from .dialogs import (  # noqa: F401  (re-export)
     TradeEditDialog,
     TradeHistoryColumnsDialog,
 )
-# Constants + helpers moved to dialogs/_common.py — pulled back in here
-# because PortfolioTab still uses _fmt_money / _fmt_goal / _fmt_preset_label
-# in its goal section, and external callers may still import these from
-# this module by historical path. Marked noqa F401 for the constants
-# that PortfolioTab doesn't reference directly but re-exports.
+# Formatting helpers shared with the dialogs (also importable from here by
+# their historical path).
 from .dialogs._common import (  # noqa: F401
-    GROUP_STYLE,
     _DEFAULT_PRESETS,
     _fmt_goal,
     _fmt_money,
@@ -73,6 +70,7 @@ from .portfolio import (
     compute_trade_analytics,
     compute_trade_rows,
 )
+from .widgets import GAP, find_theme_manager, fmt_status, muted_label
 
 
 # ---------------------------------------------------------------------------
@@ -99,16 +97,16 @@ class PortfolioTab(QWidget):
     TRADE_HISTORY_MAX_SORT_LEVELS = 5
 
     TRADE_HISTORY_COLUMNS = [
-        ("instrument", "Instrument"),
-        ("share_count", "Share count"),
+        ("instrument", "Symbol"),
+        ("share_count", "Shares"),
         ("status", "Status"),
-        ("buy_price", "Buy Price"),
-        ("sell_price", "Sell Price"),
-        ("trade_profit", "Trade Profit"),
-        ("open_date", "Open Date"),
-        ("close_date", "Close Date"),
-        ("days_to_close", "Days to Close"),
-        ("avg_daily_return", "Avg Daily Return"),
+        ("buy_price", "Buy price"),
+        ("sell_price", "Sell price"),
+        ("trade_profit", "Profit"),
+        ("open_date", "Opened"),
+        ("close_date", "Closed"),
+        ("days_to_close", "Days held"),
+        ("avg_daily_return", "Avg daily return"),
     ]
 
     def __init__(
@@ -358,30 +356,22 @@ class PortfolioTab(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(10)
-
-        # Read-only banner
-        if self._read_only:
-            banner = QLabel(f"  👁  Viewing read-only — {self._account_name}")
-            banner.setStyleSheet(
-                "background: #c47c00; color: #ffffff; padding: 4px 10px; "
-                "border-radius: 4px; font-weight: bold;"
-            )
-            root.addWidget(banner)
+        root.setContentsMargins(0, GAP, 0, 0)
+        root.setSpacing(GAP)
+        # (The read-only notice is shown once by the hosting viewer window.)
 
         top_row = QHBoxLayout()
+        top_row.setSpacing(GAP)
 
         # ---- Goal Dashboard ----
-        self.goal_group = QGroupBox("Goal Dashboard")
-        self.goal_group.setStyleSheet(GROUP_STYLE)
+        self.goal_group = QGroupBox("Goal")
         goal_layout = QVBoxLayout(self.goal_group)
         goal_layout.setContentsMargins(14, 18, 14, 14)
         goal_layout.setSpacing(10)
 
         goal_header = QHBoxLayout()
         goal_header.setSpacing(8)
-        goal_header.addWidget(QLabel("Annual Target:"))
+        goal_header.addWidget(QLabel("Target"))
         self.goal_target_label = QLabel("—")
         font = self.goal_target_label.font()
         font.setBold(True)
@@ -391,9 +381,6 @@ class PortfolioTab(QWidget):
 
         self._preset_btn_container = QWidget()
         self._preset_btn_container.setObjectName("goalPresetContainer")
-        self._preset_btn_container.setStyleSheet(
-            "#goalPresetContainer { background: transparent; border: none; }"
-        )
         self._preset_btn_layout = QHBoxLayout(self._preset_btn_container)
         self._preset_btn_layout.setContentsMargins(0, 0, 0, 0)
         self._preset_btn_layout.setSpacing(4)
@@ -406,56 +393,54 @@ class PortfolioTab(QWidget):
         goal_grid.setVerticalSpacing(8)
         self.goal_labels: Dict[str, QLabel] = {}
         goal_fields = [
-            ("realized_profit", "Realized Profit"),
-            ("unrealized_profit", "Unrealized Profit"),
-            ("remaining_profit", "Profit to Goal"),
-            ("monthly_profit_to_goal", "Monthly Needed"),
-            ("weekly_profit_to_goal", "Weekly Needed"),
-            ("daily_profit_to_goal", "Daily Needed"),
-            ("avg_daily_profit", "Avg Daily"),
-            ("profit_to_match_daily_avg", "Catch-up Today"),
-            ("business_days_elapsed", "Trading Days Elapsed"),
-            ("business_days_remaining", "Trading Days Remaining"),
+            ("realized_profit", "Realized profit"),
+            ("unrealized_profit", "Unrealized profit"),
+            ("remaining_profit", "Left to goal"),
+            ("monthly_profit_to_goal", "Needed per month"),
+            ("weekly_profit_to_goal", "Needed per week"),
+            ("daily_profit_to_goal", "Needed per day"),
+            ("avg_daily_profit", "Average per day"),
+            ("profit_to_match_daily_avg", "To catch up today"),
+            ("business_days_elapsed", "Trading days so far"),
+            ("business_days_remaining", "Trading days left"),
         ]
         for idx, (key, label) in enumerate(goal_fields):
             value = QLabel("—")
             self.goal_labels[key] = value
             row, col = idx // 2, (idx % 2) * 2
-            goal_grid.addWidget(QLabel(label), row, col)
+            goal_grid.addWidget(muted_label(label, wrap=False), row, col)
             goal_grid.addWidget(value, row, col + 1)
         goal_layout.addLayout(goal_grid)
         top_row.addWidget(self.goal_group, 1)
 
         # ---- Analytics ----
-        self.analytics_group = QGroupBox("Performance Analytics")
-        self.analytics_group.setStyleSheet(GROUP_STYLE)
+        self.analytics_group = QGroupBox("Performance")
         analytics_grid = QGridLayout(self.analytics_group)
         analytics_grid.setContentsMargins(14, 18, 14, 14)
         analytics_grid.setHorizontalSpacing(18)
         analytics_grid.setVerticalSpacing(8)
         self.analytics_labels: Dict[str, QLabel] = {}
         for idx, (key, label) in enumerate([
-            ("open_trades", "Open Trades"), ("closed_trades", "Closed Trades"),
-            ("avg_profit_per_trade", "Avg Profit / Trade"), ("avg_trade_value", "Avg Trade Value"),
-            ("avg_roi_pct", "Avg ROI %"),
-            ("avg_daily_closed_profit", "Avg Daily Return"),
+            ("open_trades", "Open trades"), ("closed_trades", "Closed trades"),
+            ("avg_profit_per_trade", "Average profit per trade"), ("avg_trade_value", "Average trade size"),
+            ("avg_roi_pct", "Average return"),
+            ("avg_daily_closed_profit", "Average daily return"),
         ]):
             value = QLabel("—")
             self.analytics_labels[key] = value
-            analytics_grid.addWidget(QLabel(label), idx, 0)
+            analytics_grid.addWidget(muted_label(label, wrap=False), idx, 0)
             analytics_grid.addWidget(value, idx, 1)
         top_row.addWidget(self.analytics_group, 1)
         root.addLayout(top_row)
 
         # ---- Holdings ----
-        self.holdings_group = QGroupBox("Open Holdings")
-        self.holdings_group.setStyleSheet(GROUP_STYLE)
+        self.holdings_group = QGroupBox("Open positions")
         holdings_layout = QVBoxLayout(self.holdings_group)
         holdings_layout.setContentsMargins(14, 18, 14, 14)
         holdings_layout.setSpacing(10)
         self.holdings_table = QTableWidget(0, 7)
         self.holdings_table.setHorizontalHeaderLabels([
-            "Instrument", "Qty", "Avg Cost", "Mark", "Unrealized P/L", "Market Value", "Weight %",
+            "Symbol", "Shares", "Average cost", "Price", "Unrealized P/L", "Market value", "Weight",
         ])
         self.holdings_table.verticalHeader().setVisible(False)
         self.holdings_table.setAlternatingRowColors(True)
@@ -472,26 +457,21 @@ class PortfolioTab(QWidget):
         root.addWidget(self.holdings_group)
 
         # ---- Trade History ----
-        self.trade_group = QGroupBox("Trade History")
-        self.trade_group.setStyleSheet(GROUP_STYLE)
+        self.trade_group = QGroupBox("Trade history")
         trade_layout = QVBoxLayout(self.trade_group)
         trade_layout.setContentsMargins(14, 18, 14, 14)
         trade_layout.setSpacing(10)
 
         trade_filter_row = QHBoxLayout()
         trade_filter_row.setSpacing(8)
-        trade_filter_row.addWidget(QLabel("Filter:"))
         self.trade_filter_edit = QLineEdit()
-        self.trade_filter_edit.setPlaceholderText(
-            "Search instrument, status, notes, quantity, price, or date"
-        )
+        self.trade_filter_edit.setPlaceholderText("Filter by symbol, notes, price or date")
         self.trade_filter_edit.setClearButtonEnabled(True)
         trade_filter_row.addWidget(self.trade_filter_edit, 1)
-        trade_filter_row.addWidget(QLabel("Status:"))
         self.trade_status_filter = QComboBox()
-        self.trade_status_filter.addItem("All", "")
+        self.trade_status_filter.addItem("All statuses", "")
         for status in ["WAITING", "OPEN", "SHORT", "CLOSED", "COVERED"]:
-            self.trade_status_filter.addItem(status.title(), status)
+            self.trade_status_filter.addItem(fmt_status(status), status)
         trade_filter_row.addWidget(self.trade_status_filter)
         trade_layout.addLayout(trade_filter_row)
 
@@ -519,9 +499,9 @@ class PortfolioTab(QWidget):
 
         if not self._read_only:
             trade_btns = QHBoxLayout()
-            self.btn_add_trade = QPushButton("+ Add Trade")
-            self.btn_edit_trade = QPushButton("Edit Selected")
-            self.btn_delete_trade = QPushButton("Delete Selected")
+            self.btn_add_trade = QPushButton("Log trade…")
+            self.btn_edit_trade = QPushButton("Edit trade…")
+            self.btn_delete_trade = QPushButton("Delete trade…")
             trade_btns.addWidget(self.btn_add_trade)
             trade_btns.addWidget(self.btn_edit_trade)
             trade_btns.addWidget(self.btn_delete_trade)
@@ -577,50 +557,10 @@ class PortfolioTab(QWidget):
             QMessageBox.warning(self, "Save Failed", str(exc))
 
     def _apply_preset_button_style(self, current_goal: Optional[float] = None):
-        theme = self._theme_manager()
-        if theme is not None:
-            text_color = theme.text_color()
-            border_color = theme.border_color()
-            hover_color = theme.button_color()
-            selected_bg = theme.selected_surface_color()
-            selected_text = theme.selected_text_color()
-            selected_border = theme.focus_border_color()
-        else:
-            text_color = "#0f1115"
-            border_color = "#d1d5db"
-            hover_color = "#f3f4f6"
-            selected_bg = "#f5f7fb"
-            selected_text = "#0f1115"
-            selected_border = "#3b82f6"
-
-        stylesheet = (
-            "QPushButton {"
-            "background: transparent;"
-            f"color: {text_color};"
-            f"border: 1px solid {border_color};"
-            "border-radius: 8px;"
-            "padding: 5px 10px;"
-            "font-weight: 600;"
-            "}"
-            "QPushButton:hover {"
-            f"background: {hover_color};"
-            "}"
-            "QPushButton:pressed {"
-            f"background: {selected_bg};"
-            f"color: {selected_text};"
-            f"border: 1px solid {selected_border};"
-            "}"
-            "QPushButton:checked {"
-            f"background: {selected_bg};"
-            f"color: {selected_text};"
-            f"border: 1px solid {selected_border};"
-            "}"
-        )
-
+        """Check the preset button that matches the current goal. Styling of
+        checked buttons comes from the global QSS (see theme.py)."""
         for preset_value, button in self._preset_buttons:
-            button.setStyleSheet(stylesheet)
-            is_selected = current_goal is not None and abs(float(preset_value) - float(current_goal)) < 0.5
-            button.setChecked(is_selected)
+            button.setChecked(current_goal is not None and abs(float(preset_value) - float(current_goal)) < 0.5)
 
     # ------------------------------------------------------------------
     # State persistence (via DataStore)
@@ -645,7 +585,10 @@ class PortfolioTab(QWidget):
 
         self._trades = all_trades
         self._holdings = compute_holdings_from_trades(self._visible_trades())
-        self.sync_goal_dashboard_accounts()
+        if not self._read_only:
+            # Prunes deleted accounts from the goal group. That is a write,
+            # so it must never run against another user's data.
+            self.sync_goal_dashboard_accounts()
         self._rebuild_preset_buttons()
         self.refresh_view()
 
@@ -984,8 +927,9 @@ class PortfolioTab(QWidget):
         self._save_trade_history_sort_rules([new_primary] + remaining)
         self.refresh_view(selected_trade_source_index=self._selected_trade_source_index())
 
-    def _compare_trade_rows(self, left: "TradeRow", right: "TradeRow") -> int:
-        for rule in self._trade_history_sort_rules():
+    def _compare_trade_rows(self, left: "TradeRow", right: "TradeRow",
+                            rules: Optional[List[dict]] = None) -> int:
+        for rule in (rules if rules is not None else self._trade_history_sort_rules()):
             key = rule["key"]
             ascending = bool(rule.get("ascending", True))
             left_value = self._trade_row_sort_value(left, key)
@@ -1009,16 +953,13 @@ class PortfolioTab(QWidget):
         return 0
 
     def _sorted_trade_rows(self, rows: List["TradeRow"]) -> List["TradeRow"]:
-        return sorted(rows, key=cmp_to_key(self._compare_trade_rows))
+        # Read + parse the QSettings sort rules once per sort; this used to
+        # happen inside every comparison (O(n log n) QSettings reads).
+        rules = self._trade_history_sort_rules()
+        return sorted(rows, key=cmp_to_key(lambda a, b: self._compare_trade_rows(a, b, rules)))
 
     def _theme_manager(self):
-        widget = self
-        while widget is not None:
-            theme = getattr(widget, "theme", None)
-            if theme is not None:
-                return theme
-            widget = widget.parentWidget()
-        return None
+        return find_theme_manager(self)
 
     def _trade_matches_filters(self, row: "TradeRow", trade: Trade) -> bool:
         status_filter = str(self.trade_status_filter.currentData() or "")
@@ -1084,10 +1025,10 @@ class PortfolioTab(QWidget):
         self._render_trade_table(trade_rows, visible_source_indices, selected_trade_source_index)
         self._render_holdings_table(holding_rows)
         self.holdings_summary.setText(
-            f"Market Value: {_fmt_money(summary.market_value)}    "
-            f"Cost Basis: {_fmt_money(summary.cost_basis)}    "
-            f"Unrealized P/L: {_fmt_money(summary.unrealized_pl)}    "
-            f"Total P/L: {_fmt_money(summary.total_pl)}"
+            f"Market value {_fmt_money(summary.market_value)}      "
+            f"Cost basis {_fmt_money(summary.cost_basis)}      "
+            f"Unrealized P/L {_fmt_money(summary.unrealized_pl)}      "
+            f"Total P/L {_fmt_money(summary.total_pl)}"
         )
 
     # ------------------------------------------------------------------
@@ -1128,10 +1069,16 @@ class PortfolioTab(QWidget):
         for col, (key, _) in enumerate(self.TRADE_HISTORY_COLUMNS):
             self.trade_table.setColumnHidden(col, key not in visible_keys)
         self._apply_trade_table_sort_indicator()
+        # Theme colours looked up once per render, not once per row.
+        _theme = self._theme_manager()
+        waiting_bg = QBrush(QColor(*(_theme.waiting_row_tint() if _theme else (120, 120, 120, 40))))
+        short_bg = QBrush(QColor(*(_theme.short_row_tint() if _theme else (60, 100, 200, 40))))
+        profit_fg = QColor(_theme.profit_color()) if _theme else None
+        loss_fg = QColor(_theme.loss_color()) if _theme else None
         for r, row in enumerate(rows):
             value_map = {
                 "instrument": row.instrument, "share_count": f"{row.share_count:,d}",
-                "status": row.status, "buy_price": _fmt_money(row.buy_price),
+                "status": fmt_status(row.status), "buy_price": _fmt_money(row.buy_price),
                 "sell_price": self._money_or_dash(row.sell_price),
                 "trade_profit": self._money_or_dash(row.trade_profit),
                 "open_date": self._date_or_dash(row.open_date),
@@ -1139,14 +1086,10 @@ class PortfolioTab(QWidget):
                 "days_to_close": self._int_or_dash(row.days_to_close),
                 "avg_daily_return": self._money_or_dash(row.avg_daily_return),
             }
-            # Row background based on status — uses theme tint colors
-            _theme = self._theme_manager()
             if row.status == "WAITING":
-                _r, _g, _b, _a = _theme.waiting_row_tint() if _theme else (120, 90, 0, 80)
-                row_bg = QBrush(QColor(_r, _g, _b, _a))
+                row_bg = waiting_bg
             elif row.status in ("SHORT", "COVERED"):
-                _r, _g, _b, _a = _theme.short_row_tint() if _theme else (30, 80, 140, 70)
-                row_bg = QBrush(QColor(_r, _g, _b, _a))
+                row_bg = short_bg
             else:
                 row_bg = None
 
@@ -1157,18 +1100,13 @@ class PortfolioTab(QWidget):
                     f = item.font()
                     f.setBold(True)
                     item.setFont(f)
-                if key == "trade_profit" and row.trade_profit is not None:
-                    if _theme is not None:
-                        item.setForeground(QColor(_theme.profit_color() if row.trade_profit > 0
-                                                  else _theme.loss_color()))
-                    else:
-                        item.setForeground(Qt.GlobalColor.darkGreen if row.trade_profit > 0
-                                           else Qt.GlobalColor.red)
+                if key == "trade_profit" and row.trade_profit and profit_fg is not None:
+                    item.setForeground(profit_fg if row.trade_profit > 0 else loss_fg)
                 if row_bg is not None:
                     item.setBackground(row_bg)
                 self.trade_table.setItem(r, c, item)
         self._size_trade_table_columns()
-        if rows:
+        if rows and not self._read_only:  # no edit actions to aim, so no highlight
             row_to_select = 0
             if selected_trade_source_index is not None:
                 try:
@@ -1191,7 +1129,7 @@ class PortfolioTab(QWidget):
         for r, row in enumerate(rows):
             is_short = self._holding_row_is_short[r]
             # Show absolute qty with a SHORT label for short positions
-            qty_display = f"{abs(row.qty):,d} (SHORT)" if is_short else f"{row.qty:,d}"
+            qty_display = f"{abs(row.qty):,d} short" if is_short else f"{row.qty:,d}"
             values = [
                 row.instrument, qty_display, _fmt_money(row.avg_cost),
                 self._money_or_dash(row.mark), _fmt_money(row.unrealized_pl),

@@ -1,42 +1,51 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
-// Root scene mounted inside the QQuickWidget central widget of MainWindow.
-// `app` is injected from Python via setContextProperty().
-Rectangle {
+// Root scene mounted in MainWindow's QQuickWidget. `app` (AppController)
+// is injected from Python via setContextProperty().
+//
+// The root is a Control so the resolved UI font family, base size and
+// tabular figures propagate to every Label/Control in the scene; children
+// only override size and weight.
+Control {
     id: root
-    color: app.theme.bg
+    padding: 12
+    font.family: app.theme.fontFamily
+    font.pixelSize: 13 * app.theme.fontScale
+    font.features: { "tnum": 1 }
 
-    SplitView {
+    background: Rectangle { color: app.theme.bg }
+
+    contentItem: SplitView {
         id: split
-        anchors.fill: parent
-        anchors.margins: 10
         orientation: Qt.Horizontal
 
-        handle: Rectangle {
-            implicitWidth: 8
-            color: SplitHandle.pressed ? app.theme.secondary
-                 : SplitHandle.hovered ? Qt.lighter(app.theme.border, 1.4)
-                 : "transparent"
-            radius: 3
-            Behavior on color { ColorAnimation { duration: 100 } }
+        // 12 px gutter between watchlist and portfolio; a hairline appears
+        // only while hovering / dragging so the resize affordance is findable.
+        handle: Item {
+            implicitWidth: 12
+            Rectangle {
+                anchors.centerIn: parent
+                width: 2
+                height: parent.height
+                radius: 1
+                color: SplitHandle.pressed ? app.theme.primary
+                     : SplitHandle.hovered ? app.theme.border
+                     : "transparent"
+            }
         }
 
-        // Left: watchlist
         WatchlistPane {
-            SplitView.preferredWidth: 260
-            SplitView.minimumWidth: 200
-            SplitView.maximumWidth: 420
+            SplitView.preferredWidth: 240
+            SplitView.minimumWidth: 190
+            SplitView.maximumWidth: 380
         }
 
-        // Right: portfolio tabs + content. Keep the SplitView min low
-        // enough that the right pane never has to push past the viewport
-        // edge — the inner cards handle their own intelligent shrinking.
         PortfolioPane {
             SplitView.fillWidth: true
-            SplitView.minimumWidth: 420
+            SplitView.minimumWidth: 480
         }
     }
 }

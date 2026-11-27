@@ -1,4 +1,4 @@
-"""Modal dialogs lifted out of portfolio_tab.py.
+"""Trade and goal dialogs (QWidget), styled with the Harbor helpers in widgets.py.
 
 Re-exports everything at the package level so existing call sites can
 write `from stock_insights.dialogs import TradeEditDialog` without

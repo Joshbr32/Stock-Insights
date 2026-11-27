@@ -1,9 +1,13 @@
-// app.js — main app: views, routing, event handling.
+// app.js — Stock Insights PWA: state, data loading, views and dialogs.
 //
-// No framework. The whole UI is rendered by string-templating into a
-// single <main id="view"> outlet, then re-rendered on tab switches or
-// data changes. Touch targets are ≥44px; numbers always render with
-// tabular figures so columns align.
+// No framework and no build step. Each tab is a function that returns a
+// fresh DOM subtree for the <main id="view"> outlet; controls that only
+// affect one section (date range, tag, curve mode) re-render just that
+// section so scroll position and focus survive. All DOM is built with
+// ui.js's el()/svg(), which never parse markup, so user data is safe.
+//
+// Layout and visual language follow docs/design/design-system.md ("Harbor").
+// The home view's hero is the pace rail (charts.js).
 
 import {Api} from "./api.js";
 import {
@@ -19,35 +23,27 @@ import {
     tradeProfit,
     tradeStatus,
 } from "./portfolio.js";
+import {equityChart, paceRail} from "./charts.js";
+import {
+    el, fmtClock, fmtIsoDate, icon, ICONS, money, num, pctChange, percent, plural,
+    signedMoney, store, tone,
+} from "./ui.js";
 
-// ── Global state (kept tiny — re-fetched as needed) ───────────────────
-const State = {
-    accounts: [],            // [{name, goal_target, goal_presets, position}]
-    trades: [],              // normalized trade objects
-    goalGroup: null,         // {account_names, shared_goal}
-    watchlist: [],           // [symbol, ...]
-    marks: {},               // {symbol: price}
-    selectedAccount: "All",  // 'All' | account name
-    view: "portfolio",       // 'portfolio' | 'trades' | 'goals' | 'watchlist'
-    // Date-range filter — applied to the analytics card on the
-    // portfolio view and to the trade list on the trades view.
-    // Persisted to localStorage so the filter "sticks" across reloads
-    // (matches the desktop's per-account persistence intent).
-    dateRangeKey: localStorage.getItem("date_range_key") || "all",
-    // Equity-curve resampling mode — "trades" or "daily". Persisted
-    // alongside dateRangeKey so refreshing keeps the user's preferred
-    // view of dense histories.
-    equityCurveMode: localStorage.getItem("equity_curve_mode") || "trades",
-    // Strategy-tag filter (e.g. "swing"). Empty string = "all tags".
-    // Mirrors AccountController.tagFilter on the desktop. NOT persisted
-    // — most users don't filter by tag long-term, and resetting on
-    // refresh avoids confusion about why fresh trades are "missing".
-    tagFilter: "",
-};
+const DEMO = new URLSearchParams(location.search).has("demo");
 
-// Human-friendly labels for the date-range keys. Mirrors
-// TradesTable.qml's _rangeLabel() on desktop so the on-screen wording
-// reads the same.
+// ── Preferences (localStorage, namespaced "si.") ──────────────────────
+const PREF_RANGE = "si.dateRange";
+const PREF_CURVE = "si.curveMode";
+// One-time migration from the un-namespaced keys used before Nov 2026.
+for (const [oldKey, newKey] of [["date_range_key", PREF_RANGE], ["equity_curve_mode", PREF_CURVE]]) {
+    const v = store.get(oldKey);
+    if (v != null) {
+        if (store.get(newKey) == null) store.set(newKey, v);
+        store.remove(oldKey);
+    }
+}
+
+// Labels mirror TradesTable.qml's _rangeLabel() on desktop.
 const DATE_RANGE_LABELS = {
     all: "All time",
     week: "This week",
@@ -56,935 +52,844 @@ const DATE_RANGE_LABELS = {
     ytd: "Year to date",
 };
 
-function setDateRange(key) {
-    if (!DATE_RANGE_LABELS[key]) key = "all";
-    State.dateRangeKey = key;
-    localStorage.setItem("date_range_key", key);
-    // Re-render the active view; analytics on the portfolio tab and
-    // the trade list on the trades tab both consume this state.
-    renderView();
-}
-
-// Equity-curve resampling mode (matches AccountController.equityCurveMode
-// on desktop). "trades" = per-close-trade fidelity; "daily" = end-of-day
-// buckets for less noise on dense histories.
-function setEquityCurveMode(mode) {
-    if (mode !== "trades" && mode !== "daily") mode = "trades";
-    State.equityCurveMode = mode;
-    localStorage.setItem("equity_curve_mode", mode);
-    renderView();
-}
-
-// Strategy-tag filter (matches AccountController.tagFilter / setTagFilter
-// on desktop). "" = no restriction.
-function setTagFilter(tag) {
-    State.tagFilter = (tag || "").trim();
-    renderView();
-}
-
-// Returns the sorted list of unique non-empty tags across all of the
-// user's trades. Used to populate the tag-filter picker.
-function availableTags() {
-    const set = new Set();
-    for (const t of State.trades) {
-        const v = (t.tag || "").trim();
-        if (v) set.add(v);
-    }
-    return [...set].sort((a, b) => a.localeCompare(b));
-}
-
-// ── Tiny DOM helpers ──────────────────────────────────────────────────
-const $ = sel => document.querySelector(sel);
-const el = (tag, attrs = {}, children = []) => {
-    const node = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs)) {
-        if (k === "class") node.className = String(v);
-        else if (k === "html") node.innerHTML = String(v);
-        else if (k.startsWith("on") && typeof v === "function") {
-            node.addEventListener(k.slice(2), v);
-        } else if (v !== false && v != null) node.setAttribute(k, String(v));
-    }
-    for (const c of [].concat(children)) {
-        if (c == null || c === false) continue;
-        node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-    }
-    return node;
+const STATUS_LABELS = {
+    OPEN: "Open", CLOSED: "Closed", SHORT: "Short", COVERED: "Covered", WAITING: "Pending",
 };
 
-// ── Number formatting (tabular, currency, deltas) ─────────────────────
-const usd = new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD", maximumFractionDigits: 2,
-});
-const usdCompact = new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD", notation: "compact",
-    maximumFractionDigits: 1,
-});
-const pct = (v, digits = 2) => v == null ? "—" : `${v.toFixed(digits)}%`;
-const fmtMoney = v => v == null ? "—" : usd.format(v);
-const fmtCompact = v => v == null ? "—" : usdCompact.format(v);
-const fmtNum = (v, digits = 2) => v == null ? "—" : Number(v).toFixed(digits);
+const QUOTE_POLL_MS = 60_000;      // live prices while the app is visible
+const STALE_RELOAD_MS = 5 * 60_000; // full reload when returning after this long
+const TRADE_PAGE = 100;            // trade rows rendered before "Show more"
 
-const deltaClass = v => v == null ? "" : v > 0.005 ? "gain" : v < -0.005 ? "loss" : "";
-const signed = v => v == null ? "—" : (v >= 0 ? "+" : "") + usd.format(v);
+// ── State ─────────────────────────────────────────────────────────────
+const State = {
+    accounts: [],            // [{name, goal_target, goal_presets, position}]
+    trades: [],              // normalized trades, server order
+    byAccount: new Map(),    // account name -> trades (rebuilt on load)
+    goalGroup: null,         // {account_names, shared_goal}
+    watchlist: [],           // [symbol]
+    marks: {},               // {symbol: price}
+    quotesOk: true,          // false when the last quote fetch failed
+    quotesAt: 0,             // epoch ms of the last successful quote fetch
+    loadedAt: 0,             // epoch ms of the last full load
+    selectedAccount: "All",
+    view: "home",            // home | trades | goals | watchlist | settings
+    dateRangeKey: DATE_RANGE_LABELS[store.get(PREF_RANGE)] ? store.get(PREF_RANGE) : "all",
+    equityCurveMode: store.get(PREF_CURVE) === "daily" ? "daily" : "trades",
+    tagFilter: "",           // not persisted: a stale tag filter hides new trades
+    tradeLimit: TRADE_PAGE,
+    animated: new Set(),     // goal keys whose pace rail has already animated
+};
 
-// ── Toast messages ────────────────────────────────────────────────────
-function toast(msg, kind = "info") {
-    const box = $("#toast");
-    box.textContent = msg;
-    box.className = `toast ${kind} show`;
-    setTimeout(() => box.classList.remove("show"), 2400);
-}
-
-// ── Top-level boot ────────────────────────────────────────────────────
-async function boot() {
-    if (!Api.isAuthed()) {
-        renderLogin();
-        return;
-    }
-    try {
-        await loadAll();
-        renderShell();
-    } catch (err) {
-        if (err.code === 401) {
-            renderLogin();
-        } else {
-            renderLogin(err.message);
-        }
+// ── Data loading ──────────────────────────────────────────────────────
+function indexTrades(raw) {
+    State.trades = raw.map(normalizeTrade);
+    State.byAccount = new Map();
+    for (const t of State.trades) {
+        if (!State.byAccount.has(t.account)) State.byAccount.set(t.account, []);
+        State.byAccount.get(t.account).push(t);
     }
 }
 
 async function loadAll() {
     const [accts, rawTrades, gg, wl] = await Promise.all([
-        Api.getAccounts(),
-        Api.getTrades(),
-        Api.getGoalGroup(),
-        Api.getWatchlist(),
+        Api.getAccounts(), Api.getTrades(), Api.getGoalGroup(), Api.getWatchlist(),
     ]);
-    State.accounts = accts;
-    State.trades = rawTrades.map(normalizeTrade);
+    State.accounts = accts || [];
+    indexTrades(rawTrades || []);
     State.goalGroup = gg;
-    State.watchlist = wl;
+    State.watchlist = wl || [];
+    if (State.selectedAccount !== "All"
+        && !State.accounts.some(a => a.name === State.selectedAccount)) {
+        State.selectedAccount = "All";
+    }
+    State.loadedAt = Date.now();
     await refreshMarks();
 }
 
-async function refreshMarks() {
+/** Re-fetch trades only (after a write); quotes only if new symbols appeared. */
+async function reloadTrades() {
+    indexTrades(await Api.getTrades() || []);
+    const missing = [...openSymbols()].some(s => !(s in State.marks));
+    if (missing) await refreshMarks();
+}
+
+function openSymbols() {
     const symbols = new Set(State.watchlist);
     for (const t of State.trades) {
         if (!isClosed(t) && !t.is_pending && t.instrument) symbols.add(t.instrument);
     }
+    return symbols;
+}
+
+/** Fetch live prices. Returns true when any price changed. Never throws:
+ *  a failed fetch keeps the last known prices and flags them as stale. */
+async function refreshMarks() {
+    const symbols = openSymbols();
     if (symbols.size === 0) {
         State.marks = {};
-        return;
+        State.quotesOk = true;
+        return false;
     }
     try {
-        State.marks = await Api.getQuotes([...symbols]);
+        const next = await Api.getQuotes([...symbols]) || {};
+        const changed = JSON.stringify(next) !== JSON.stringify(State.marks);
+        State.marks = next;
+        State.quotesOk = true;
+        State.quotesAt = Date.now();
+        return changed;
     } catch (err) {
         console.warn("Quote fetch failed:", err);
-        toast("Couldn't fetch live prices", "warn");
+        if (err.code === 401) throw err;
+        const was = State.quotesOk;
+        State.quotesOk = false;
+        return was;  // re-render once to show the "prices out of date" note
     }
 }
 
-// ── Login screen ──────────────────────────────────────────────────────
+// ── Derived data ──────────────────────────────────────────────────────
+function tradesFor(account) {
+    return account === "All" ? State.trades : (State.byAccount.get(account) || []);
+}
+
+const tradesForSelected = () => tradesFor(State.selectedAccount);
+
+function portfolioOf(trades) {
+    return computePortfolio(computeHoldings(trades), State.marks, realizedBySymbol(trades));
+}
+
+function applyFilters(trades) {
+    let out = filterTradesByDateRange(trades, State.dateRangeKey);
+    if (State.tagFilter) out = out.filter(t => t.tag === State.tagFilter);
+    return out;
+}
+
+function availableTags() {
+    const set = new Set();
+    for (const t of State.trades) if (t.tag) set.add(t.tag);
+    return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+/** The goal that the home pace rail tracks for the current selection, or null.
+ *  `covers` is true when the goal counts exactly the selection's trades (only
+ *  then is the pace line comparable with the selection's equity curve). */
+function goalForSelection() {
+    const sel = State.selectedAccount;
+    if (sel !== "All") {
+        const a = State.accounts.find(x => x.name === sel);
+        const target = Number(a?.goal_target) || 0;
+        if (target <= 0) return null;
+        return {key: `acct:${sel}`, title: `Goal ${money(target, {whole: true})} by Dec 31`,
+            target, trades: tradesFor(sel), covers: true};
+    }
+    const group = State.goalGroup?.account_names || [];
+    const shared = Number(State.goalGroup?.shared_goal) || 0;
+    if (group.length && shared > 0) {
+        const names = new Set(group);
+        return {key: "shared", title: `Shared goal ${money(shared, {whole: true})} by Dec 31`,
+            target: shared, trades: State.trades.filter(t => names.has(t.account)),
+            covers: State.accounts.every(a => names.has(a.name))};
+    }
+    const combined = State.accounts.reduce((s, a) => s + (Number(a.goal_target) || 0), 0);
+    if (combined <= 0) return null;
+    return {key: "combined", title: `Combined goal ${money(combined, {whole: true})} by Dec 31`,
+        target: combined, trades: State.trades, covers: true};
+}
+
+/** TradeIn payload for PUT /trades/{account}. `tag` is sent for when the
+ *  server stores it; today's TradeIn model ignores unknown fields. */
+function toTradeIn(t) {
+    return {
+        instrument: t.instrument, share_count: t.share_count,
+        buy_price: t.buy_price, sell_price: t.sell_price,
+        open_date: t.open_date, close_date: t.close_date,
+        notes: t.notes || "", is_pending: !!t.is_pending, is_short: !!t.is_short,
+        tag: (t.tag || "").trim(),
+    };
+}
+
+// ── Messages ──────────────────────────────────────────────────────────
+const OFFLINE_MSG = "Can't reach the sync server. Check your connection and try again.";
+
+/** True for "never reached the server": api.js reports these with code 0
+ *  (offline, DNS, timeout); a raw fetch() failure is a TypeError. */
+const isOffline = err => err instanceof TypeError || err?.code === 0;
+
+/** Turn a thrown fetch/API error into a sentence for the user. */
+function friendly(err, fallback) {
+    if (isOffline(err)) return OFFLINE_MSG;
+    if (err?.code === 401) return "Your session ended. Sign in again.";
+    return err?.message ? `${fallback} ${err.message}` : fallback;
+}
+
+let toastTimer = 0;
+function toast(msg, kind = "info") {
+    const box = document.getElementById("toast");
+    if (!box) return;
+    clearTimeout(toastTimer);
+    box.textContent = msg;
+    box.className = `toast is-${kind} is-shown`;
+    toastTimer = setTimeout(() => box.classList.remove("is-shown"), kind === "err" ? 5000 : 2600);
+}
+
+function handleAuthLoss(err) {
+    if (err?.code !== 401) return false;
+    stopPolling();
+    renderLogin("Your session ended. Sign in again.");
+    return true;
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────
+async function boot() {
+    if (DEMO) {
+        const {installDemo} = await import("./demo.js");
+        installDemo(Api);
+    }
+    if (!Api.isAuthed()) {
+        renderLogin();
+        return;
+    }
+    renderLoading();
+    try {
+        await loadAll();
+        renderShell();
+    } catch (err) {
+        if (err.code === 401) renderLogin("Your session ended. Sign in again.");
+        else renderBootError(err);
+    }
+}
+
+function renderLoading() {
+    document.body.replaceChildren(el("div", {class: "screen-center", role: "status"},
+        [el("p", {class: "muted"}, "Loading your portfolio…")]));
+}
+
+/** Signed in, but the first load failed: keep the session, offer a retry. */
+function renderBootError(err) {
+    document.body.replaceChildren(el("main", {class: "screen-center"}, [
+        el("section", {class: "panel notice"}, [
+            el("h1", {class: "h-section"}, "Can't load your portfolio"),
+            el("p", {}, isOffline(err) ? OFFLINE_MSG
+                : `The server answered with an error: ${err.message}. Try again in a moment.`),
+            el("div", {class: "actions"}, [
+                el("button", {class: "btn btn-primary", type: "button", onclick: () => void boot()}, "Try again"),
+                el("button", {
+                    class: "btn btn-quiet", type: "button",
+                    onclick: async () => {
+                        await Api.logout();
+                        renderLogin();
+                    },
+                }, "Sign out"),
+            ]),
+        ]),
+    ]));
+}
+
+// ── Login ─────────────────────────────────────────────────────────────
 function renderLogin(errorMsg = "") {
-    document.body.innerHTML = "";
-    // Friendly host display: strip protocol + trailing slash so the eyebrow
-    // line reads as a server name, not a URL.
-    const hostHint = Api.getServer().replace(/^https?:\/\//, "");
+    stopPolling();
+    const host = Api.getServer().replace(/^https?:\/\//, "");
+    const user = el("input", {
+        id: "usr", class: "input", name: "username", type: "text", required: true,
+        autocomplete: "username", autocapitalize: "none", spellcheck: "false",
+        value: Api.getUser()?.username || "",
+    });
+    const pwd = el("input", {id: "pwd", class: "input", name: "password", type: "password", required: true,
+        autocomplete: "current-password"});
+    const err = el("p", {class: "form-err", role: "alert"}, errorMsg);
+    const btn = el("button", {type: "submit", class: "btn btn-primary btn-block"}, "Sign in");
 
-    const box = el("section", {class: "login"}, [
-        el("div", {class: "login-mast"}, [
-            el("div", {class: "mast-eyebrow"}, "Portfolio Edition"),
-            el("h1", {class: "mast-title"}, [
-                "Stock", el("em", {}, "Insights"),
-            ]),
-            el("div", {class: "mast-rule"}),
-        ]),
-        el("form", {
-            class: "login-form",
-            onsubmit: async e => {
-                e.preventDefault();
-                const u = $("#usr").value.trim();
-                const p = $("#pwd").value;
-                if (!u || !p) return;
-                $("#login-btn").disabled = true;
-                $("#login-btn").textContent = "Connecting…";
-                try {
-                    await Api.login(u, p);
-                    await loadAll();
-                    renderShell();
-                } catch (err) {
-                    $("#login-err").textContent = err.message || "Login failed";
-                    $("#login-btn").disabled = false;
-                    $("#login-btn").textContent = "Sign in";
-                }
+    const form = el("form", {
+        class: "login-form",
+        onsubmit: async e => {
+            e.preventDefault();
+            const u = user.value.trim();
+            if (!u || !pwd.value) return;
+            btn.disabled = true;
+            btn.textContent = "Signing in…";
+            err.textContent = "";
+            try {
+                await Api.login(u, pwd.value);
+                await loadAll();
+                renderShell();
+            } catch (ex) {
+                err.textContent = isOffline(ex) ? OFFLINE_MSG
+                    : ex.code === 401 ? "That username and password don't match. Try again."
+                        : `Couldn't sign in. ${ex.message || ""}`.trim();
+                btn.disabled = false;
+                btn.textContent = "Sign in";
             }
-        }, [
-            el("label", {}, [
-                el("span", {}, "Username"),
-                el("input", {
-                    id: "usr", type: "text", required: true,
-                    autocomplete: "username", autocapitalize: "none",
-                    value: Api.getUser()?.username || "",
-                }),
-            ]),
-            el("label", {}, [
-                el("span", {}, "Password"),
-                el("input", {
-                    id: "pwd", type: "password", required: true,
-                    autocomplete: "current-password",
-                }),
-            ]),
-            el("div", {id: "login-err", class: "form-err"}, errorMsg),
-            el("button", {id: "login-btn", type: "submit", class: "btn-primary"}, "Sign in"),
-            el("p", {class: "login-foot"}, [
-                "Connecting to ",
-                el("span", {class: "login-host"}, hostHint),
-                ". Sessions last 30 days.",
-            ]),
-        ]),
+        },
+    }, [
+        field("Username", user),
+        field("Password", pwd),
+        err,
+        btn,
     ]);
-    document.body.appendChild(box);
+
+    document.body.replaceChildren(el("main", {class: "login"}, [
+        el("div", {class: "login-head"}, [
+            el("h1", {class: "login-title"}, "Stock Insights"),
+            el("p", {class: "muted"}, "Sign in with the account you use on the desktop app."),
+        ]),
+        el("section", {class: "panel"}, [form]),
+        el("p", {class: "login-foot muted"}, [`Connecting to ${host}. You stay signed in for 30 days.`]),
+    ]));
+    (user.value ? pwd : user).focus();
 }
 
-// ── App shell (header + view + bottom nav) ────────────────────────────
+// ── Shell: top bar, view outlet, tab bar ──────────────────────────────
+const TABS = [
+    {id: "home", label: "Home", icon: ICONS.home},
+    {id: "trades", label: "Trades", icon: ICONS.trades},
+    {id: "goals", label: "Goals", icon: ICONS.goals},
+    {id: "watchlist", label: "Watchlist", icon: ICONS.watch},
+    {id: "settings", label: "Settings", icon: ICONS.settings},
+];
+const VIEWS = {
+    home: () => viewHome(),
+    trades: () => viewTrades(),
+    goals: () => viewGoals(),
+    watchlist: () => viewWatchlist(),
+    settings: () => viewSettings(),
+};
+
+// Nodes created once per shell; views never query the document for them.
+const Shell = {outlet: null, acctSelect: null, refreshBtn: null, tabs: new Map()};
+
 function renderShell() {
-    document.body.innerHTML = "";
-    document.body.appendChild(el("div", {class: "app-shell"}, [
-        renderHeader(),
-        el("main", {id: "view", class: "view"}),
-        renderTabs(),
-    ]));
-    document.body.appendChild(el("div", {id: "toast", class: "toast"}));
-    // Modal mount point
-    document.body.appendChild(el("div", {id: "modal-root"}));
+    Shell.outlet = el("main", {id: "view", class: "view", tabindex: "-1"});
+    Shell.acctSelect = el("select", {
+        id: "acct-select", class: "select select-compact",
+        onchange: e => {
+            State.selectedAccount = e.target.value;
+            State.tradeLimit = TRADE_PAGE;
+            renderView();
+        },
+    });
+    fillAccountSelect();
+    Shell.refreshBtn = el("button", {
+        class: "icon-btn", type: "button", "aria-label": "Refresh trades and prices",
+        onclick: manualRefresh,
+    }, [icon(ICONS.refresh)]);
+
+    const header = el("header", {class: "topbar"}, [
+        el("span", {class: "brand"}, "Stock Insights"),
+        el("label", {class: "sr-only", for: "acct-select"}, "Account"),
+        Shell.acctSelect,
+        Shell.refreshBtn,
+    ]);
+
+    Shell.tabs.clear();
+    const nav = el("nav", {class: "tabbar", "aria-label": "Sections"}, TABS.map(t => {
+        const b = el("button", {
+            class: "tab", type: "button",
+            onclick: () => switchView(t.id),
+        }, [icon(t.icon), el("span", {}, t.label)]);
+        Shell.tabs.set(t.id, b);
+        return b;
+    }));
+
+    document.body.replaceChildren(
+        el("a", {class: "skip", href: "#view"}, "Skip to content"),
+        el("div", {class: "app"}, [header, Shell.outlet, nav]),
+        el("div", {id: "toast", class: "toast", role: "status", "aria-live": "polite"}),
+    );
     renderView();
+    startPolling();
 }
 
-function renderHeader() {
-    const user = Api.getUser();
-    return el("header", {class: "topbar"}, [
-        el("div", {class: "topbar-left"}, [
-            el("div", {class: "brand"}, [
-                "Stock", el("em", {}, "Insights"),
-            ]),
-            el("div", {class: "user-line"}, user ? `@${user.username}` : ""),
-        ]),
-        el("div", {class: "topbar-right"}, [
-            // Account selector — affects Portfolio + Trades
-            renderAccountPill(),
-            el("button", {
-                class: "icon-btn", title: "Refresh",
-                onclick: async () => {
-                    $("#refresh-icon").classList.add("spin");
-                    try {
-                        await loadAll();
-                        renderView();
-                        toast("Refreshed", "ok");
-                    } catch (e) {
-                        toast(e.message || "Refresh failed", "err");
-                    }
-                    $("#refresh-icon")?.classList.remove("spin");
-                }
-            }, [el("span", {id: "refresh-icon", class: "icon"}, "↻")]),
-            el("button", {
-                class: "icon-btn", title: "Sign out",
-                onclick: async () => {
-                    await Api.logout();
-                    renderLogin();
-                }
-            }, [el("span", {class: "icon"}, "↪")]),
-        ]),
-    ]);
+function fillAccountSelect() {
+    const names = ["All", ...State.accounts.map(a => a.name)];
+    Shell.acctSelect.replaceChildren(...names.map(n => {
+        const o = el("option", {value: n}, n === "All" ? "All accounts" : n);
+        o.selected = n === State.selectedAccount;
+        return o;
+    }));
 }
 
-function renderAccountPill() {
-    const options = ["All", ...State.accounts.map(a => a.name)];
-    return el("div", {class: "acct-pill"}, [
-        el("select", {
-            id: "acct-select",
-            onchange: e => {
-                State.selectedAccount = e.target.value;
-                renderView();
-            }
-        }, options.map(name => el("option", {
-            value: name, selected: name === State.selectedAccount ? "selected" : false,
-        }, name))),
-    ]);
+function switchView(id) {
+    if (State.view === id) return;
+    State.view = id;
+    State.tradeLimit = TRADE_PAGE;
+    renderView({fade: true});
+    window.scrollTo(0, 0);
 }
 
-function renderTabs() {
-    const tabs = [
-        {id: "portfolio", label: "Portfolio", glyph: "▦"},
-        {id: "trades", label: "Trades", glyph: "≡"},
-        {id: "goals", label: "Goals", glyph: "◎"},
-        {id: "watchlist", label: "Watchlist", glyph: "★"},
-    ];
-    return el("nav", {class: "tabs"},
-        tabs.map(t => el("button", {
-            class: "tab" + (State.view === t.id ? " active" : ""),
-            onclick: () => {
-                State.view = t.id;
-                renderView();
-            },
-        }, [
-            el("span", {class: "tab-glyph"}, t.glyph),
-            el("span", {class: "tab-label"}, t.label),
-        ]))
-    );
+function renderView({fade = false} = {}) {
+    if (!Shell.outlet) return;
+    for (const [id, b] of Shell.tabs) {
+        if (id === State.view) b.setAttribute("aria-current", "page");
+        else b.removeAttribute("aria-current");
+    }
+    Shell.outlet.classList.toggle("fade-in", fade);
+    Shell.outlet.replaceChildren(VIEWS[State.view]());
 }
 
-function renderView() {
-    const outlet = $("#view");
-    if (!outlet) return;
-    outlet.innerHTML = "";
-    switch (State.view) {
-        case "portfolio":
-            outlet.appendChild(viewPortfolio());
-            break;
-        case "trades":
-            outlet.appendChild(viewTrades());
-            break;
-        case "goals":
-            outlet.appendChild(viewGoals());
-            break;
-        case "watchlist":
-            outlet.appendChild(viewWatchlist());
-            break;
+let refreshing = false;
+async function manualRefresh() {
+    if (refreshing) return;
+    refreshing = true;
+    Shell.refreshBtn.classList.add("is-busy");
+    Shell.refreshBtn.setAttribute("aria-busy", "true");
+    try {
+        await loadAll();
+        fillAccountSelect();
+        renderView();
+        toast(State.quotesOk ? "Up to date" : "Trades updated. Live prices are unavailable right now.",
+            State.quotesOk ? "ok" : "warn");
+    } catch (err) {
+        if (!handleAuthLoss(err)) toast(friendly(err, "Couldn't refresh."), "err");
+    } finally {
+        refreshing = false;
+        Shell.refreshBtn?.classList.remove("is-busy");
+        Shell.refreshBtn?.removeAttribute("aria-busy");
     }
 }
 
-// ── View: Portfolio ───────────────────────────────────────────────────
-function tradesForSelected() {
-    if (State.selectedAccount === "All") return State.trades;
-    return State.trades.filter(t => t.account === State.selectedAccount);
+// ── Background refresh (only while the page is visible) ───────────────
+let pollTimer = 0;
+
+function startPolling() {
+    stopPolling();
+    if (document.visibilityState === "visible") pollTimer = setInterval(pollQuotes, QUOTE_POLL_MS);
 }
 
-function viewPortfolio() {
-    const trades = tradesForSelected();
-    const holdings = computeHoldings(trades);
-    const realizedMap = realizedBySymbol(trades);
-    const {rows, summary} = computePortfolio(holdings, State.marks, realizedMap);
+function stopPolling() {
+    clearInterval(pollTimer);
+    pollTimer = 0;
+}
 
-    const wrap = el("div", {class: "stack"});
+/** Don't swap the DOM under someone who is typing, choosing or reading a dialog. */
+function safeToRerender() {
+    if (document.querySelector("dialog[open]")) return false;
+    const a = document.activeElement;
+    return !(a && Shell.outlet?.contains(a) && a.matches("input, select, textarea"));
+}
 
-    // Big number masthead
-    wrap.appendChild(el("section", {class: "masthead"}, [
-        el("div", {class: "mast-eyebrow"}, State.selectedAccount === "All"
-            ? "Combined value" : `${State.selectedAccount} · Market value`),
-        el("h2", {class: "big-number " + deltaClass(summary.total_pl)},
-            fmtMoney(summary.market_value)),
-        el("div", {class: "big-sub " + deltaClass(summary.total_pl)}, [
-            `${signed(summary.total_pl)} total`,
-            el("span", {class: "muted"}, ` · ${pct(summary.return_pct)}`),
-        ]),
-    ]));
-
-    // Stat grid
-    wrap.appendChild(el("section", {class: "stat-grid"}, [
-        statCard("Realized", signed(summary.realized_pl), deltaClass(summary.realized_pl)),
-        statCard("Unrealized", signed(summary.unrealized_pl), deltaClass(summary.unrealized_pl)),
-        statCard("Cost basis", fmtCompact(summary.cost_basis)),
-        statCard("Positions", String(summary.positions)),
-    ]));
-
-    // Holdings table (always shows ALL open positions — holdings are
-    // by-definition a "right now" snapshot, so the date-range filter
-    // deliberately doesn't touch them. Same intent as desktop's
-    // PortfolioView, where HoldingsTable ignores AccountController.dateRangeKey.)
-    wrap.appendChild(el("section", {class: "card"}, [
-        el("div", {class: "card-head"}, [
-            el("h3", {}, "Holdings"),
-            el("span", {class: "card-meta"}, `${rows.length} symbol${rows.length === 1 ? "" : "s"}`),
-        ]),
-        rows.length === 0
-            ? el("p", {class: "empty"}, "No open positions.")
-            : holdingsTable(rows),
-    ]));
-
-    // Date-range filter — applies to the equity curve + analytics
-    // below. Holdings stay unfiltered (above). Matches the desktop's
-    // AnalyticsPanel layout, where the same combo box drives both the
-    // analytics metrics and the Trade History list.
-    let rangedTrades = filterTradesByDateRange(trades, State.dateRangeKey);
-    if (State.tagFilter) {
-        rangedTrades = rangedTrades.filter(t =>
-            (t.tag || "").trim() === State.tagFilter);
+async function pollQuotes() {
+    if (!Shell.outlet?.isConnected || State.view === "settings") return;
+    try {
+        if (await refreshMarks() && safeToRerender()) renderView();
+    } catch (err) {
+        handleAuthLoss(err);
     }
-
-    wrap.appendChild(el("section", {class: "range-bar"}, [
-        el("span", {class: "range-bar-caption"},
-            `Analytics window: ${DATE_RANGE_LABELS[State.dateRangeKey] || "All time"}`
-            + (State.tagFilter ? ` · tag “${State.tagFilter}”` : "")),
-        el("div", {class: "range-bar-controls"}, [
-            tagFilterPicker(),
-            rangePicker(),
-        ]),
-    ]));
-
-    // Equity curve — built from the date-filtered closed trades.
-    // Resampling mode (per-trade vs daily) is persisted in State.
-    wrap.appendChild(
-        equityCurveCard(buildEquityCurve(rangedTrades, State.equityCurveMode))
-    );
-
-    // Trade analytics — computed over the date-filtered set.
-    const an = computeAnalytics(rangedTrades);
-    wrap.appendChild(el("section", {class: "card"}, [
-        el("div", {class: "card-head"}, [el("h3", {}, "Trade analytics")]),
-        el("div", {class: "kv"}, [
-            kvRow("Closed trades", String(an.closed_trades)),
-            kvRow("Open trades", String(an.open_trades)),
-            kvRow("Win rate", pct(an.win_rate_pct, 1)),
-            kvRow("Avg win", signed(an.avg_win)),
-            kvRow("Avg loss", signed(an.avg_loss)),
-            kvRow("Best trade", signed(an.best_trade)),
-            kvRow("Worst trade", signed(an.worst_trade)),
-            kvRow("Profit factor",
-                an.profit_factor === Infinity ? "∞"
-                    : an.profit_factor == null ? "—" : an.profit_factor.toFixed(2)),
-            // Drawdown lives at the bottom of the analytics block — a
-            // negative-leaning metric (always "loss"-tinted when nonzero)
-            // visually pairs with the wins/losses above.
-            kvRow("Max drawdown",
-                an.max_drawdown == null ? "—"
-                    : el("span", {class: "loss"}, fmtMoney(an.max_drawdown))),
-            kvRow("Current drawdown",
-                an.current_drawdown == null || an.current_drawdown === 0 ? "—"
-                    : el("span", {class: "loss"}, fmtMoney(an.current_drawdown))),
-        ]),
-    ]));
-
-    return wrap;
 }
 
-function statCard(label, value, klass = "") {
-    return el("div", {class: "stat"}, [
-        el("div", {class: "stat-label"}, label),
-        el("div", {class: "stat-value " + klass}, value),
-    ]);
-}
-
-function kvRow(label, value) {
-    return el("div", {class: "kv-row"}, [
-        el("span", {class: "kv-label"}, label),
-        el("span", {class: "kv-value"}, value),
-    ]);
-}
-
-// ── Date-range picker (shared by viewPortfolio + viewTrades) ──────────
-function rangePicker() {
-    const sel = el("select", {
-        class: "range-picker",
-        onchange: e => setDateRange(e.target.value),
-    });
-    for (const [key, label] of Object.entries(DATE_RANGE_LABELS)) {
-        const opt = el("option", {value: key}, label);
-        if (key === State.dateRangeKey) opt.selected = true;
-        sel.appendChild(opt);
+document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState !== "visible") {
+        stopPolling();
+        return;
     }
-    return el("label", {class: "range-picker-wrap"}, [
-        el("span", {class: "range-picker-label"}, "Range"),
-        sel,
+    if (!Shell.outlet?.isConnected) return;
+    const now = Date.now();
+    try {
+        if (now - State.loadedAt > STALE_RELOAD_MS) {
+            await loadAll();
+            fillAccountSelect();
+            if (safeToRerender()) renderView();
+        } else if (now - State.quotesAt > QUOTE_POLL_MS) {
+            await pollQuotes();
+        }
+    } catch (err) {
+        // Offline on resume: keep showing what we have.
+        if (!handleAuthLoss(err)) console.warn("Resume refresh failed:", err);
+    }
+    startPolling();
+});
+
+// ── Shared bits ───────────────────────────────────────────────────────
+function field(label, input, hint = null) {
+    return el("label", {class: "field"}, [
+        el("span", {class: "field-label"}, label),
+        input,
+        hint ? el("span", {class: "field-hint"}, hint) : null,
     ]);
 }
 
-// ── Tag filter picker — only rendered when tags actually exist ────────
-// Returns null when no tags are in use, so the view's controls bar
-// stays clean for users who don't tag their trades.
-function tagFilterPicker() {
+function kv(rows) {
+    return el("dl", {class: "kv"}, rows.filter(Boolean).map(([k, v, cls = ""]) =>
+        el("div", {class: "kv-row"}, [el("dt", {}, k), el("dd", {class: "num " + cls}, v)])));
+}
+
+function panel(title, children, {meta = null, cls = ""} = {}) {
+    return el("section", {class: "panel " + cls}, [
+        title ? el("div", {class: "panel-head"}, [
+            el("h2", {class: "h-panel"}, title),
+            meta ? el("span", {class: "panel-meta"}, meta) : null,
+        ]) : null,
+        ...[].concat(children),
+    ]);
+}
+
+function empty(text, action = null) {
+    return el("div", {class: "empty"}, [el("p", {}, text), action]);
+}
+
+function statusPill(t) {
+    const s = tradeStatus(t);
+    return el("span", {class: "pill pill-" + s.toLowerCase()}, STATUS_LABELS[s] || s);
+}
+
+function selectControl(label, value, options, onChange) {
+    const id = `sel-${label.toLowerCase().replace(/\W+/g, "-")}`;
+    const sel = el("select", {id, class: "select", onchange: e => onChange(e.target.value)},
+        options.map(([v, text]) => {
+            const o = el("option", {value: v}, text);
+            o.selected = v === value;
+            return o;
+        }));
+    return el("div", {class: "control"}, [el("label", {for: id, class: "control-label"}, label), sel]);
+}
+
+function filterControls(onChange) {
     const tags = availableTags();
-    if (tags.length === 0) return null;
-    const sel = el("select", {
-        class: "range-picker",
-        onchange: e => setTagFilter(e.target.value),
-    });
-    sel.appendChild(el("option", {value: ""}, "All tags"));
-    for (const t of tags) {
-        const opt = el("option", {value: t}, t);
-        if (t === State.tagFilter) opt.selected = true;
-        sel.appendChild(opt);
-    }
-    return el("label", {class: "range-picker-wrap"}, [
-        el("span", {class: "range-picker-label"}, "Tag"),
-        sel,
+    return el("div", {class: "filters"}, [
+        selectControl("Range", State.dateRangeKey, Object.entries(DATE_RANGE_LABELS), v => {
+            State.dateRangeKey = DATE_RANGE_LABELS[v] ? v : "all";
+            store.set(PREF_RANGE, State.dateRangeKey);
+            onChange("sel-range");
+        }),
+        tags.length ? selectControl("Tag", State.tagFilter,
+            [["", "All tags"], ...tags.map(t => [t, t])], v => {
+                State.tagFilter = v;
+                onChange("sel-tag");
+            }) : null,
     ]);
 }
 
-// ── Equity-curve card ─────────────────────────────────────────────────
-//
-// Mirrors EquityCurveCard.qml on desktop. The chart is a hand-rolled
-// SVG (no Chart.js dep) — keeps the PWA payload tiny and the rendering
-// CSS-themable. Shape:
-//   • 320×140 viewBox, polyline auto-scaled to the data range
-//   • 5% vertical padding so the line never touches the top/bottom
-//   • horizontal mid-line through y = 0 when the curve crosses zero
-//   • points are spaced by their true close_date (epoch ms), so a
-//     trade cluster looks like a cluster — not evenly spaced ticks
-function equityCurveCard(curve) {
-    if (!curve || curve.length === 0) {
-        return el("section", {class: "card equity-card"}, [
-            el("div", {class: "card-head"}, [el("h3", {}, "Equity curve")]),
-            el("p", {class: "empty"},
-                "No closed trades yet — close a trade to see the curve."),
+/** Replace `node` with `build()` and put focus back on the control the
+ *  user just changed (it was destroyed with the old subtree). */
+function rerenderSection(node, build, focusId) {
+    const next = build();
+    node.replaceWith(next);
+    if (focusId) document.getElementById(focusId)?.focus();
+    return next;
+}
+
+// ── View: Home ────────────────────────────────────────────────────────
+function viewHome() {
+    const trades = tradesForSelected();
+    const {rows, summary} = portfolioOf(trades);
+    const goal = goalForSelection();
+
+    let hero;
+    if (goal) {
+        const realized = computeGoalProgress(goal.trades, goal.target).realized;
+        const animate = !State.animated.has(goal.key);
+        State.animated.add(goal.key);
+        hero = el("div", {class: "panel panel-hero"}, [
+            paceRail({title: goal.title, target: goal.target, realized, animate}),
+        ]);
+    } else {
+        hero = el("div", {class: "panel panel-hero"}, [
+            el("h2", {class: "pace-goal"}, State.selectedAccount === "All"
+                ? "Total profit and loss" : `${State.selectedAccount} profit and loss`),
+            el("p", {class: "pace-value num"}, signedMoney(summary.total_pl)),
+            el("p", {class: "muted"}, "No goal set for this account. Set a yearly goal in the desktop app to see your pace here."),
         ]);
     }
 
-    const xs = curve.map(p => p.x);
-    const ys = curve.map(p => p.y);
-    const xMin = Math.min(...xs), xMax = Math.max(...xs);
-    const yMin = Math.min(0, ...ys), yMax = Math.max(0, ...ys);
-    const ySpan = Math.max(1, yMax - yMin);
-    const xSpan = Math.max(1, xMax - xMin);
+    const priceNote = el("p", {class: "price-note" + (State.quotesOk ? " muted" : " is-warn"), role: "status"},
+        State.quotesOk
+            ? (State.quotesAt ? `Prices updated ${fmtClock(State.quotesAt)}` : "")
+            : "Live prices are unavailable. Showing the last known prices.");
 
-    const W = 320, H = 140, PADX = 4, PADY = 8;
-    const usableW = W - PADX * 2, usableH = H - PADY * 2;
-    // Note `H - PADY` because SVG y grows downward; we invert so a
-    // higher P/L sits visually higher.
-    const sx = x => PADX + ((x - xMin) / xSpan) * usableW;
-    const sy = y => (H - PADY) - ((y - yMin) / ySpan) * usableH;
-
-    const points = curve.map(p => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
-
-    // Zero baseline — only drawn if the curve goes both positive and
-    // negative, otherwise it'd just sit at the bottom edge.
-    const zeroLine = (yMin < 0 && yMax > 0)
-        ? `<line x1="${PADX}" x2="${W - PADX}" y1="${sy(0)}" y2="${sy(0)}" class="equity-zero"/>`
-        : "";
-
-    // Final-point marker — small dot at the latest cumulative P/L so
-    // the most recent value is visually anchored.
-    const lastX = sx(xs[xs.length - 1]), lastY = sy(ys[ys.length - 1]);
-    const dot = `<circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="3.5" class="equity-dot"/>`;
-
-    const realized = ys[ys.length - 1];
-    // Reuse curve.length - 1 because the curve is seeded with a zero
-    // point one day before the first close (see buildEquityCurve), so
-    // (length - 1) is the actual closed-trade count.
-    const tradeCount = curve.length - 1;
-
-    // Resampling toggle — pair of small pill buttons. Hidden when the
-    // toggle would have no effect (1-2 trades total), since "Daily" and
-    // "Per trade" produce identical curves in that case.
-    const showToggle = tradeCount >= 3;
-    const modeToggle = showToggle ? el("div", {class: "equity-mode-toggle"}, [
-        el("button", {
-            class: "equity-mode-btn" + (State.equityCurveMode === "trades" ? " active" : ""),
-            onclick: () => setEquityCurveMode("trades"),
-        }, "Per trade"),
-        el("button", {
-            class: "equity-mode-btn" + (State.equityCurveMode === "daily" ? " active" : ""),
-            onclick: () => setEquityCurveMode("daily"),
-        }, "Daily"),
-    ]) : null;
-
-    // Tooltip overlay — empty by default; populated on tap/hover by
-    // findNearestPoint(). Lives outside the SVG so we can position it
-    // with normal flexbox/absolute CSS rather than fighting SVG <text>
-    // baseline math.
-    const wrap = el("section", {class: "card equity-card"}, [
-        el("div", {class: "card-head"}, [
-            el("h3", {}, "Equity curve"),
-            el("div", {class: "equity-head-right"}, [
-                el("span", {class: "card-meta"},
-                    `${signed(realized)} · ${tradeCount} trade${tradeCount === 1 ? "" : "s"}`),
-                modeToggle,
-            ]),
-        ]),
-        el("div", {
-            class: "equity-svg-wrap",
-            html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="equity-svg">
-                ${zeroLine}
-                <polyline points="${points}" class="equity-line"/>
-                ${dot}
-                <circle id="equity-marker" cx="0" cy="0" r="3" class="equity-marker" style="display:none"/>
-            </svg>
-            <div class="equity-tooltip" style="display:none"></div>`,
-        }),
+    const stats = el("section", {class: "stats", "aria-label": "Summary"}, [
+        stat("Total P/L", signedMoney(summary.total_pl), tone(summary.total_pl), pctChange(summary.return_pct)),
+        stat("Unrealised", signedMoney(summary.unrealized_pl), tone(summary.unrealized_pl)),
+        stat("Market value", money(summary.market_value)),
+        stat("Open positions", String(summary.positions)),
     ]);
 
-    // ── Tap / hover handler ──────────────────────────────────────────
-    // Finds the nearest curve point to the touch/cursor x and pops a
-    // floating label with date + cumulative value. Listens for both
-    // mouse (desktop browser preview) and touch (phones / tablets).
-    // Defer the wiring to the next animation frame so the DOM nodes
-    // we just inserted via `html:` are queryable.
-    requestAnimationFrame(() => {
-        const wrapEl = wrap.querySelector(".equity-svg-wrap");
-        const svg = wrapEl?.querySelector("svg");
-        const marker = wrapEl?.querySelector("#equity-marker");
-        const tip = wrapEl?.querySelector(".equity-tooltip");
-        if (!wrapEl || !svg || !marker || !tip) return;
+    // Holdings are a "right now" snapshot, so the date filter never applies
+    // (same as desktop's HoldingsTable).
+    const holdings = panel("Open positions", rows.length
+        ? holdingsList(rows)
+        : empty("No open positions. Log a trade to start tracking.",
+            el("button", {class: "btn btn-secondary", type: "button", onclick: () => openTradeEditor(null)}, "Log trade")),
+    {meta: rows.length ? plural(rows.length, "symbol") : null});
 
-        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-        // The Y coord is computed from the curve's value at the matched
-        // point, so the second argument from mouse/touch events is
-        // intentionally unused — caller still passes (clientX, clientY)
-        // for symmetry with the standard pointer-event API.
-        function showAt(clientX) {
-            // Convert client x into the SVG viewBox coordinate (0..W).
-            const r = svg.getBoundingClientRect();
-            const vbX = ((clientX - r.left) / r.width) * W;
-            // Find nearest point by index distance — curve points are
-            // already sorted by time, so a linear scan is plenty fast
-            // (we never have more than a few hundred points).
-            let bestIdx = 0, bestDist = Infinity;
-            for (let i = 0; i < curve.length; i++) {
-                const px = sx(curve[i].x);
-                const d = Math.abs(px - vbX);
-                if (d < bestDist) {
-                    bestDist = d;
-                    bestIdx = i;
-                }
-            }
-            const p = curve[bestIdx];
-            const px = sx(p.x), py = sy(p.y);
-            // Position marker (in SVG viewBox coords)
-            marker.setAttribute("cx", px.toFixed(1));
-            marker.setAttribute("cy", py.toFixed(1));
-            marker.style.display = "block";
-            // Position tooltip (in CSS coords, relative to wrapper).
-            const wr = wrapEl.getBoundingClientRect();
-            const cssX = (px / W) * wr.width;
-            const cssY = (py / H) * wr.height;
-            const d = new Date(p.x);
-            const sign = p.y >= 0 ? "+" : "-";
-            tip.textContent =
-                `${months[d.getMonth()]} ${d.getDate()} · ${sign}$${Math.abs(p.y).toFixed(0)}`;
-            tip.style.display = "block";
-            // Clamp horizontally so the tooltip doesn't escape the card
-            // on narrow phone screens.
-            const tipW = tip.offsetWidth;
-            const left = Math.max(4, Math.min(wr.width - tipW - 4, cssX - tipW / 2));
-            tip.style.left = `${left}px`;
-            tip.style.top = `${Math.max(2, cssY - 28)}px`;
-        }
-
-        function hide() {
-            marker.style.display = "none";
-            tip.style.display = "none";
-        }
-
-        // Mouse (desktop preview / tablet with mouse). Touch handled
-        // separately so we can also dismiss on touchend.
-        wrapEl.addEventListener("mousemove", e => showAt(e.clientX));
-        wrapEl.addEventListener("mouseleave", hide);
-        wrapEl.addEventListener("touchstart", e => {
-            const t = e.touches[0];
-            if (t) showAt(t.clientX);
-        }, {passive: true});
-        wrapEl.addEventListener("touchmove", e => {
-            const t = e.touches[0];
-            if (t) showAt(t.clientX);
-        }, {passive: true});
-        wrapEl.addEventListener("touchend", hide);
+    let perf;
+    const buildPerf = () => performanceSection(trades, goal, focusId => {
+        perf = rerenderSection(perf, buildPerf, focusId);
     });
+    perf = buildPerf();
 
-    return wrap;
+    return el("div", {class: "stack"}, [hero, priceNote, stats, holdings, perf]);
 }
 
-function holdingsTable(rows) {
-    const head = el("div", {class: "tr head"}, [
-        el("span", {class: "td sym"}, "Symbol"),
-        el("span", {class: "td num"}, "Qty"),
-        el("span", {class: "td num"}, "Mark"),
-        el("span", {class: "td num"}, "P/L"),
+function stat(label, value, cls = "", sub = null) {
+    return el("div", {class: "stat"}, [
+        el("span", {class: "stat-label"}, label),
+        el("span", {class: "stat-value num " + cls}, value),
+        sub ? el("span", {class: "stat-sub num " + cls}, sub) : null,
     ]);
-    const body = rows.map(r => el("div", {
-        class: "tr",
-        onclick: () => showHoldingDetail(r),
-    }, [
-        el("span", {class: "td sym"}, [
-            el("strong", {}, r.instrument),
-            r.qty < 0 ? el("em", {class: "tag-short"}, "SHORT") : null,
-        ]),
-        el("span", {class: "td num"}, String(Math.abs(r.qty))),
-        el("span", {class: "td num"}, fmtNum(r.mark)),
-        el("span", {class: "td num " + deltaClass(r.total_pl)}, signed(r.total_pl)),
-    ]));
-    return el("div", {class: "table"}, [head, ...body]);
 }
 
-function showHoldingDetail(r) {
-    // Drill-down: existing kv summary + per-symbol equity curve + a
-    // chronological list of every trade for this symbol. Mirrors the
-    // desktop's SymbolHistoryDialog.
-    const sym = r.instrument;
-    // All trades for this symbol within the user's currently-selected
-    // account (same scoping rule the holdings row was computed under).
-    const symTrades = tradesForSelected().filter(
-        t => (t.instrument || "").toUpperCase() === sym
-    );
-    const closedCount = symTrades.filter(t => isClosed(t) && !t.is_pending).length;
-
-    openModal(sym, el("div", {class: "stack drill-down"}, [
-        // ── Position summary (existing kv block) ──────────────────
-        el("div", {class: "kv"}, [
-            kvRow("Quantity",
-                String(Math.abs(r.qty)) + (r.qty < 0 ? " (short)" : "")),
-            kvRow("Avg cost", fmtNum(r.avg_cost)),
-            kvRow("Mark", fmtNum(r.mark)),
-            kvRow("Market value", fmtMoney(r.market_value)),
-            kvRow("Weight", pct(r.weight_pct, 1)),
-            kvRow("Unrealized P/L", signed(r.unrealized_pl)),
-            kvRow("Realized P/L", signed(r.realized_pl)),
-            kvRow("Total P/L", signed(r.total_pl)),
-            r.notes ? el("div", {class: "kv-row"}, [
-                el("span", {class: "kv-label"}, "Notes"),
-                el("span", {class: "kv-value notes"}, r.notes),
-            ]) : null,
-        ]),
-
-        // ── Mini equity curve scoped to this symbol ────────────────
-        // Hidden when there's nothing to plot — keeps the modal short
-        // for symbols you only just bought.
-        closedCount > 0
-            ? equityCurveCard(buildEquityCurve(symTrades, "trades"))
-            : null,
-
-        // ── Per-symbol trade list ──────────────────────────────────
-        // Chronological so the entry/exit story reads top-to-bottom.
-        // Mobile trade rows in the main list reverse to newest-first
-        // for scanning recent activity; for a per-symbol drill-down
-        // chronological reads more naturally.
-        el("section", {class: "card drill-trades"}, [
-            el("div", {class: "card-head"}, [
-                el("h3", {}, "All trades"),
-                el("span", {class: "card-meta"},
-                    `${symTrades.length} ${symTrades.length === 1 ? "trade" : "trades"}`),
+function holdingsList(rows) {
+    return el("ul", {class: "rows"}, rows.map(r => {
+        const cost = Math.abs(r.qty * r.avg_cost);
+        const uplPct = r.mark != null && cost > 0 ? (r.unrealized_pl / cost) * 100 : null;
+        return el("li", {}, [el("button", {
+            class: "row", type: "button", onclick: () => showHoldingDetail(r),
+            "aria-label": `${r.instrument}, ${Math.abs(r.qty)} shares${r.qty < 0 ? " short" : ""}, `
+                + `total P/L ${signedMoney(r.total_pl)}. Show details`,
+        }, [
+            el("span", {class: "row-main"}, [
+                el("span", {class: "row-title"}, [
+                    el("span", {class: "sym"}, r.instrument),
+                    r.qty < 0 ? el("span", {class: "pill pill-short"}, "Short") : null,
+                ]),
+                el("span", {class: "row-sub num"},
+                    `${num(Math.abs(r.qty))} shares, avg ${money(r.avg_cost)}, last ${r.mark == null ? "unavailable" : money(r.mark)}`),
             ]),
-            symTrades.length === 0
-                ? el("p", {class: "empty"}, "No trades for this symbol yet.")
-                : symbolTradeList(symTrades),
-        ]),
-    ]));
+            el("span", {class: "row-end"}, [
+                el("span", {class: "num row-value " + tone(r.total_pl)}, signedMoney(r.total_pl)),
+                el("span", {class: "num row-sub " + tone(uplPct)}, pctChange(uplPct)),
+            ]),
+        ])]);
+    }));
 }
 
-// Compact, read-only trade list used inside the per-symbol drill-down
-// modal. Differs from the main trade list in that it's chronological
-// (oldest first, so the entry → exit story reads naturally) and
-// non-tappable — taps would cause a confusing "open editor inside an
-// already-open modal" interaction.
+/** Equity curve + analytics for the filtered trades. `onChange(focusId)`
+ *  re-renders just this section. */
+function performanceSection(trades, goal, onChange) {
+    const ranged = applyFilters(trades);
+    const curve = buildEquityCurve(ranged, State.equityCurveMode);
+    const an = computeAnalytics(ranged);
+    // The pace line only compares with an all-time curve of the goal's trades.
+    const paceTarget = goal && goal.covers && State.dateRangeKey === "all" && !State.tagFilter
+        ? goal.target : null;
+
+    const modeBtn = (mode, label) => el("button", {
+        type: "button", class: "seg-btn", id: `curve-${mode}`,
+        "aria-pressed": String(State.equityCurveMode === mode),
+        onclick: () => {
+            if (State.equityCurveMode === mode) return;
+            State.equityCurveMode = mode;
+            store.set(PREF_CURVE, mode);
+            onChange(`curve-${mode}`);
+        },
+    }, label);
+    const closedCount = Math.max(0, curve.length - 1);
+
+    return el("section", {class: "stack-tight", "aria-labelledby": "perf-h"}, [
+        el("div", {class: "section-head"}, [el("h2", {class: "h-section", id: "perf-h"}, "Performance")]),
+        filterControls(onChange),
+        panel("Realised P/L over time", curve.length ? [
+            closedCount >= 3 ? el("div", {class: "seg", role: "group", "aria-label": "Curve detail"},
+                [modeBtn("trades", "Per trade"), modeBtn("daily", "Daily")]) : null,
+            equityChart(curve, {paceTarget}),
+        ] : empty(State.dateRangeKey === "all" && !State.tagFilter
+            ? "No closed trades yet. Close a trade to see your curve."
+            : "No closed trades in this range. Try a wider range."),
+        {meta: curve.length ? signedMoney(curve[curve.length - 1].y) : null}),
+        panel("Trade analytics", kv([
+            ["Closed trades", String(an.closed_trades)],
+            ["Open trades", String(an.open_trades)],
+            ["Win rate", percent(an.win_rate_pct)],
+            ["Average win", signedMoney(an.avg_win), tone(an.avg_win)],
+            ["Average loss", signedMoney(an.avg_loss), tone(an.avg_loss)],
+            ["Best trade", signedMoney(an.best_trade), tone(an.best_trade)],
+            ["Worst trade", signedMoney(an.worst_trade), tone(an.worst_trade)],
+            ["Profit factor", an.profit_factor === Infinity ? "∞"
+                : an.profit_factor == null ? "—" : an.profit_factor.toFixed(2)],
+            ["Largest drawdown", an.max_drawdown ? money(-an.max_drawdown) : "—", an.max_drawdown ? "bad" : ""],
+            ["Current drawdown", an.current_drawdown ? money(-an.current_drawdown) : "—", an.current_drawdown ? "bad" : ""],
+        ]), {meta: DATE_RANGE_LABELS[State.dateRangeKey] + (State.tagFilter ? `, tag ${State.tagFilter}` : "")}),
+    ]);
+}
+
+// ── Holding drill-down (mirrors desktop SymbolHistoryDialog) ──────────
+function showHoldingDetail(r) {
+    const sym = r.instrument;
+    const symTrades = tradesForSelected().filter(t => t.instrument === sym);
+    const curve = buildEquityCurve(symTrades, "trades");
+
+    openDialog(sym, [
+        kv([
+            ["Quantity", `${num(Math.abs(r.qty))}${r.qty < 0 ? " (short)" : ""}`],
+            ["Average cost", money(r.avg_cost)],
+            ["Last price", r.mark == null ? "Unavailable" : money(r.mark)],
+            ["Market value", money(r.market_value)],
+            ["Portfolio weight", percent(r.weight_pct)],
+            ["Unrealised P/L", signedMoney(r.unrealized_pl), tone(r.unrealized_pl)],
+            ["Realised P/L", signedMoney(r.realized_pl), tone(r.realized_pl)],
+            ["Total P/L", signedMoney(r.total_pl), tone(r.total_pl)],
+        ]),
+        r.notes ? el("div", {class: "notes"}, [el("h3", {class: "h-sub"}, "Notes"), el("p", {}, r.notes)]) : null,
+        curve.length ? el("div", {}, [el("h3", {class: "h-sub"}, "Realised P/L"), equityChart(curve)]) : null,
+        el("h3", {class: "h-sub"}, `All trades (${symTrades.length})`),
+        symbolTradeList(symTrades),
+    ]);
+}
+
+/** Chronological, read-only list (entry to exit reads top to bottom). */
 function symbolTradeList(trades) {
     const sorted = trades.slice().sort((a, b) => {
-        const ad = a.close_date || a.open_date || "";
-        const bd = b.close_date || b.open_date || "";
+        const ad = a.close_date || a.open_date || "", bd = b.close_date || b.open_date || "";
         return ad < bd ? -1 : ad > bd ? 1 : 0;
     });
-    const list = el("div", {class: "drill-trade-list"});
-    for (const t of sorted) {
-        const profit = tradeProfit(t);
-        const status = tradeStatus(t);
-        list.appendChild(el("div", {class: "drill-trade-row"}, [
-            el("div", {class: "dt-l"}, [
-                el("div", {class: "dt-date"},
-                    t.close_date || t.open_date || "—"),
-                el("div", {class: "dt-meta"}, [
-                    el("span", {class: "tag tag-" + status.toLowerCase()}, status),
-                    ` ${t.share_count} sh @ ${fmtNum(t.buy_price)}`,
-                    t.tag ? el("span", {class: "tag tag-strategy"}, t.tag) : null,
+    return el("ul", {class: "rows rows-static"}, sorted.map(t => {
+        const p = tradeProfit(t);
+        return el("li", {class: "row"}, [
+            el("span", {class: "row-main"}, [
+                el("span", {class: "row-title"}, [
+                    el("span", {}, fmtIsoDate(t.close_date || t.open_date)), statusPill(t),
+                    t.tag ? el("span", {class: "pill"}, t.tag) : null,
                 ]),
+                el("span", {class: "row-sub num"}, `${num(t.share_count)} shares at ${money(t.buy_price)}`),
             ]),
-            el("div", {class: "dt-pl " + deltaClass(profit)},
-                profit == null ? "—" : signed(profit)),
-        ]));
-    }
-    return list;
+            (p == null
+                ? el("span", {class: "num row-value muted", "aria-label": "No realised P/L yet"}, "—")
+                : el("span", {class: "num row-value " + tone(p)}, signedMoney(p))),
+        ]);
+    }));
 }
 
 // ── View: Trades ──────────────────────────────────────────────────────
 function viewTrades() {
-    // Apply the date-range filter BEFORE reversing so the filter
-    // semantics match the analytics on the portfolio view exactly
-    // (same set of trades, just displayed newest-first here). Tag
-    // filter, when set, layers on top.
     const all = tradesForSelected();
-    let ranged = filterTradesByDateRange(all, State.dateRangeKey);
-    if (State.tagFilter) {
-        ranged = ranged.filter(t => (t.tag || "").trim() === State.tagFilter);
-    }
-    const trades = ranged.slice().reverse();  // newest first by id
+    let listNode;
 
-    const wrap = el("div", {class: "stack"});
-    wrap.appendChild(el("section", {class: "section-head"}, [
-        el("h2", {}, "Trades"),
-        el("button", {
-            class: "btn-primary compact",
-            onclick: () => openTradeEditor(null),
-        }, "+ New trade"),
-    ]));
+    const buildList = () => {
+        const ranged = applyFilters(all);
+        const newest = ranged.slice().reverse();  // server order is oldest first
+        const shown = newest.slice(0, State.tradeLimit);
+        const caption = `${ranged.length} of ${plural(all.length, "trade")}`;
 
-    // Range picker — same control as on the portfolio view, sharing
-    // State.dateRangeKey, so toggling here also affects analytics there.
-    wrap.appendChild(el("section", {class: "range-bar"}, [
-        el("span", {class: "range-bar-caption"},
-            `${ranged.length} of ${all.length} ${all.length === 1 ? "trade" : "trades"}`
-            + ` · ${DATE_RANGE_LABELS[State.dateRangeKey] || "All time"}`
-            + (State.tagFilter ? ` · tag “${State.tagFilter}”` : "")),
-        el("div", {class: "range-bar-controls"}, [
-            tagFilterPicker(),
-            rangePicker(),
+        let body;
+        if (all.length === 0) {
+            body = empty("No trades yet. Log your first trade to start tracking.");
+        } else if (newest.length === 0) {
+            body = empty("No trades match these filters. Try a wider range or another tag.");
+        } else {
+            body = [
+                el("ul", {class: "rows"}, shown.map(t => el("li", {}, [tradeRow(t)]))),
+                newest.length > shown.length ? el("button", {
+                    class: "btn btn-secondary btn-block", type: "button", id: "more-trades",
+                    onclick: () => {
+                        State.tradeLimit += TRADE_PAGE;
+                        listNode = rerenderSection(listNode, buildList, "more-trades");
+                    },
+                }, `Show ${Math.min(TRADE_PAGE, newest.length - shown.length)} more`) : null,
+            ];
+        }
+        return el("div", {class: "stack-tight"}, [
+            filterControls(focusId => {
+                State.tradeLimit = TRADE_PAGE;
+                listNode = rerenderSection(listNode, buildList, focusId);
+            }),
+            el("p", {class: "muted small", role: "status"}, caption),
+            panel(null, body, {cls: "panel-flush"}),
+        ]);
+    };
+    listNode = buildList();
+
+    return el("div", {class: "stack"}, [
+        el("div", {class: "section-head"}, [
+            el("h1", {class: "h-section"}, "Trades"),
+            el("button", {class: "btn btn-primary", type: "button", onclick: () => openTradeEditor(null)}, "Log trade"),
         ]),
-    ]));
-
-    if (trades.length === 0) {
-        wrap.appendChild(el("p", {class: "empty card"},
-            State.dateRangeKey === "all"
-                ? "No trades yet."
-                : "No trades in the selected range."));
-        return wrap;
-    }
-
-    const list = el("div", {class: "trade-list"});
-    for (const t of trades) {
-        const profit = tradeProfit(t);
-        const status = tradeStatus(t);
-        list.appendChild(el("button", {
-            class: "trade-row",
-            onclick: () => openTradeEditor(t),
-        }, [
-            el("div", {class: "tr-l"}, [
-                el("div", {class: "tr-sym"}, [
-                    el("strong", {}, t.instrument || "—"),
-                    el("span", {class: "tag tag-" + status.toLowerCase()}, status),
-                    // Tag chip — only rendered when a tag is set, so
-                    // the row doesn't gain visual weight for untagged
-                    // trades. Same visual language as the status chip.
-                    t.tag ? el("span", {class: "tag tag-strategy"}, t.tag) : null,
-                ]),
-                el("div", {class: "tr-meta"}, [
-                    `${t.share_count} sh @ ${fmtNum(t.buy_price)}`,
-                    t.account ? el("span", {class: "muted"}, ` · ${t.account}`) : null,
-                ]),
-            ]),
-            el("div", {class: "tr-r"}, [
-                el("div", {class: "tr-pl " + deltaClass(profit)},
-                    profit == null ? "—" : signed(profit)),
-                el("div", {class: "tr-date muted"},
-                    t.close_date || t.open_date || ""),
-            ]),
-        ]));
-    }
-    wrap.appendChild(list);
-    return wrap;
+        listNode,
+    ]);
 }
 
-// ── Trade editor (modal) ──────────────────────────────────────────────
+function tradeRow(t) {
+    const p = tradeProfit(t);
+    return el("button", {class: "row", type: "button", onclick: () => openTradeEditor(t)}, [
+        el("span", {class: "row-main"}, [
+            el("span", {class: "row-title"}, [
+                el("span", {class: "sym"}, t.instrument || "—"), statusPill(t),
+                t.tag ? el("span", {class: "pill"}, t.tag) : null,
+            ]),
+            el("span", {class: "row-sub num"},
+                `${num(t.share_count)} shares at ${money(t.buy_price)}`
+                + (State.selectedAccount === "All" && t.account ? `, ${t.account}` : "")),
+        ]),
+        el("span", {class: "row-end"}, [
+            (p == null
+                ? el("span", {class: "num row-value muted", "aria-label": "No realised P/L yet"}, "—")
+                : el("span", {class: "num row-value " + tone(p)}, signedMoney(p))),
+            el("span", {class: "row-sub"}, fmtIsoDate(t.close_date || t.open_date || "")),
+        ]),
+    ]);
+}
+
+// ── Trade editor ──────────────────────────────────────────────────────
 function openTradeEditor(existing) {
-    const accountOptions = State.accounts.map(a => a.name);
-    if (accountOptions.length === 0) {
-        toast("Create an account on the desktop app first", "warn");
+    const names = State.accounts.map(a => a.name);
+    if (names.length === 0) {
+        toast("Create an account in the desktop app first, then log trades here.", "warn");
         return;
     }
     const t = existing ? {...existing} : {
-        account: State.selectedAccount === "All" ? accountOptions[0] : State.selectedAccount,
-        instrument: "", share_count: 0, buy_price: 0,
-        sell_price: null, open_date: new Date().toISOString().slice(0, 10),
-        close_date: null, notes: "", tag: "",
-        is_pending: false, is_short: false,
+        account: State.selectedAccount === "All" ? names[0] : State.selectedAccount,
+        instrument: "", share_count: "", buy_price: "", sell_price: null,
+        open_date: new Date().toLocaleDateString("en-CA"),  // YYYY-MM-DD, local
+        close_date: null, notes: "", tag: "", is_pending: false, is_short: false,
     };
 
-    const form = el("form", {
-        class: "trade-form",
-        onsubmit: async e => {
-            e.preventDefault();
-            await saveTradeFromForm(existing, form);
-        }
-    }, [
-        formRow("Account", el("select", {name: "account", required: true},
-            accountOptions.map(n => el("option", {
-                value: n, selected: n === t.account ? "selected" : false,
-            }, n)))),
+    const input = attrs => el("input", {class: "input", ...attrs});
+    const check = (name, label, on) => {
+        const box = el("input", {type: "checkbox", name});
+        box.checked = !!on;
+        return el("label", {class: "check"}, [box, el("span", {}, label)]);
+    };
+    const notes = el("textarea", {class: "input", name: "notes", rows: "3"});
+    notes.value = t.notes || "";
+    const acct = el("select", {class: "select", name: "account", required: true},
+        names.map(n => {
+            const o = el("option", {value: n}, n);
+            o.selected = n === t.account;
+            return o;
+        }));
+    const err = el("p", {class: "form-err", role: "alert"});
+    const submit = el("button", {type: "submit", class: "btn btn-primary"}, existing ? "Save changes" : "Log trade");
 
-        formRow("Symbol", el("input", {
-            name: "instrument", required: true, autocapitalize: "characters",
-            value: t.instrument, placeholder: "AAPL",
-        })),
-
-        el("div", {class: "form-grid-2"}, [
-            formRow("Shares", el("input", {
-                name: "share_count", type: "number", inputmode: "numeric",
-                min: "1", required: true, value: t.share_count || "",
-            })),
-            formRow(t.is_short ? "Short price" : "Buy price", el("input", {
-                name: "buy_price", type: "number", inputmode: "decimal",
-                step: "0.01", min: "0", required: true, value: t.buy_price || "",
-            })),
+    const form = el("form", {class: "form", novalidate: false}, [
+        field("Account", acct),
+        field("Symbol", input({name: "instrument", required: true, autocapitalize: "characters",
+            autocomplete: "off", spellcheck: "false", value: t.instrument, placeholder: "AAPL"})),
+        el("div", {class: "grid-2"}, [
+            field("Shares", input({name: "share_count", type: "number", inputmode: "numeric",
+                min: "1", step: "1", required: true, value: t.share_count})),
+            field("Entry price", input({name: "buy_price", type: "number", inputmode: "decimal",
+                step: "0.01", min: "0", required: true, value: t.buy_price})),
         ]),
-
-        el("div", {class: "form-grid-2"}, [
-            formRow("Open date", el("input", {
-                name: "open_date", type: "date", value: t.open_date || "",
-            })),
-            formRow("Close date", el("input", {
-                name: "close_date", type: "date", value: t.close_date || "",
-            })),
+        el("div", {class: "grid-2"}, [
+            field("Open date", input({name: "open_date", type: "date", value: t.open_date || ""})),
+            field("Close date", input({name: "close_date", type: "date", value: t.close_date || ""})),
         ]),
-
-        formRow(t.is_short ? "Cover price (close)" : "Sell price (close)",
-            el("input", {
-                name: "sell_price", type: "number", inputmode: "decimal",
-                step: "0.01", min: "0", value: t.sell_price ?? "",
-                placeholder: "Leave blank if open",
-            })),
-
-        el("div", {class: "checkboxes"}, [
-            el("label", {class: "check"}, [
-                el("input", {
-                    type: "checkbox", name: "is_short",
-                    checked: t.is_short ? "checked" : false,
-                }),
-                el("span", {}, "Short position"),
-            ]),
-            el("label", {class: "check"}, [
-                el("input", {
-                    type: "checkbox", name: "is_pending",
-                    checked: t.is_pending ? "checked" : false,
-                }),
-                el("span", {}, "Pending (not yet filled)"),
-            ]),
+        field("Exit price", input({name: "sell_price", type: "number", inputmode: "decimal",
+            step: "0.01", min: "0", value: t.sell_price ?? ""}), "Leave blank while the position is open. A trade is closed once it has an exit price and a close date."),
+        el("fieldset", {class: "checks"}, [
+            el("legend", {class: "sr-only"}, "Trade type"),
+            check("is_short", "Short position", t.is_short),
+            check("is_pending", "Pending order (not filled yet)", t.is_pending),
         ]),
-
-        // Strategy tag — short label used for filtering analytics +
-        // history. Free-form text; we surface a datalist of existing
-        // tags so the user can autocomplete past values (and avoid
-        // typo-fragmented tags like "swing" vs "Swing").
-        formRow("Tag", el("input", {
-            name: "tag", value: t.tag || "",
-            placeholder: "e.g. swing, earnings",
-            list: "tag-options", maxlength: 40,
-        })),
-
-        formRow("Notes", el("textarea", {
-            name: "notes", rows: 2,
-            placeholder: "Optional",
-        }, t.notes || "")),
-
-        // Datalist sourced from existing tags. Lives in the form so it
-        // tears down when the modal closes; cheaper than a global.
-        (() => {
-            const all = new Set(State.trades.map(x => (x.tag || "").trim()).filter(Boolean));
-            return el("datalist", {id: "tag-options"},
-                [...all].sort().map(v => el("option", {value: v})));
-        })(),
-
-        el("div", {class: "form-actions"}, [
-            existing
-                ? el("button", {
-                    type: "button", class: "btn-danger",
-                    onclick: () => deleteTrade(existing),
-                }, "Delete")
-                : el("span"),
-            el("button", {type: "submit", class: "btn-primary"},
-                existing ? "Save changes" : "Add trade"),
+        field("Tag", input({name: "tag", value: t.tag || "", placeholder: "For example swing or earnings",
+            list: "tag-options", maxlength: "40", autocomplete: "off"})),
+        el("datalist", {id: "tag-options"}, availableTags().map(v => el("option", {value: v}))),
+        field("Notes", notes),
+        err,
+        el("div", {class: "actions actions-split"}, [
+            existing ? el("button", {type: "button", class: "btn btn-danger",
+                onclick: () => deleteTrade(existing)}, "Delete trade") : el("span"),
+            submit,
         ]),
     ]);
+    form.addEventListener("submit", async e => {
+        e.preventDefault();
+        await saveTradeFromForm(existing, form, submit, err);
+    });
 
-    openModal(existing ? "Edit trade" : "New trade", form);
+    openDialog(existing ? `Edit ${existing.instrument} trade` : "Log trade", form);
 }
 
-async function saveTradeFromForm(existing, form) {
+/** Writes are whole-account replaces (PUT /trades/{account}); a trade that
+ *  moves account rewrites both accounts. */
+async function saveTradeFromForm(existing, form, submit, err) {
     const fd = new FormData(form);
     const incoming = {
         instrument: String(fd.get("instrument")).trim().toUpperCase(),
@@ -994,437 +899,145 @@ async function saveTradeFromForm(existing, form) {
         open_date: fd.get("open_date") || null,
         close_date: fd.get("close_date") || null,
         notes: String(fd.get("notes") || ""),
-        // Trim + cap tag length to mirror the desktop's 40-char input.
-        tag: String(fd.get("tag") || "").trim().slice(0, 40),
+        tag: String(fd.get("tag") || "").trim().slice(0, 40),  // desktop caps at 40
         is_pending: fd.get("is_pending") === "on",
         is_short: fd.get("is_short") === "on",
     };
-    const targetAccount = String(fd.get("account"));
-
-    // Replace-account-trades is the only write API. Build the new array for
-    // that account from current state, then POST it back.
-    const submitBtn = form.querySelector("button[type=submit]");
-    submitBtn.disabled = true;
-    submitBtn.textContent = "Saving…";
+    const target = String(fd.get("account"));
+    if (!incoming.instrument) return void (err.textContent = "Enter a symbol, for example AAPL.");
+    if (!(incoming.share_count >= 1) || !Number.isInteger(incoming.share_count)) {
+        return void (err.textContent = "Shares must be a whole number of 1 or more.");
+    }
+    err.textContent = "";
+    const label = submit.textContent;
+    submit.disabled = true;
+    submit.textContent = "Saving…";
 
     try {
-        // Special case: if the trade is moving accounts, we have to PUT both.
-        const movedAccounts = new Set([targetAccount]);
-        if (existing && existing.account && existing.account !== targetAccount) {
-            movedAccounts.add(existing.account);
+        const touched = new Set([target]);
+        if (existing?.account && existing.account !== target) touched.add(existing.account);
+        for (const name of touched) {
+            const list = tradesFor(name).filter(x => !existing || x.id !== existing.id);
+            if (name === target) list.push({account: target, ...incoming});
+            await Api.replaceAccountTrades(name, list.map(toTradeIn));
         }
-
-        for (const acctName of movedAccounts) {
-            let acctTrades = State.trades.filter(t => t.account === acctName);
-            if (existing) {
-                acctTrades = acctTrades.filter(t => t.id !== existing.id);
-            }
-            if (acctName === targetAccount) {
-                acctTrades.push({account: targetAccount, ...incoming});
-            }
-            const payload = acctTrades.map(t => ({
-                instrument: t.instrument,
-                share_count: t.share_count,
-                buy_price: t.buy_price,
-                sell_price: t.sell_price,
-                open_date: t.open_date,
-                close_date: t.close_date,
-                notes: t.notes,
-                is_pending: t.is_pending,
-                is_short: t.is_short,
-            }));
-            await Api.replaceAccountTrades(acctName, payload);
-        }
-
-        closeModal();
-        await loadAll();
+        closeDialog();
+        await reloadTrades();
         renderView();
-        toast(existing ? "Trade updated" : "Trade added", "ok");
-    } catch (err) {
-        toast(err.message || "Save failed", "err");
-        submitBtn.disabled = false;
-        submitBtn.textContent = existing ? "Save changes" : "Add trade";
+        toast(existing ? "Trade saved" : "Trade logged", "ok");
+    } catch (ex) {
+        if (handleAuthLoss(ex)) return;
+        err.textContent = isOffline(ex)
+            ? "Can't reach the sync server, so the trade wasn't saved. Try again when you're back online."
+            : friendly(ex, "Couldn't save the trade.");
+        submit.disabled = false;
+        submit.textContent = label;
     }
 }
 
 async function deleteTrade(existing) {
-    if (!confirm(`Delete this ${existing.instrument} trade?`)) return;
+    if (!confirm(`Delete this ${existing.instrument} trade? This can't be undone.`)) return;
     try {
-        const remaining = State.trades
-            .filter(t => t.account === existing.account && t.id !== existing.id)
-            .map(t => ({
-                instrument: t.instrument, share_count: t.share_count,
-                buy_price: t.buy_price, sell_price: t.sell_price,
-                open_date: t.open_date, close_date: t.close_date,
-                notes: t.notes, is_pending: t.is_pending, is_short: t.is_short,
-            }));
-        await Api.replaceAccountTrades(existing.account, remaining);
-        closeModal();
-        await loadAll();
+        const rest = tradesFor(existing.account).filter(x => x.id !== existing.id);
+        await Api.replaceAccountTrades(existing.account, rest.map(toTradeIn));
+        closeDialog();
+        await reloadTrades();
         renderView();
         toast("Trade deleted", "ok");
-    } catch (err) {
-        toast(err.message || "Delete failed", "err");
+    } catch (ex) {
+        if (!handleAuthLoss(ex)) toast(friendly(ex, "Couldn't delete the trade."), "err");
     }
-}
-
-function formRow(label, input) {
-    return el("label", {class: "form-row"}, [
-        el("span", {class: "form-label"}, label),
-        input,
-    ]);
 }
 
 // ── View: Goals ───────────────────────────────────────────────────────
 function viewGoals() {
-    const wrap = el("div", {class: "stack"});
-
-    // Shared (group) goal
-    const groupAccts = State.goalGroup?.account_names || [];
-    const sharedTarget = State.goalGroup?.shared_goal || 0;
-    const sharedTrades = State.trades.filter(t => groupAccts.includes(t.account));
-    const sharedHoldings = computeHoldings(sharedTrades);
-    const sharedRMap = realizedBySymbol(sharedTrades);
-    const {summary: sharedSummary} = computePortfolio(sharedHoldings, State.marks, sharedRMap);
-    const sharedProgress = computeGoalProgress(sharedTrades, sharedTarget);
-
-    if (groupAccts.length > 0) {
-        wrap.appendChild(goalCard({
-            label: "Shared goal · " + groupAccts.join(" + "),
-            target: sharedTarget,
-            realized: sharedProgress.realized,
-            total: sharedSummary.total_pl,
-            progress: sharedProgress,
-        }));
+    const cards = [];
+    const group = State.goalGroup?.account_names || [];
+    const shared = Number(State.goalGroup?.shared_goal) || 0;
+    if (group.length && shared > 0) {
+        const names = new Set(group);
+        cards.push(goalPanel(`Shared goal: ${group.join(", ")}`, shared,
+            State.trades.filter(t => names.has(t.account))));
     }
-
-    // Per-account goals
     for (const a of State.accounts) {
-        const target = a.goal_target || 0;
-        if (target <= 0) continue;
-        const acctTrades = State.trades.filter(t => t.account === a.name);
-        const h = computeHoldings(acctTrades);
-        const rMap = realizedBySymbol(acctTrades);
-        const {summary} = computePortfolio(h, State.marks, rMap);
-        const prog = computeGoalProgress(acctTrades, target);
-        wrap.appendChild(goalCard({
-            label: a.name,
-            target,
-            realized: prog.realized,
-            total: summary.total_pl,
-            progress: prog,
-        }));
+        const target = Number(a.goal_target) || 0;
+        if (target > 0) cards.push(goalPanel(a.name, target, tradesFor(a.name)));
     }
-
-    if (wrap.children.length === 0) {
-        wrap.appendChild(el("p", {class: "empty card"},
-            "No goal targets set. Configure in the desktop app."));
-    }
-
-    return wrap;
+    return el("div", {class: "stack"}, [
+        el("div", {class: "section-head"}, [el("h1", {class: "h-section"}, "Goals")]),
+        ...(cards.length ? cards : [panel(null,
+            empty("No goals yet. Set a yearly goal for an account in the desktop app and it shows up here."))]),
+    ]);
 }
 
-function goalCard({label, target, realized, total, progress}) {
-    const pctReal = target > 0 ? Math.min(100, (realized / target) * 100) : 0;
-    const pctTotal = target > 0 ? Math.min(100, (total / target) * 100) : 0;
-    const klass = total >= target ? "gain" : "";
-
-    return el("section", {class: "card goal-card"}, [
-        el("div", {class: "goal-label"}, label),
-        el("div", {class: "goal-amount " + klass}, fmtMoney(total)),
-        el("div", {class: "goal-target muted"}, `of ${fmtMoney(target)} target`),
-        el("div", {class: "progress"}, [
-            el("div", {class: "progress-fill total", style: `width:${pctTotal}%`}),
-            el("div", {class: "progress-fill realized", style: `width:${pctReal}%`}),
-        ]),
-        el("div", {class: "progress-legend"}, [
-            el("span", {}, [el("i", {class: "swatch realized"}), `Realized ${pct(pctReal, 0)}`]),
-            el("span", {}, [el("i", {class: "swatch total"}), `Total ${pct(pctTotal, 0)}`]),
-        ]),
-        el("div", {class: "kv"}, [
-            kvRow("Remaining to goal", fmtMoney(progress.remaining_profit)),
-            kvRow("Per month needed", fmtMoney(progress.monthly_to_goal)),
-            kvRow("Per week needed", fmtMoney(progress.weekly_to_goal)),
-            kvRow("Per day needed", fmtMoney(progress.daily_to_goal)),
-            kvRow("Avg daily realized",
-                progress.avg_daily == null ? "—" : signed(progress.avg_daily)),
-            kvRow("Trading days left", String(progress.days_remaining)),
+function goalPanel(name, target, trades) {
+    const prog = computeGoalProgress(trades, target);
+    const {summary} = portfolioOf(trades);
+    return panel(name, [
+        paceRail({title: `${money(target, {whole: true})} by Dec 31`, target, realized: prog.realized, compact: true}),
+        kv([
+            ["Total P/L incl. open positions", signedMoney(summary.total_pl), tone(summary.total_pl)],
+            ["Left to reach the goal", money(prog.remaining_profit)],
+            ["Needed per month", money(prog.monthly_to_goal)],
+            ["Needed per week", money(prog.weekly_to_goal)],
+            ["Needed per trading day", money(prog.daily_to_goal)],
+            ["Average per trading day so far", signedMoney(prog.avg_daily), tone(prog.avg_daily)],
+            ["Trading days left", String(prog.days_remaining)],
         ]),
     ]);
 }
 
 // ── View: Watchlist ───────────────────────────────────────────────────
 function viewWatchlist() {
-    const wrap = el("div", {class: "stack"});
-    wrap.appendChild(el("section", {class: "section-head"}, [
-        el("h2", {}, "Watchlist"),
-        el("button", {
-            class: "btn-primary compact",
-            onclick: () => addWatchSymbol(),
-        }, "+ Add"),
-    ]));
+    const inp = el("input", {
+        id: "watch-add", class: "input", name: "symbol", required: true, placeholder: "Symbol, for example MSFT",
+        autocapitalize: "characters", autocomplete: "off", spellcheck: "false", maxlength: "12",
+    });
+    const form = el("form", {class: "inline-form", onsubmit: e => {
+        e.preventDefault();
+        void addWatchSymbol(inp.value);
+    }}, [
+        el("label", {for: "watch-add", class: "sr-only"}, "Symbol to watch"),
+        inp,
+        el("button", {class: "btn btn-primary", type: "submit"}, "Add"),
+    ]);
 
-    if (State.watchlist.length === 0) {
-        wrap.appendChild(el("p", {class: "empty card"},
-            "Your watchlist is empty."));
-    } else {
-        const list = el("div", {class: "watch-list"});
-        for (const sym of State.watchlist) {
-            const price = State.marks[sym];
-            list.appendChild(el("div", {class: "watch-row"}, [
-                el("div", {class: "watch-sym"}, sym),
-                el("div", {class: "watch-price"},
-                    price == null ? el("span", {class: "muted"}, "—") : fmtNum(price)),
-                el("button", {
-                    class: "icon-btn small",
-                    title: "Remove",
-                    onclick: async () => removeWatchSymbol(sym),
-                }, "✕"),
-            ]));
-        }
-        wrap.appendChild(list);
-    }
-
-    // ── Backup / Restore ─────────────────────────────────────────────
-    // Lives at the bottom of Watchlist because that's the closest
-    // mobile gets to a "settings" view. Same JSON format the desktop
-    // produces (schema_version=1) so backups round-trip across clients.
-    wrap.appendChild(el("section", {class: "card backup-card"}, [
-        el("div", {class: "card-head"}, [
-            el("h3", {}, "Backup & restore"),
-        ]),
-        el("p", {class: "muted"},
-            "Same JSON format as the desktop — backups created here can "
-            + "be restored on any client, and vice versa."),
-        el("div", {class: "form-actions"}, [
+    const list = State.watchlist.length ? el("ul", {class: "rows rows-static"}, State.watchlist.map(sym => {
+        const price = State.marks[sym];
+        return el("li", {class: "row"}, [
+            el("span", {class: "sym row-main"}, sym),
+            el("span", {class: "num row-value"}, price == null ? "No price" : money(price)),
             el("button", {
-                type: "button", class: "btn-primary",
-                onclick: downloadBackup,
-            }, "Download backup"),
-            el("button", {
-                type: "button", class: "btn-secondary",
-                onclick: pickBackupFile,
-            }, "Restore from file…"),
-        ]),
-    ]));
+                class: "icon-btn", type: "button", "aria-label": `Remove ${sym} from watchlist`,
+                onclick: () => removeWatchSymbol(sym),
+            }, [icon(ICONS.close)]),
+        ]);
+    })) : empty("Your watchlist is empty. Add a symbol to follow its live price.");
 
-    return wrap;
+    return el("div", {class: "stack"}, [
+        el("div", {class: "section-head"}, [el("h1", {class: "h-section"}, "Watchlist")]),
+        panel(null, [form]),
+        panel(null, list, {cls: "panel-flush"}),
+    ]);
 }
 
-// ── Backup / Restore ─────────────────────────────────────────────────
-//
-// Same JSON format as desktop io_utils.py (schema_version=1) so backups
-// round-trip across clients. The PWA can't write goal targets (no API
-// endpoint exposed yet — see README "Known limitations"), so those
-// fields are SHIPPED in the backup but SKIPPED on restore here. A
-// backup made on mobile and restored on desktop is fully fidelity;
-// the reverse is "trades + watchlist + accounts" only.
-
-const BACKUP_SCHEMA_VERSION = 1;
-
-function buildBackupSnapshot() {
-    return {
-        schema_version: BACKUP_SCHEMA_VERSION,
-        exported_at: new Date().toISOString(),
-        username: (Api.getUser() || {}).username || "",
-        accounts: State.accounts.map(a => a.name),
-        // Per-account goal targets + presets — shipped for completeness
-        // even though mobile can't restore them. Desktop will pick
-        // them up on its end of a cross-client round-trip.
-        goal_targets: Object.fromEntries(
-            State.accounts.map(a => [a.name, Number(a.goal_target) || 0])),
-        goal_presets: Object.fromEntries(
-            State.accounts.map(a => [a.name, (a.goal_presets || []).map(Number)])),
-        goal_group: State.goalGroup
-            ? {
-                shared_accounts: State.goalGroup.account_names || [],
-                shared_goal: Number(State.goalGroup.shared_goal) || 0,
-            }
-            : {shared_accounts: [], shared_goal: 0},
-        watchlist: [...State.watchlist],
-        // Strip the client-only `id` field — the desktop's restore will
-        // assign new IDs. Keeps the payload aligned with what desktop
-        // emits via `trade_to_dict`.
-        trades: State.trades.map(t => ({
-            instrument: t.instrument,
-            share_count: t.share_count,
-            buy_price: t.buy_price,
-            sell_price: t.sell_price,
-            open_date: t.open_date,
-            close_date: t.close_date,
-            notes: t.notes || "",
-            account: t.account || "",
-            is_pending: !!t.is_pending,
-            is_short: !!t.is_short,
-            tag: (t.tag || "").trim(),
-        })),
-    };
-}
-
-function downloadBackup() {
-    const snap = buildBackupSnapshot();
-    const blob = new Blob([JSON.stringify(snap, null, 2)],
-        {type: "application/json"});
-    const url = URL.createObjectURL(blob);
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const a = el("a", {
-        href: url,
-        download: `stock_insights_backup_${stamp}.json`,
-    });
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast("Backup downloaded", "ok");
-}
-
-function pickBackupFile() {
-    // Hidden <input type=file> we trigger programmatically — keeps the
-    // visible button matching the rest of the UI's button styling.
-    const input = el("input", {
-        type: "file",
-        accept: "application/json,.json",
-        style: "display:none",
-    });
-    input.addEventListener("change", async () => {
-        const f = input.files && input.files[0];
-        document.body.removeChild(input);
-        if (!f) return;
-        try {
-            const text = await f.text();
-            const snap = JSON.parse(text);
-            const errors = validateBackupShape(snap);
-            if (errors.length) {
-                alert("Backup failed validation:\n\n• " + errors.join("\n• "));
-                return;
-            }
-            const summary =
-                `This will OVERWRITE your current data with:\n\n`
-                + `• ${(snap.accounts || []).length} account(s)\n`
-                + `• ${(snap.trades || []).length} trade(s)\n`
-                + `• ${(snap.watchlist || []).length} watchlist symbol(s)\n`
-                + `• Backup exported at: ${snap.exported_at || "unknown"}\n\n`
-                + `Continue?`;
-            if (!confirm(summary)) return;
-            await applyBackupSnapshot(snap);
-            await loadAll();
-            renderView();
-            toast("Restore complete", "ok");
-        } catch (err) {
-            console.error(err);
-            alert("Restore failed: " + (err.message || err));
-        }
-    });
-    document.body.appendChild(input);
-    input.click();
-}
-
-// Mirrors stock_insights/io_utils.py::validate_backup. Conservative —
-// would rather block a quirky-but-recoverable backup than half-restore
-// one and leave the user with corrupt state.
-function validateBackupShape(snap) {
-    const errs = [];
-    if (!snap || typeof snap !== "object" || Array.isArray(snap)) {
-        return ["Backup is not a JSON object."];
-    }
-    const numeric = v => typeof v === "number" && !Number.isNaN(v);
-    const required = [
-        ["schema_version", "number"],
-        ["accounts", "array"],
-        ["watchlist", "array"],
-        ["trades", "array"],
-    ];
-    for (const [k, kind] of required) {
-        if (!(k in snap)) {
-            errs.push(`Missing required field: "${k}"`);
-            continue;
-        }
-        const v = snap[k];
-        if (kind === "number" && !numeric(v)) errs.push(`Field "${k}" not a number`);
-        if (kind === "array" && !Array.isArray(v)) errs.push(`Field "${k}" not an array`);
-    }
-    if (errs.length) return errs;
-    if (snap.schema_version !== BACKUP_SCHEMA_VERSION) {
-        errs.push(`Backup schema version ${snap.schema_version} `
-            + `(expected ${BACKUP_SCHEMA_VERSION})`);
-    }
-    snap.trades.forEach((t, i) => {
-        if (!t || typeof t !== "object") {
-            errs.push(`Trade #${i} is not an object`);
-            return;
-        }
-        if (!t.instrument || typeof t.instrument !== "string"
-            || !t.instrument.trim()) {
-            errs.push(`Trade #${i} has no instrument`);
-        }
-        if (!numeric(t.share_count)) errs.push(`Trade #${i} share_count not numeric`);
-        if (!numeric(t.buy_price)) errs.push(`Trade #${i} buy_price not numeric`);
-    });
-    return errs;
-}
-
-async function applyBackupSnapshot(snap) {
-    // 1. Accounts (just the names — goal targets aren't writable from PWA)
-    if (Array.isArray(snap.accounts) && snap.accounts.length) {
-        try {
-            await Api.saveAccounts(snap.accounts);
-        } catch (err) {
-            // Soft-fail accounts — older server versions or permissions
-            // may reject this. We still try the trade restore below.
-            console.warn("saveAccounts failed:", err);
-        }
-    }
-
-    // 2. Watchlist
-    if (Array.isArray(snap.watchlist)) {
-        try {
-            await Api.setWatchlist(snap.watchlist);
-        } catch (err) {
-            console.warn("setWatchlist failed:", err);
-        }
-    }
-
-    // 3. Trades — group by account and PUT each slice atomically.
-    const byAccount = new Map();
-    for (const t of (snap.trades || [])) {
-        const acct = (t.account || "").trim() || (snap.accounts || [])[0] || "Default";
-        if (!byAccount.has(acct)) byAccount.set(acct, []);
-        byAccount.get(acct).push(t);
-    }
-    for (const [acct, ts] of byAccount.entries()) {
-        try {
-            await Api.replaceAccountTrades(acct, ts);
-        } catch (err) {
-            console.warn(`replaceAccountTrades(${acct}) failed:`, err);
-        }
-    }
-
-    // 4. Shared goal group (if API + data allow)
-    const gg = snap.goal_group;
-    if (gg && Array.isArray(gg.shared_accounts)) {
-        try {
-            await Api.setGoalGroup(gg.shared_accounts,
-                Number(gg.shared_goal) || 0);
-        } catch (err) {
-            console.warn("setGoalGroup failed:", err);
-        }
-    }
-}
-
-async function addWatchSymbol() {
-    const sym = prompt("Add symbol:");
+async function addWatchSymbol(raw) {
+    const sym = (raw || "").trim().toUpperCase();
     if (!sym) return;
-    const clean = sym.trim().toUpperCase();
-    if (!clean || State.watchlist.includes(clean)) return;
-    const next = [...State.watchlist, clean];
+    if (State.watchlist.includes(sym)) {
+        toast(`${sym} is already on your watchlist`, "info");
+        return;
+    }
+    const next = [...State.watchlist, sym];
     try {
         await Api.setWatchlist(next);
         State.watchlist = next;
         await refreshMarks();
         renderView();
-        toast(`Added ${clean}`, "ok");
-    } catch (err) {
-        toast(err.message || "Add failed", "err");
+        document.getElementById("watch-add")?.focus();
+        toast(`${sym} added`, "ok");
+    } catch (ex) {
+        if (!handleAuthLoss(ex)) toast(friendly(ex, `Couldn't add ${sym}.`), "err");
     }
 }
 
@@ -1434,44 +1047,207 @@ async function removeWatchSymbol(sym) {
         await Api.setWatchlist(next);
         State.watchlist = next;
         renderView();
-    } catch (err) {
-        toast(err.message || "Remove failed", "err");
+        toast(`${sym} removed`, "ok");
+    } catch (ex) {
+        if (!handleAuthLoss(ex)) toast(friendly(ex, `Couldn't remove ${sym}.`), "err");
     }
 }
 
-// ── Modal ─────────────────────────────────────────────────────────────
-function openModal(title, content) {
-    closeModal();
-    const root = $("#modal-root");
-    const sheet = el("div", {class: "modal-sheet", onclick: e => e.stopPropagation()}, [
-        el("div", {class: "modal-head"}, [
-            el("h3", {}, title),
-            el("button", {class: "icon-btn", onclick: closeModal}, "✕"),
+// ── View: Settings (account, backup, sign out) ────────────────────────
+function viewSettings() {
+    const user = Api.getUser();
+    const host = Api.getServer().replace(/^https?:\/\//, "");
+    return el("div", {class: "stack"}, [
+        el("div", {class: "section-head"}, [el("h1", {class: "h-section"}, "Settings")]),
+        panel("Account", [
+            kv([["Signed in as", user?.username || "—"], ["Server", host]]),
+            el("div", {class: "actions"}, [el("button", {
+                class: "btn btn-secondary", type: "button",
+                onclick: async () => {
+                    await Api.logout();
+                    renderLogin();
+                },
+            }, "Sign out")]),
         ]),
-        el("div", {class: "modal-body"}, content),
+        panel("Backup", [
+            el("p", {class: "muted"}, "Backups use the same file format as the desktop app, so you can restore them on either."),
+            el("div", {class: "actions"}, [
+                el("button", {class: "btn btn-primary", type: "button", onclick: downloadBackup}, "Back up data"),
+                el("button", {class: "btn btn-secondary", type: "button", onclick: pickBackupFile}, "Restore from backup"),
+            ]),
+            el("p", {class: "muted small"}, "Goal targets in a backup are restored by the desktop app only."),
+        ]),
     ]);
-    const overlay = el("div", {class: "modal-overlay", onclick: closeModal}, [sheet]);
-    root.appendChild(overlay);
-    requestAnimationFrame(() => overlay.classList.add("show"));
 }
 
-function closeModal() {
-    const root = $("#modal-root");
-    if (!root) return;
-    root.innerHTML = "";
+// ── Backup / restore (format = stock_insights/io_utils.py, schema 1) ──
+const BACKUP_SCHEMA_VERSION = 1;
+
+function buildBackupSnapshot() {
+    return {
+        schema_version: BACKUP_SCHEMA_VERSION,
+        exported_at: new Date().toISOString(),
+        username: Api.getUser()?.username || "",
+        accounts: State.accounts.map(a => a.name),
+        // Shipped for desktop restores; the PWA has no endpoint to write them.
+        goal_targets: Object.fromEntries(State.accounts.map(a => [a.name, Number(a.goal_target) || 0])),
+        goal_presets: Object.fromEntries(State.accounts.map(a => [a.name, (a.goal_presets || []).map(Number)])),
+        goal_group: {
+            shared_accounts: State.goalGroup?.account_names || [],
+            shared_goal: Number(State.goalGroup?.shared_goal) || 0,
+        },
+        watchlist: [...State.watchlist],
+        trades: State.trades.map(t => ({...toTradeIn(t), account: t.account || ""})),
+    };
 }
 
-// ── PWA service-worker registration ───────────────────────────────────
-if ("serviceWorker" in navigator) {
+function downloadBackup() {
+    const blob = new Blob([JSON.stringify(buildBackupSnapshot(), null, 2)], {type: "application/json"});
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const a = el("a", {href: url, download: `stock_insights_backup_${stamp}.json`});
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Some mobile browsers start the download asynchronously.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    toast("Backup downloaded", "ok");
+}
+
+function pickBackupFile() {
+    const input = el("input", {type: "file", accept: "application/json,.json", hidden: true});
+    input.addEventListener("change", async () => {
+        const f = input.files?.[0];
+        input.remove();
+        if (!f) return;
+        let snap;
+        try {
+            snap = JSON.parse(await f.text());
+        } catch {
+            toast("That file isn't a Stock Insights backup (it isn't valid JSON).", "err");
+            return;
+        }
+        const errors = validateBackupShape(snap);
+        if (errors.length) {
+            alert("This backup can't be restored:\n\n- " + errors.slice(0, 8).join("\n- "));
+            return;
+        }
+        const ok = confirm("Restoring replaces your current data on the server with this backup:\n\n"
+            + `${plural(snap.accounts.length, "account")}, ${plural(snap.trades.length, "trade")}, `
+            + `${plural(snap.watchlist.length, "watchlist symbol")}\n`
+            + `Backed up ${snap.exported_at || "at an unknown time"}\n\nRestore now?`);
+        if (!ok) return;
+        try {
+            const failed = await applyBackupSnapshot(snap);
+            await loadAll();
+            fillAccountSelect();
+            renderView();
+            toast(failed.length ? `Restored, except: ${failed.join(", ")}. Try those again.` : "Backup restored",
+                failed.length ? "warn" : "ok");
+        } catch (ex) {
+            if (!handleAuthLoss(ex)) toast(friendly(ex, "Restore failed."), "err");
+        }
+    });
+    document.body.appendChild(input);
+    input.click();
+}
+
+// Mirrors stock_insights/io_utils.py::validate_backup — refuse anything
+// doubtful rather than half-restore it.
+function validateBackupShape(snap) {
+    if (!snap || typeof snap !== "object" || Array.isArray(snap)) return ["The file is not a JSON object."];
+    const errs = [];
+    const numeric = v => typeof v === "number" && !Number.isNaN(v);
+    for (const [k, kind] of [["schema_version", "number"], ["accounts", "array"], ["watchlist", "array"], ["trades", "array"]]) {
+        if (!(k in snap)) errs.push(`Missing "${k}".`);
+        else if (kind === "number" && !numeric(snap[k])) errs.push(`"${k}" should be a number.`);
+        else if (kind === "array" && !Array.isArray(snap[k])) errs.push(`"${k}" should be a list.`);
+    }
+    if (errs.length) return errs;
+    if (snap.schema_version !== BACKUP_SCHEMA_VERSION) {
+        errs.push(`Backup format ${snap.schema_version} isn't supported (expected ${BACKUP_SCHEMA_VERSION}).`);
+    }
+    snap.trades.forEach((t, i) => {
+        if (!t || typeof t !== "object") return void errs.push(`Trade ${i + 1} is not an object.`);
+        if (typeof t.instrument !== "string" || !t.instrument.trim()) errs.push(`Trade ${i + 1} has no symbol.`);
+        if (!numeric(t.share_count)) errs.push(`Trade ${i + 1} has no share count.`);
+        if (!numeric(t.buy_price)) errs.push(`Trade ${i + 1} has no entry price.`);
+    });
+    return errs;
+}
+
+/** Applies a validated snapshot. Returns the names of the parts that failed. */
+async function applyBackupSnapshot(snap) {
+    const failed = [];
+    const attempt = async (name, fn) => {
+        try {
+            await fn();
+        } catch (ex) {
+            if (ex?.code === 401) throw ex;
+            console.warn(`Restore: ${name} failed`, ex);
+            failed.push(name);
+        }
+    };
+    if (snap.accounts.length) await attempt("accounts", () => Api.saveAccounts(snap.accounts));
+    await attempt("watchlist", () => Api.setWatchlist(snap.watchlist));
+
+    const byAccount = new Map();
+    for (const t of snap.trades) {
+        const acct = (t.account || "").trim() || snap.accounts[0] || "Default";
+        if (!byAccount.has(acct)) byAccount.set(acct, []);
+        byAccount.get(acct).push(t);
+    }
+    for (const [acct, ts] of byAccount) {
+        await attempt(`trades for ${acct}`, () => Api.replaceAccountTrades(acct, ts));
+    }
+    const gg = snap.goal_group;
+    if (gg && Array.isArray(gg.shared_accounts)) {
+        await attempt("shared goal", () => Api.setGoalGroup(gg.shared_accounts, Number(gg.shared_goal) || 0));
+    }
+    return failed;
+}
+
+// ── Dialog (native <dialog>: focus trap, Escape and inert page for free) ──
+function openDialog(title, content) {
+    closeDialog();
+    const opener = document.activeElement;
+    const titleId = "dialog-title";
+    const dlg = el("dialog", {class: "sheet", "aria-labelledby": titleId}, [
+        el("div", {class: "sheet-inner"}, [
+            el("div", {class: "sheet-head"}, [
+                el("h2", {class: "h-panel", id: titleId}, title),
+                el("button", {class: "icon-btn", type: "button", "aria-label": "Close",
+                    onclick: () => dlg.close()}, [icon(ICONS.close)]),
+            ]),
+            el("div", {class: "sheet-body"}, [].concat(content)),
+        ]),
+    ]);
+    // A click on the dialog element itself (not .sheet-inner) is the backdrop.
+    dlg.addEventListener("click", e => {
+        if (e.target === dlg) dlg.close();
+    });
+    dlg.addEventListener("close", () => {
+        dlg.remove();
+        // After a save the opener row has been re-rendered away; fall back
+        // to the view so keyboard users aren't dropped at the top of <body>.
+        if (opener?.isConnected) opener.focus();
+        else Shell.outlet?.focus({preventScroll: true});
+    });
+    document.body.appendChild(dlg);
+    if (dlg.showModal) dlg.showModal();
+    else dlg.setAttribute("open", "");
+}
+
+function closeDialog() {
+    document.querySelectorAll("dialog.sheet").forEach(d => d.open ? d.close() : d.remove());
+}
+
+// ── Service worker (skipped in demo mode so fixtures never get cached) ──
+if ("serviceWorker" in navigator && !DEMO) {
     window.addEventListener("load", () => {
         navigator.serviceWorker.register("./sw.js").catch(err =>
-            console.warn("SW registration failed:", err));
+            console.warn("Service worker registration failed:", err));
     });
 }
 
-// ── Go ────────────────────────────────────────────────────────────────
-// Explicitly ignore the boot() promise via `void` — boot() handles its
-// own errors internally (login screen on auth failure, error toast on
-// load failure), so there's nothing useful to do with the resolved
-// value here. `void` also silences PyCharm's "ignored promise" lint.
 void boot();

@@ -1,31 +1,27 @@
-"""Admin-flavored modal dialogs that live outside the main QML scene.
-
-Carved out of `main_window.py` to shrink that file (it was the project's
-biggest, hosting menu wiring + dialog classes + worker lifecycle + much
-else). These four classes are mutually independent — they take a store
-and a parent and don't touch MainWindow internals — so the extraction
-is mechanical and low-risk.
+"""Account and admin windows that live outside the main QML scene.
 
 Contents
 ────────
-• UserAccountDialog       — File → User Account (self password change,
-                            account add/remove)
-• UserPortfolioViewer     — Admin → View User Portfolio (read-only
-                            window over another user's accounts)
-• SelectUserDialog        — Picker that feeds UserPortfolioViewer
-• ManageUserPasswordsDialog — Admin → Manage User Passwords (reset
-                              other users' passwords)
+• UserAccountDialog         — File > Account and portfolios (own password,
+                              add / remove portfolios)
+• UserPortfolioViewer       — Admin > View a user's portfolio (read-only
+                              window over another user's portfolios, built
+                              from the legacy QWidget PortfolioTab)
+• SelectUserDialog          — picker that feeds UserPortfolioViewer
+• ManageUserPasswordsDialog — Admin > Reset a user's password
+
+Network calls made from these dialogs (password changes) run on a
+background thread via background.BackgroundCalls so the UI never freezes
+for a request timeout.
 """
 from __future__ import annotations
 
+import html
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QSettings, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -41,161 +37,245 @@ from PySide6.QtWidgets import (
 )
 
 from .api_client import DataStore, FallbackDataStore, RemoteDataStore
+from .background import BackgroundCalls, SingleFlight
 from .portfolio_tab import PortfolioTab
+from .widgets import (
+    GAP,
+    PANEL_PADDING,
+    Panel,
+    add_dialog_buttons,
+    align_form_labels,
+    confirm,
+    dialog_layout,
+    heading_label,
+    muted_label,
+    set_text_role,
+)
 from .workers import MarksWorker
 
-# QGroupBox style mirrors GROUP_STYLE in portfolio_tab.py / settings_dialog.py
-# so admin dialogs match the rest of the modal aesthetic.
-_GROUP_STYLE = (
-    "QGroupBox { margin-top: 8px; }"
-    "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 2px 8px; }"
-)
+MIN_PASSWORD_LENGTH = 4
+VIEWER_MARKS_INTERVAL_MS = 30_000
+PASSWORD_TIMEOUT_S = (4, 10)  # (connect, read) seconds, as api_client
+
+
+def _online_remote(store: DataStore) -> Optional[RemoteDataStore]:
+    """The RemoteDataStore to talk to, or None when there's no server."""
+    if isinstance(store, RemoteDataStore):
+        return store
+    if isinstance(store, FallbackDataStore) and store._is_online:
+        return store._remote
+    return None
+
+
+def _server_url(store: DataStore) -> str:
+    if isinstance(store, RemoteDataStore):
+        return store._base
+    if isinstance(store, FallbackDataStore):
+        return store._remote._base
+    return ""
+
+
+def _put_password(remote: RemoteDataStore, user_id: int, new_password: str) -> None:
+    """PUT /users/{id}/password. Raises RuntimeError with the server's reason.
+
+    Runs on a worker thread. Reuses the store's pooled requests.Session when
+    it has one. (RemoteDataStore has no public method for this yet.)
+    """
+    import requests
+
+    http = getattr(remote, "_session", None) or requests
+    r = http.put(
+        f"{remote._base}/users/{user_id}/password",
+        json={"new_password": new_password},
+        headers=remote._headers(),
+        timeout=PASSWORD_TIMEOUT_S,
+    )
+    if not r.ok:
+        raise RuntimeError(r.text or f"HTTP {r.status_code}")
+
+
+def _user_label(user: dict) -> str:
+    return f"{user['username']} (admin)" if user.get("is_admin") else str(user["username"])
+
+
+def _user_list(users: List[dict], exclude_id: int) -> QListWidget:
+    lw = QListWidget()
+    lw.setUniformItemSizes(True)
+    for u in users:
+        if u.get("id") == exclude_id:
+            continue
+        item = QListWidgetItem(_user_label(u))
+        item.setData(Qt.ItemDataRole.UserRole, u)
+        lw.addItem(item)
+    return lw
 
 
 # ---------------------------------------------------------------------------
-# Admin: User Account Management Dialog
+# File > Account and portfolios
 # ---------------------------------------------------------------------------
 
 class UserAccountDialog(QDialog):
-    """Create / view user accounts (admin-only management + self password change)."""
+    """Profile, own-password change, and the user's portfolio list."""
 
     def __init__(self, store: DataStore, parent=None):
         super().__init__(parent)
         self._store = store
-        self.setWindowTitle("User Account")
-        self.resize(520, 420)
+        self._bg = BackgroundCalls(self)
+        self.setWindowTitle("Account and portfolios")
+        self.setMinimumWidth(460)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
-
-        # ---- Profile group ----
-        profile_grp = QGroupBox("Profile")
-        profile_grid = QGridLayout(profile_grp)
-        profile_grid.setContentsMargins(14, 18, 14, 14)
-        profile_grid.setHorizontalSpacing(12)
-        profile_grid.setVerticalSpacing(10)
-
+        root = dialog_layout(self)
         info = store.user_info
-        profile_grid.addWidget(QLabel("Username:"), 0, 0)
-        profile_grid.addWidget(QLabel(info.get("username", "")), 0, 1)
-        profile_grid.addWidget(QLabel("Role:"), 1, 0)
-        profile_grid.addWidget(QLabel("Admin" if info.get("is_admin") else "User"), 1, 1)
-        profile_grid.addWidget(QLabel("Server:"), 2, 0)
 
-        server_url = ""
-        if isinstance(store, RemoteDataStore):
-            server_url = store._base
-        elif isinstance(store, FallbackDataStore):
-            server_url = store._remote._base
-        profile_grid.addWidget(QLabel(server_url or "(offline)"), 2, 1)
-        root.addWidget(profile_grp)
+        # ---- Profile ----
+        profile = Panel("Profile")
+        form = profile.form()
+        form.addRow("Username", QLabel(info.get("username", "")))
+        form.addRow("Role", QLabel("Admin" if info.get("is_admin") else "Member"))
+        server = _server_url(store)
+        form.addRow("Sync server", set_text_role(QLabel(server), "") if server
+                    else muted_label("None. You're working offline.", wrap=False))
+        root.addWidget(profile)
 
-        # ---- Change password ----
-        pwd_grp = QGroupBox("Change Password")
-        pwd_form = QVBoxLayout(pwd_grp)
-        pwd_form.setContentsMargins(14, 18, 14, 14)
+        # ---- Password ----
+        pwd = Panel("Change password")
+        pwd_form = pwd.form()
         self.new_pass_edit = QLineEdit()
         self.new_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.new_pass_edit.setPlaceholderText("New password (leave blank to keep current)")
-        btn_change_pwd = QPushButton("Change Password")
-        btn_change_pwd.clicked.connect(self._change_password)
-        pwd_form.addWidget(self.new_pass_edit)
-        pwd_form.addWidget(btn_change_pwd)
-        root.addWidget(pwd_grp)
+        self.confirm_pass_edit = QLineEdit()
+        self.confirm_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        pwd_form.addRow("New password", self.new_pass_edit)
+        pwd_form.addRow("Confirm", self.confirm_pass_edit)
+        self.pwd_status = muted_label("")
+        self.pwd_status.setVisible(False)
+        pwd.body.addWidget(self.pwd_status)
+        pwd_row = QHBoxLayout()
+        pwd_row.addStretch(1)
+        self.btn_change_pwd = QPushButton("Change password")
+        self.btn_change_pwd.setAutoDefault(False)
+        self.btn_change_pwd.clicked.connect(self._change_password)
+        pwd_row.addWidget(self.btn_change_pwd)
+        pwd.body.addLayout(pwd_row)
+        self.confirm_pass_edit.returnPressed.connect(self._change_password)
+        align_form_labels(form, pwd_form)
+        root.addWidget(pwd)
 
-        # ---- Accounts list ----
-        accts_grp = QGroupBox("My Accounts")
-        accts_layout = QVBoxLayout(accts_grp)
-        accts_layout.setContentsMargins(14, 18, 14, 14)
-        accts_layout.setSpacing(8)
-
+        # ---- Portfolios ----
+        accts = Panel("Portfolios", subtitle="Each portfolio has its own trades and goal.")
         self.accounts_list = QListWidget()
-        for acct in store.get_account_names():
+        self.accounts_list.setMinimumHeight(110)
+        for acct in self._account_names():
             self.accounts_list.addItem(acct)
-        accts_layout.addWidget(self.accounts_list)
-
+        accts.body.addWidget(self.accounts_list)
         acct_btns = QHBoxLayout()
-        btn_add = QPushButton("+ Add Account")
-        btn_remove = QPushButton("- Remove Account")
+        acct_btns.setSpacing(8)
+        btn_add = QPushButton("Add portfolio…")
+        self.btn_remove = QPushButton("Remove…")
+        for b in (btn_add, self.btn_remove):
+            b.setAutoDefault(False)
         btn_add.clicked.connect(self._add_account)
-        btn_remove.clicked.connect(self._remove_account)
+        self.btn_remove.clicked.connect(self._remove_account)
         acct_btns.addWidget(btn_add)
-        acct_btns.addWidget(btn_remove)
+        acct_btns.addWidget(self.btn_remove)
         acct_btns.addStretch(1)
-        accts_layout.addLayout(acct_btns)
-        root.addWidget(accts_grp)
+        accts.body.addLayout(acct_btns)
+        self.accounts_list.currentItemChanged.connect(self._sync_remove_enabled)
+        self._sync_remove_enabled()
+        root.addWidget(accts)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-        buttons.accepted.connect(self.accept)
-        root.addWidget(buttons)
+        add_dialog_buttons(self, root, primary_text=None, cancel_text="Close")
 
-    def _change_password(self):
+    # ---- helpers ----
+
+    def _account_names(self) -> List[str]:
+        try:
+            return list(self._store.get_account_names())
+        except Exception as exc:
+            QMessageBox.warning(self, "Portfolios", f"Couldn't load your portfolios.\n\n{exc}")
+            return []
+
+    def _sync_remove_enabled(self, *_args) -> None:
+        self.btn_remove.setEnabled(self.accounts_list.currentItem() is not None)
+
+    def _show_pwd_status(self, text: str, role: str) -> None:
+        self.pwd_status.setText(text)
+        set_text_role(self.pwd_status, role)
+        self.pwd_status.setVisible(bool(text))
+
+    # ---- password ----
+
+    def _change_password(self) -> None:
         password = self.new_pass_edit.text().strip()
         if not password:
+            self._show_pwd_status("Enter a new password.", "error")
             return
-        remote_store = self._remote_store()
-        if remote_store is None:
-            QMessageBox.information(self, "Offline", "Password change requires a server connection.")
+        if len(password) < MIN_PASSWORD_LENGTH:
+            self._show_pwd_status(f"Use at least {MIN_PASSWORD_LENGTH} characters.", "error")
             return
-        try:
-            import requests
-            user_id = remote_store.user_info["user_id"]
-            r = requests.put(
-                f"{remote_store._base}/users/{user_id}/password",
-                json={"new_password": password},
-                headers=remote_store._headers(),
-                timeout=8,
-            )
-            if r.ok:
-                QMessageBox.information(self, "Success", "Password changed.")
-                self.new_pass_edit.clear()
-            else:
-                QMessageBox.warning(self, "Error", r.text)
-        except Exception as exc:
-            QMessageBox.warning(self, "Error", str(exc))
+        if password != self.confirm_pass_edit.text().strip():
+            self._show_pwd_status("The two passwords don't match. Type them again.", "error")
+            return
+        remote = _online_remote(self._store)
+        if remote is None:
+            self._show_pwd_status("You need a connection to the sync server to change your password.", "error")
+            return
+        self.btn_change_pwd.setEnabled(False)
+        self._show_pwd_status("Changing password…", "muted")
+        self._bg.run(_put_password, args=(remote, remote.user_info["user_id"], password),
+                     on_done=self._password_changed, on_error=self._password_failed,
+                     label="change_password")
 
-    def _remote_store(self) -> Optional[RemoteDataStore]:
-        if isinstance(self._store, RemoteDataStore):
-            return self._store
-        if isinstance(self._store, FallbackDataStore) and self._store._is_online:
-            return self._store._remote
-        return None
+    def _password_changed(self, _result) -> None:
+        self.btn_change_pwd.setEnabled(True)
+        self.new_pass_edit.clear()
+        self.confirm_pass_edit.clear()
+        self._show_pwd_status("Password changed. Use it next time you sign in.", "good")
 
-    def _add_account(self):
-        text, ok = QInputDialog.getText(self, "Add Account", "Account name:")
-        if not ok or not text.strip(): return
+    def _password_failed(self, msg: str) -> None:
+        self.btn_change_pwd.setEnabled(True)
+        self._show_pwd_status(f"Couldn't change your password: {msg}", "error")
+
+    # ---- portfolios ----
+
+    def _add_account(self) -> None:
+        text, ok = QInputDialog.getText(self, "Add portfolio", "Portfolio name")
+        if not ok or not text.strip():
+            return
         name = text.strip()
-        existing = self._store.get_account_names()
+        existing = self._account_names()
         if name in existing:
-            QMessageBox.information(self, "Duplicate", f"'{name}' already exists.")
+            QMessageBox.information(self, "Add portfolio", f"You already have a portfolio called “{name}”.")
             return
         try:
             self._store.save_accounts(existing + [name])
-            self.accounts_list.addItem(name)
         except Exception as exc:
-            QMessageBox.warning(self, "Error", str(exc))
-
-    def _remove_account(self):
-        item = self.accounts_list.currentItem()
-        if not item: return
-        name = item.text()
-        existing = self._store.get_account_names()
-        if len(existing) <= 1:
-            QMessageBox.information(self, "Cannot Remove", "At least one account must remain.")
+            QMessageBox.warning(self, "Add portfolio", f"Couldn't add the portfolio.\n\n{exc}\n\nTry again.")
             return
-        if QMessageBox.question(self, "Remove Account", f"Remove '{name}'? This deletes all its trades.") \
-                != QMessageBox.StandardButton.Yes:
+        self.accounts_list.addItem(name)
+
+    def _remove_account(self) -> None:
+        item = self.accounts_list.currentItem()
+        if not item:
+            return
+        name = item.text()
+        existing = self._account_names()
+        if len(existing) <= 1:
+            QMessageBox.information(self, "Remove portfolio",
+                                    "You need at least one portfolio. Add another before removing this one.")
+            return
+        if not confirm(self, "Remove portfolio", f"Remove “{name}” and delete all of its trades?",
+                       "Remove portfolio", destructive=True, detail="This can't be undone."):
             return
         try:
             self._store.save_accounts([a for a in existing if a != name])
-            self.accounts_list.takeItem(self.accounts_list.row(item))
         except Exception as exc:
-            QMessageBox.warning(self, "Error", str(exc))
+            QMessageBox.warning(self, "Remove portfolio", f"Couldn't remove the portfolio.\n\n{exc}\n\nTry again.")
+            return
+        self.accounts_list.takeItem(self.accounts_list.row(item))
 
 
 # ---------------------------------------------------------------------------
-# Admin: portfolio viewer for another user (still uses the QWidget PortfolioTab)
+# Admin: read-only window over another user's portfolios
 # ---------------------------------------------------------------------------
 
 class UserPortfolioViewer(QMainWindow):
@@ -205,28 +285,31 @@ class UserPortfolioViewer(QMainWindow):
 
     def __init__(self, user_store: DataStore, username: str, settings: QSettings, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Viewing Portfolio — {username}")
+        self.setWindowTitle(f"{username}'s portfolios (read-only)")
         self.resize(1100, 750)
         self._store = user_store
         self._settings = settings
         self.theme = getattr(parent, "theme", None)
         self._tabs: Dict[str, PortfolioTab] = {}
         self._closing = False
-        self._active_marks_thread: Optional[QThread] = None
-        self._active_marks_worker = None
+        self._marks_flight = SingleFlight(self, "viewer-marks")
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(PANEL_PADDING, PANEL_PADDING, PANEL_PADDING, PANEL_PADDING)
+        layout.setSpacing(GAP)
 
-        banner = QLabel(f"  👁  Admin view — {username}'s portfolios (read-only)")
-        banner.setStyleSheet(
-            "background: #7c3aed; color: white; padding: 6px 12px; font-weight: bold;"
-        )
-        layout.addWidget(banner)
+        header = QHBoxLayout()
+        header.addWidget(heading_label(f"{username}'s portfolios", px=20))
+        header.addStretch(1)
+        header.addWidget(muted_label("Read-only. Changes can only be made by signing in as this user.",
+                                     wrap=False))
+        layout.addLayout(header)
 
         self.tab_widget = QTabWidget()
-        layout.addWidget(self.tab_widget)
+        self.tab_widget.setDocumentMode(True)
+        layout.addWidget(self.tab_widget, 1)
 
         try:
             accounts = user_store.get_account_names()
@@ -245,10 +328,12 @@ class UserPortfolioViewer(QMainWindow):
             self._tabs[account] = tab
 
         if not accounts:
-            self.tab_widget.addTab(QLabel("No accounts found."), "—")
+            empty = muted_label(f"{username} has no portfolios yet.")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.tab_widget.addTab(empty, "No portfolios")
 
         self._marks_timer = QTimer(self)
-        self._marks_timer.setInterval(30_000)
+        self._marks_timer.setInterval(VIEWER_MARKS_INTERVAL_MS)
         self._marks_timer.timeout.connect(self._refresh_marks)
         self._marks_timer.start()
         QTimer.singleShot(500, self._refresh_marks)
@@ -256,32 +341,12 @@ class UserPortfolioViewer(QMainWindow):
     def _refresh_marks(self):
         if self._closing:
             return
-        if self._active_marks_thread is not None and self._active_marks_thread.isRunning():
-            return
         tickers: List[str] = []
         for tab in self._tabs.values():
             tickers.extend(tab.holdings_symbols())
-        tickers = list(dict.fromkeys([t for t in tickers if t]))
-        if not tickers:
-            return
-        worker = MarksWorker(tickers)
-        th = QThread(self)
-        self._active_marks_worker = worker
-        self._active_marks_thread = th
-        worker.moveToThread(th)
-        th.started.connect(worker.run)
-        worker.done.connect(self._on_marks)
-        worker.done.connect(th.quit)
-        worker.error.connect(th.quit)
-        th.finished.connect(worker.deleteLater)
-        th.finished.connect(th.deleteLater)
-
-        def _cleanup():
-            self._active_marks_thread = None
-            self._active_marks_worker = None
-
-        th.finished.connect(_cleanup)
-        th.start()
+        tickers = list(dict.fromkeys(t for t in tickers if t))
+        if tickers:
+            self._marks_flight.start(MarksWorker(tickers), lambda w: w.done.connect(self._on_marks))
 
     def _on_marks(self, data: dict):
         if self._closing:
@@ -297,56 +362,37 @@ class UserPortfolioViewer(QMainWindow):
     def closeEvent(self, event):
         self._closing = True
         self._marks_timer.stop()
-        try:
-            self._marks_timer.timeout.disconnect()
-        except Exception:
-            pass
-        if self._active_marks_thread is not None:
-            try:
-                if self._active_marks_thread.isRunning():
-                    self._active_marks_thread.quit()
-                    self._active_marks_thread.wait(4000)
-            except Exception:
-                pass
-            self._active_marks_thread = None
-            self._active_marks_worker = None
+        self._marks_flight.shutdown(4000)
         self._tabs.clear()
         event.accept()
         self.closed.emit()
 
 
 # ---------------------------------------------------------------------------
-# Admin: user selection dialog
+# Admin: pick a user to view
 # ---------------------------------------------------------------------------
 
 class SelectUserDialog(QDialog):
     def __init__(self, users: List[dict], current_user_id: int, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Select User to View")
-        self.resize(360, 280)
+        self.setWindowTitle("View a user's portfolio")
+        self.setMinimumSize(380, 340)
         self._selected: Optional[dict] = None
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root = dialog_layout(self)
+        root.addWidget(muted_label("Their portfolios open in a separate read-only window."))
+        self.list_widget = _user_list(users, current_user_id)
+        root.addWidget(self.list_widget, 1)
+        if self.list_widget.count() == 0:
+            root.addWidget(muted_label("There are no other users yet."))
 
-        root.addWidget(QLabel("Select a user to open their portfolio in a read-only window:"))
+        _row, self.btn_open = add_dialog_buttons(self, root, "Open portfolio", on_primary=self._accept)
+        self.list_widget.itemDoubleClicked.connect(lambda _item: self._accept())
+        self.list_widget.currentItemChanged.connect(self._sync_enabled)
+        self._sync_enabled()
 
-        self.list_widget = QListWidget()
-        for user in users:
-            if user["id"] == current_user_id:
-                continue
-            item = QListWidgetItem(f"{'[Admin] ' if user['is_admin'] else ''}{user['username']}")
-            item.setData(Qt.ItemDataRole.UserRole, user)
-            self.list_widget.addItem(item)
-        root.addWidget(self.list_widget)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
-
-        self.list_widget.doubleClicked.connect(self._accept)
+    def _sync_enabled(self, *_args) -> None:
+        self.btn_open.setEnabled(self.list_widget.currentItem() is not None)
 
     def _accept(self):
         item = self.list_widget.currentItem()
@@ -363,85 +409,64 @@ class SelectUserDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 class ManageUserPasswordsDialog(QDialog):
-    """Admin-only dialog for resetting any user's password.
+    """Admin-only: set a new password for another user.
 
-    Used by small-team / friends-only deployments where a proper
-    self-service "forgot password" email flow is overkill — admin types
-    the new password, communicates it to the user out-of-band, the user
-    can change it themselves later via File → User Account.
+    For small friends-only deployments where an email reset flow is
+    overkill: the admin sets a password, tells the user out-of-band, and
+    the user changes it later via File > Account and portfolios.
+
+    `users` may be passed in (MainWindow fetches it in the background);
+    when omitted it is fetched here, synchronously.
     """
 
-    def __init__(self, store: DataStore, parent=None):
+    def __init__(self, store: DataStore, parent=None, users: Optional[List[dict]] = None):
         super().__init__(parent)
         self._store = store
-        self.setWindowTitle("Manage User Passwords")
+        self._bg = BackgroundCalls(self)
+        self.setWindowTitle("Reset a user's password")
         self.setModal(True)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self.setMinimumWidth(440)
-        self.resize(480, 400)
+        self.setMinimumSize(420, 380)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        root = dialog_layout(self)
+        root.addWidget(muted_label(
+            "Pick a user and set a new password. Pass it on to them; they can "
+            "change it later in File > Account and portfolios."))
 
-        # ── Section: Users ──────────────────────────────────────────────
-        users_grp = QGroupBox("Users")
-        users_grp.setStyleSheet(_GROUP_STYLE)
-        users_lay = QVBoxLayout(users_grp)
-        users_lay.setContentsMargins(14, 14, 14, 14)
-        users_lay.setSpacing(8)
+        if users is None:
+            try:
+                users = store.list_users()
+            except Exception as exc:
+                QMessageBox.warning(self, self.windowTitle(),
+                                    f"Couldn't load the user list.\n\n{exc}\n\nClose this and try again.")
+                users = []
+        self.users_list = _user_list(users, store.user_info.get("user_id", -1))
+        self.users_list.itemDoubleClicked.connect(lambda _item: self._reset_selected())
+        root.addWidget(self.users_list, 1)
 
-        self.users_list = QListWidget()
-        self.users_list.itemDoubleClicked.connect(lambda _: self._reset_selected())
-        try:
-            users = store.list_users()
-        except Exception as exc:
-            QMessageBox.warning(self, "Error", f"Could not fetch users: {exc}")
-            users = []
-        my_id = store.user_info.get("user_id", -1)
-        for u in users:
-            if u["id"] == my_id:
-                continue  # admin can self-reset via File > User Account
-            label = f"{'[Admin] ' if u.get('is_admin') else ''}{u['username']}"
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, u)
-            self.users_list.addItem(item)
-        users_lay.addWidget(self.users_list)
+        self.status = muted_label("")
+        self.status.setVisible(False)
+        root.addWidget(self.status)
 
-        info = QLabel(
-            "Pick a user, then click <b>Reset Password</b>. The new password "
-            "is shown to you so you can pass it to them — they can change it "
-            "themselves later via File → User Account."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet("color: gray; font-size: 11px;")
-        users_lay.addWidget(info)
+        _row, self.btn_reset = add_dialog_buttons(self, root, "Reset password…",
+                                                  on_primary=self._reset_selected, cancel_text="Close")
+        self.users_list.currentItemChanged.connect(self._sync_enabled)
+        self._sync_enabled()
 
-        btn_reset = QPushButton("Reset Password…")
-        btn_reset.clicked.connect(self._reset_selected)
-        users_lay.addWidget(btn_reset)
-
-        root.addWidget(users_grp)
-
-        # ── Close button ────────────────────────────────────────────────
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
-
-    # ------------------------------------------------------------------
+    def _sync_enabled(self, *_args) -> None:
+        self.btn_reset.setEnabled(self.users_list.currentItem() is not None)
 
     def _remote_store(self) -> Optional[RemoteDataStore]:
-        if isinstance(self._store, RemoteDataStore):
-            return self._store
-        if isinstance(self._store, FallbackDataStore) and self._store._is_online:
-            return self._store._remote
-        return None
+        return _online_remote(self._store)
+
+    def _set_status(self, text: str, role: str) -> None:
+        self.status.setText(text)
+        set_text_role(self.status, role)
+        self.status.setVisible(bool(text))
 
     def _reset_selected(self) -> None:
         item = self.users_list.currentItem()
         if item is None:
-            QMessageBox.information(self, "Select user",
-                                    "Pick a user from the list first.")
             return
         user = item.data(Qt.ItemDataRole.UserRole) or {}
         username = user.get("username", "")
@@ -451,56 +476,38 @@ class ManageUserPasswordsDialog(QDialog):
 
         remote = self._remote_store()
         if remote is None:
-            QMessageBox.information(
-                self, "Offline",
-                "Resetting another user's password requires a server connection. "
-                "Reconnect and try again.",
-            )
+            self._set_status("You need a connection to the sync server to reset passwords.", "error")
             return
 
-        # Plain-text input — admin will need to read the new password back
-        # to the user out-of-band, so masking it doesn't help here.
-        new_pw, ok = QInputDialog.getText(
-            self, "Reset Password",
-            f"New password for {username}:",
-            QLineEdit.EchoMode.Normal, "",
-        )
+        # Shown in plain text: the admin has to read it back to the user.
+        new_pw, ok = QInputDialog.getText(self, "Reset password", f"New password for {username}",
+                                          QLineEdit.EchoMode.Normal, "")
         if not ok:
             return
         new_pw = new_pw.strip()
-        if not new_pw:
-            QMessageBox.warning(self, "Empty password",
-                                "Password cannot be empty.")
+        if len(new_pw) < MIN_PASSWORD_LENGTH:
+            self._set_status(f"Use at least {MIN_PASSWORD_LENGTH} characters. Nothing was changed.", "error")
             return
-        if len(new_pw) < 4:
-            QMessageBox.warning(self, "Too short",
-                                "Use at least 4 characters.")
-            return
-
-        if QMessageBox.question(
-                self, "Confirm Reset",
-                f"Reset password for <b>{username}</b> to:<br><br>"
-                f"&nbsp;&nbsp;<code>{new_pw}</code><br><br>Proceed?",
-        ) != QMessageBox.StandardButton.Yes:
+        if not confirm(self, "Reset password",
+                       f"Set {username}'s password to “{new_pw}”?", "Reset password",
+                       detail="Their old password stops working straight away."):
             return
 
-        try:
-            import requests
-            r = requests.put(
-                f"{remote._base}/users/{user_id}/password",
-                json={"new_password": new_pw},
-                headers=remote._headers(),
-                timeout=8,
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Error", str(exc))
-            return
+        self.btn_reset.setEnabled(False)
+        self._set_status(f"Resetting {username}'s password…", "muted")
 
-        if r.ok:
-            QMessageBox.information(
-                self, "Password Reset",
-                f"Password reset for <b>{username}</b>.<br><br>"
-                f"They can log in with: <code>{new_pw}</code>",
-            )
-        else:
-            QMessageBox.warning(self, "Error", r.text)
+        def _done(_r):
+            self._sync_enabled()
+            self._set_status(f"Password reset. {username} can sign in with “{new_pw}”.", "good")
+            box = QMessageBox(QMessageBox.Icon.Information, "Password reset",
+                              f"{username} can now sign in with this password:", parent=self)
+            box.setInformativeText(html.escape(new_pw))
+            box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            box.exec()
+
+        def _failed(msg: str):
+            self._sync_enabled()
+            self._set_status(f"Couldn't reset {username}'s password: {msg}", "error")
+
+        self._bg.run(_put_password, args=(remote, user_id, new_pw), on_done=_done, on_error=_failed,
+                     label="reset_password")

@@ -16,9 +16,11 @@ Manifest format (host this file at version.UPDATE_MANIFEST_URL):
 from __future__ import annotations
 
 import json
+from html import escape
+import urllib.error
 import urllib.request
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -28,6 +30,11 @@ from PySide6.QtWidgets import (
 )
 
 from .version import APP_VERSION, UPDATE_MANIFEST_URL
+
+# Network timeout (seconds) and a ceiling on the manifest size we will read;
+# the real file is a few hundred bytes, so anything bigger is not ours.
+_TIMEOUT_S = 8
+_MAX_MANIFEST_BYTES = 64 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +53,7 @@ def _parse_version(v: str) -> tuple[int, ...]:
 
 
 def _newer(remote: str, local: str) -> bool:
+    """True when `remote` is a strictly higher version than `local`."""
     return _parse_version(remote) > _parse_version(local)
 
 
@@ -64,10 +72,14 @@ class _UpdateWorker(QObject):
                 UPDATE_MANIFEST_URL,
                 headers={"User-Agent": f"StockInsights/{APP_VERSION}"},
             )
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
+                data = json.loads(resp.read(_MAX_MANIFEST_BYTES).decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Update manifest is not a JSON object.")
             self.finished.emit(data)
-        except Exception as exc:
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            # OSError covers timeouts/connection errors; ValueError covers bad
+            # JSON/UTF-8. Anything else is a real bug and should surface.
             self.finished.emit({"error": str(exc)})
 
 
@@ -122,9 +134,9 @@ def _on_result(
         _ErrorDialog(data["error"], parent).exec()
         return
 
-    remote_version = data.get("version", "")
+    remote_version = str(data.get("version", ""))
     notes = data.get("notes", "")
-    download_url = data.get("download_url", "")
+    download_url = str(data.get("download_url", ""))
 
     if _newer(remote_version, APP_VERSION):
         _UpdateAvailableDialog(remote_version, notes, download_url, parent).exec()
@@ -177,7 +189,7 @@ class _UpdateAvailableDialog(QDialog):
         lay.setSpacing(12)
         lay.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel(f"<b>Stock Insights {new_version} is available!</b>")
+        title = QLabel(f"<b>Stock Insights {escape(str(new_version))} is available!</b>")
         lay.addWidget(title)
 
         current_lbl = QLabel(f"You are running version {APP_VERSION}.")
@@ -185,7 +197,11 @@ class _UpdateAvailableDialog(QDialog):
         lay.addWidget(current_lbl)
 
         if notes:
-            lay.addWidget(QLabel(f"<i>{notes}</i>"))
+            # The manifest is remote data: show it as plain text, never HTML.
+            notes_lbl = QLabel(str(notes))
+            notes_lbl.setTextFormat(Qt.TextFormat.PlainText)
+            notes_lbl.setWordWrap(True)
+            lay.addWidget(notes_lbl)
 
         lay.addWidget(QLabel("Press <b>Download Update</b> to open the download page."))
 
@@ -201,7 +217,9 @@ class _UpdateAvailableDialog(QDialog):
         lay.addLayout(btns)
 
     def _open_download(self):
-        if self._url:
+        # Only hand http(s) URLs to the OS; a manifest must not be able to
+        # launch file:// or custom-scheme handlers.
+        if self._url.lower().startswith(("https://", "http://")):
             import webbrowser
             webbrowser.open(self._url)
         self.accept()

@@ -1,12 +1,16 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
+// Trading performance for the selected date range (and tag), read like a
+// statement: one label/value per row, hairline between groups.
+// The range set here also filters Trade history (state lives on the
+// AccountController, so each account keeps its own range).
 Card {
     id: root
     property var account: null
-    padding: 16
+    spacing: 10
 
     function metric(key) {
         return account && account.analytics ? (account.analytics[key] || "—") : "—"
@@ -16,52 +20,36 @@ Card {
             ? account.analytics[key + "Sign"] : 0
     }
 
-    // Header row: section title on the left + date range selector on the right.
-    // The chosen range applies to BOTH this card's metrics AND the
-    // Trade History below (single source of truth, set on AccountController).
     RowLayout {
         Layout.fillWidth: true
         spacing: 8
         SectionTitle {
-            title: "Performance Analytics"
-            Layout.fillWidth: true
+            title: "Performance"
         }
-        // Strategy-tag filter — narrows analytics + trade history to one
-        // tag (e.g. "swing"). Empty option = "all tags". Hidden when no
-        // tags exist anywhere in the trade list, so brand-new accounts
-        // don't see a useless control.
+        Item { Layout.fillWidth: true }
+        // Only shown once the user has tagged at least one trade.
         ThemedComboBox {
             id: tagCombo
             visible: account && account.availableTags && account.availableTags.length > 0
-            Layout.preferredWidth: 110
-            Layout.preferredHeight: 30
-            font.pointSize: 8 * app.theme.fontScale
-            // Build the model from "All tags" + the dynamic list of
-            // available tags. "" represents the "no tag filter" state.
-            model: ["All tags"].concat(
-                (account && account.availableTags) ? account.availableTags : [])
+            Layout.preferredWidth: 112
+            model: ["All tags"].concat((account && account.availableTags) ? account.availableTags : [])
             currentIndex: {
                 if (!account) return 0
                 var t = account.tagFilter || ""
                 if (!t) return 0
-                var tags = account.availableTags || []
-                var i = tags.indexOf(t)
+                var i = (account.availableTags || []).indexOf(t)
                 return i >= 0 ? i + 1 : 0
             }
-            onActivated: function(index) {
+            onActivated: function (index) {
                 if (!account) return
                 var tags = account.availableTags || []
                 account.setTagFilter(index === 0 ? "" : tags[index - 1])
             }
+            Accessible.name: "Strategy tag"
         }
         ThemedComboBox {
             id: rangeCombo
-            Layout.preferredWidth: 130
-            Layout.preferredHeight: 30
-            font.pointSize: 8 * app.theme.fontScale
-            // Display label / internal key pairs. The combo's currentIndex
-            // is driven by account.dateRangeKey so switching tabs restores
-            // each account's saved range.
+            Layout.preferredWidth: 124
             model: ["All time", "This week", "This month", "Last 30 days", "Year to date"]
             property var keys: ["all", "week", "month", "30d", "ytd"]
             currentIndex: {
@@ -69,128 +57,56 @@ Card {
                 var i = keys.indexOf(account.dateRangeKey || "all")
                 return i >= 0 ? i : 0
             }
-            onActivated: function(index) {
+            onActivated: function (index) {
                 if (account) account.setDateRange(keys[index])
             }
+            Accessible.name: "Date range"
         }
     }
 
-    Rectangle {
-        Layout.fillWidth: true
-        Layout.preferredHeight: 1
-        color: app.theme.border
-    }
-
-    GridLayout {
-        Layout.fillWidth: true
-        columns: 2
-        columnSpacing: 24
-        rowSpacing: 4
-
-        Metric { Layout.fillWidth: true; label: "Open Trades";        value: metric("openTrades") }
-        Metric { Layout.fillWidth: true; label: "Closed Trades";      value: metric("closedTrades") }
-
-        Metric { Layout.fillWidth: true; label: "Win Rate";           value: metric("winRate");
-                 sign: metricSign("winRate") }
-        Metric { Layout.fillWidth: true; label: "Profit Factor";      value: metric("profitFactor");
-                 sign: metricSign("profitFactor") }
-
-        Metric { Layout.fillWidth: true; label: "Avg Profit / Trade"; value: metric("avgProfit");
-                 sign: metricSign("avgProfit") }
-        Metric { Layout.fillWidth: true; label: "Avg Trade Value";    value: metric("avgTradeValue") }
-
-        Metric { Layout.fillWidth: true; label: "Avg Win";            value: metric("avgWin");
-                 sign: metricSign("avgWin") }
-        Metric { Layout.fillWidth: true; label: "Avg Loss";           value: metric("avgLoss");
-                 sign: metricSign("avgLoss") }
-
-        Metric { Layout.fillWidth: true; label: "Best Trade";         value: metric("bestTrade");
-                 sign: metricSign("bestTrade") }
-        Metric { Layout.fillWidth: true; label: "Worst Trade";        value: metric("worstTrade");
-                 sign: metricSign("worstTrade") }
-
-        Metric { Layout.fillWidth: true; label: "Avg ROI %";          value: metric("avgRoi");
-                 sign: metricSign("avgRoi") }
-        Metric { Layout.fillWidth: true; label: "Avg Daily Return";   value: metric("avgDailyReturn");
-                 sign: metricSign("avgDailyReturn") }
-
-        // ── Drawdown — risk side of the analytics block ──────────────
-        // Max DD = worst peak-to-trough drop ever observed on the
-        // realized equity curve. Current DD = distance from the latest
-        // value back to the all-time peak (zero when sitting at a new
-        // high). Both tint red (sign = -1) when nonzero.
-        Metric { Layout.fillWidth: true; label: "Max Drawdown";       value: metric("maxDrawdown");
-                 sign: metricSign("maxDrawdown") }
-        Metric { Layout.fillWidth: true; label: "Current Drawdown";   value: metric("currentDrawdown");
-                 sign: metricSign("currentDrawdown") }
-    }
-
-    // ── Est. Yearly Profit — featured "marquee" metric. Spans both
-    // grid columns and lives in its own accent-colored container so the
-    // headline projection stands out from the rest of the analytics.
-    Rectangle {
-        Layout.fillWidth: true
-        Layout.topMargin: 4
-        Layout.preferredHeight: 52
-        radius: 10
-        color: Qt.rgba(
-            _hex_r(app.theme.primary),
-            _hex_g(app.theme.primary),
-            _hex_b(app.theme.primary),
-            0.10            // subtle tint — same hue as primary, barely there
-        )
-        border.color: app.theme.primary
-        border.width: 1
-
-        // Small accent strip on the left — same idea as the SectionTitle bar.
-        Rectangle {
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.topMargin: 8
-            anchors.bottomMargin: 8
-            width: 3
-            radius: 1.5
-            color: app.theme.primary
-        }
-
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 16
-            anchors.rightMargin: 14
-            spacing: 10
-
-            ColumnLayout {
-                spacing: 0
-                Layout.alignment: Qt.AlignVCenter
+    // Groups: results, trade quality, risk. Rendered as a single column so
+    // long labels never truncate at narrow widths.
+    Repeater {
+        model: [
+            { group: [
+                ["Projected yearly profit", "estYearly"],
+                ["Avg daily profit", "avgDailyReturn"],
+                ["Avg profit per trade", "avgProfit"],
+                ["Avg return per trade", "avgRoi"] ] },
+            { group: [
+                ["Win rate", "winRate"],
+                ["Profit factor", "profitFactor"],
+                ["Avg win", "avgWin"],
+                ["Avg loss", "avgLoss"],
+                ["Best trade", "bestTrade"],
+                ["Worst trade", "worstTrade"] ] },
+            { group: [
+                ["Largest drawdown", "maxDrawdown"],
+                ["Current drawdown", "currentDrawdown"],
+                ["Closed trades", "closedTrades"],
+                ["Open trades", "openTrades"] ] }
+        ]
+        delegate: ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 6
+            Rectangle {
+                visible: index > 0
                 Layout.fillWidth: true
-                Label {
-                    text: "Est. Yearly Profit"
-                    color: app.theme.textMuted
-                    font.pointSize: 9 * app.theme.fontScale
-                    font.weight: Font.DemiBold
-                }
-                Label {
-                    text: "at current pace × 252 trading days"
-                    color: app.theme.textMuted
-                    font.pointSize: 8 * app.theme.fontScale
-                    opacity: 0.75
-                }
+                Layout.preferredHeight: 1
+                Layout.bottomMargin: 4
+                color: app.theme.border
             }
-
-            Label {
-                text: metric("estYearly")
-                color: metricSign("estYearly") < 0 ? app.theme.bad : app.theme.primary
-                font.pointSize: 15 * app.theme.fontScale
-                font.weight: Font.Bold
-                horizontalAlignment: Text.AlignRight
+            Repeater {
+                model: modelData.group
+                Metric {
+                    Layout.fillWidth: true
+                    label: modelData[0]
+                    value: root.metric(modelData[1])
+                    sign: root.metricSign(modelData[1])
+                }
             }
         }
     }
 
-    // Tiny hex→float helpers so Qt.rgba can produce a tinted background
-    // from whatever color string the theme's `primary` property returns.
-    function _hex_r(c) { return Number("0x" + String(c).slice(1, 3)) / 255 }
-    function _hex_g(c) { return Number("0x" + String(c).slice(3, 5)) / 255 }
-    function _hex_b(c) { return Number("0x" + String(c).slice(5, 7)) / 255 }
+    Item { Layout.fillHeight: true }
 }

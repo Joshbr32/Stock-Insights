@@ -32,3 +32,12 @@ pydantic>=2.5
 # imports this defensively — if it's missing, .env is just ignored and
 # you fall back to real environment variables. ───────────────────────────────
 python-dotenv>=1.0
+
+# ── Live quotes (/quotes) ────────────────────────────────────────────────────
+# requests fetches prices from Stooq (the primary source). Without it /quotes
+# falls back to yfinance only, and returns 503 if neither is installed.
+requests>=2.31
+
+# Optional fallback for symbols Stooq can't price. Heavy (pulls pandas), so
+# it is left commented out; uncomment if you want the fallback.
+# yfinance>=0.2.40

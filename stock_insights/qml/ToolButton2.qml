@@ -1,41 +1,43 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 
-// Compact filled button used at the bottom of cards.
+// Harbor button: 32 px tall, radius 6. `primary: true` is the filled main
+// action; otherwise a quiet secondary button on `cardAlt`.
 Button {
     id: root
     property bool primary: false
 
+    implicitHeight: 32
     leftPadding: 14
     rightPadding: 14
-    topPadding: 8
-    bottomPadding: 8
-    font.pointSize: 9 * app.theme.fontScale
+    topPadding: 0
+    bottomPadding: 0
+    font.pixelSize: 13 * app.theme.fontScale
     font.weight: Font.DemiBold
+    hoverEnabled: true
 
     contentItem: Label {
         text: root.text
         font: root.font
         color: root.primary ? app.theme.textOnColor : app.theme.text
+        opacity: root.enabled ? 1.0 : 0.45
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         elide: Label.ElideRight
     }
 
     background: Rectangle {
-        radius: 8
-        // Primary buttons pick up the theme's primary accent — the same
-        // hue used by Goal Target + selected preset pills + hero metric,
-        // creating a consistent "this is the main action / value" signal.
+        implicitHeight: 32
+        radius: 6
         color: root.primary
-            ? (root.down ? Qt.darker(app.theme.primary, 1.1)
-              : root.hovered ? Qt.lighter(app.theme.primary, 1.05)
+            ? (root.down ? Qt.darker(app.theme.primary, 1.12)
+              : root.hovered ? Qt.darker(app.theme.primary, 1.06)
               : app.theme.primary)
-            : (root.down ? app.theme.cardAlt
-              : root.hovered ? Qt.lighter(app.theme.button, 1.04)
-              : app.theme.button)
-        border.color: root.primary ? app.theme.primary : app.theme.border
-        border.width: 1
-        Behavior on color { ColorAnimation { duration: 120 } }
+            : (root.down ? app.theme.border
+              : root.hovered && root.enabled ? Qt.darker(app.theme.cardAlt, app.theme.isLight ? 1.04 : 0.88)
+              : app.theme.cardAlt)
+        opacity: root.enabled || !root.primary ? 1.0 : 0.5
+
+        FocusRing { shown: root.visualFocus; controlRadius: 6 }
     }
 }

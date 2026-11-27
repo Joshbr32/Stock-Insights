@@ -1,9 +1,19 @@
 // portfolio.js — JS port of the compute functions from portfolio.py.
 //
 // We do all derivation client-side: the server only stores raw trades. That
-// keeps the API tiny and means the desktop & mobile clients can't drift
-// out of sync mathematically (this file mirrors portfolio.py 1:1 for the
-// numbers that appear in both UIs).
+// keeps the API tiny. The intent is to mirror portfolio.py 1:1; change
+// math or rounding in both files together.
+//
+// KNOWN DIVERGENCES from portfolio.py (pre-existing; see
+// docs/code/pwa/js/portfolio.md before "fixing" one, as tests pin both):
+//   • computePortfolio summary.return_pct uses total P/L (realized +
+//     unrealized); Python uses unrealized only.
+//   • computeAnalytics: open_trades excludes pending (Python counts them),
+//     profit_factor is Infinity with wins and no losses (Python: null).
+//   • computeGoalProgress: remaining_profit clamped at 0, weeks left =
+//     ceil(trading days / 5), daily divisor >= 1, weekday-only calendar
+//     (Python: NYSE holidays when pandas_market_calendars is installed).
+//   • tradeInRange "week" starts Sunday; Python starts Monday.
 
 // ── Trade helpers ──────────────────────────────────────────────────────
 

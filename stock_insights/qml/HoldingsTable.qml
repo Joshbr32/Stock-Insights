@@ -1,223 +1,191 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
+// Open positions. Sized to its rows (up to `maxVisibleRows`, then it
+// scrolls) so the page never shows a tall empty box.
+// Right-click a row (or press the Menu key) for Close / Mark down / etc.
 Card {
     id: root
     property var account: null
-    padding: 16
+    property int maxVisibleRows: 6
+    readonly property int rowH: 32
 
-    // Single source of truth for column layout. RowLayout (not Row) +
-    // Layout.preferredWidth = weight × 1000 = proportional widths that
-    // shrink together when the table narrows. All columns left-aligned.
+    // key: model role; w: relative width; right: numeric (right-aligned);
+    // pl: coloured by unrealizedSign.
     readonly property var cols: [
-        { key: "instrument",    label: "Instrument",      weight: 1.6 },
-        { key: "qtyText",       label: "Qty",             weight: 1.0 },
-        { key: "avgCost",       label: "Avg Cost",        weight: 1.0 },
-        { key: "mark",          label: "Mark",            weight: 1.0 },
-        { key: "unrealizedPl",  label: "Unrealized P/L",  weight: 1.4 },
-        { key: "marketValue",   label: "Market Value",    weight: 1.4 },
-        { key: "weight",        label: "Weight",          weight: 0.7 },
+        { key: "instrument",        label: "Symbol",         w: 1.3 },
+        { key: "qtyText",           label: "Shares",         w: 0.7, right: true },
+        { key: "avgCost",           label: "Avg cost",       w: 1.0, right: true },
+        { key: "mark",              label: "Price",          w: 1.0, right: true },
+        { key: "marketValue",       label: "Market value",   w: 1.2, right: true },
+        { key: "unrealizedPl",      label: "Unrealized P/L", w: 1.2, right: true, pl: true },
+        { key: "unrealizedPctText", label: "Change",         w: 0.9, right: true, pl: true },
+        { key: "weight",            label: "Weight",         w: 0.8, right: true }
     ]
-    // Reserved strip at the right edge of every row so the scrollbar
-    // overlay sits in this gap instead of on top of the last column.
-    readonly property int scrollPad: 12
 
     SectionTitle {
-        title: "Open Holdings"
-        subtitle: account && account.summary
-            ? "MV " + account.summary.marketValue +
-              "   •   Cost " + account.summary.costBasis +
-              "   •   Unrealized " + account.summary.unrealizedPl
+        title: "Open positions"
+        subtitle: account && account.summary && list.count > 0
+            ? account.summary.marketValue + " market value, " + account.summary.unrealizedPl + " unrealized"
             : ""
     }
 
-    // ── Header row ──────────────────────────────────────────────────────────
-    Rectangle {
+    ColumnLayout {
         Layout.fillWidth: true
-        Layout.preferredHeight: 28
-        color: "transparent"
+        spacing: 0
 
-        RowLayout {
-            anchors.fill: parent
-            anchors.rightMargin: root.scrollPad
-            spacing: 0
+        // Header: card2 band, muted 12 px / 600.
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: root.rowH
+            visible: list.count > 0
+            color: app.theme.cardAlt
+            radius: 6
 
-            Repeater {
-                model: root.cols
-                Label {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.preferredWidth: modelData.weight * 1000
-                    Layout.minimumWidth: 30
-                    text: modelData.label
-                    color: app.theme.textMuted
-                    font.pointSize: 9 * app.theme.fontScale
-                    font.weight: Font.DemiBold
-                    horizontalAlignment: Text.AlignLeft
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: 8
-                    rightPadding: 8
-                    elide: Label.ElideRight
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 4
+                anchors.rightMargin: 4 + 10   // + scrollbar gutter
+                spacing: 0
+                Repeater {
+                    model: root.cols
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: modelData.w * 1000
+                        Layout.minimumWidth: 24
+                        text: modelData.label
+                        color: app.theme.textMuted
+                        font.pixelSize: 12 * app.theme.fontScale
+                        font.weight: Font.DemiBold
+                        horizontalAlignment: modelData.right ? Text.AlignRight : Text.AlignLeft
+                        leftPadding: 8
+                        rightPadding: 8
+                        elide: Label.ElideRight
+                    }
                 }
             }
         }
-    }
-
-    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: app.theme.border }
-
-    // ── Body ────────────────────────────────────────────────────────────────
-    Rectangle {
-        Layout.fillWidth: true
-        Layout.fillHeight: true
-        Layout.minimumHeight: 100
-        color: "transparent"
-        clip: true
 
         ListView {
             id: list
-            anchors.fill: parent
+            Layout.fillWidth: true
+            Layout.preferredHeight: count > 0 ? Math.min(count, root.maxVisibleRows) * root.rowH : 0
             model: account ? account.holdings : null
-            spacing: 1
+            clip: true
             boundsBehavior: Flickable.StopAtBounds
+            currentIndex: -1
+            activeFocusOnTab: count > 0
+            keyNavigationEnabled: true
             ScrollBar.vertical: ThemedScrollBar { }
+            Keys.onMenuPressed: if (currentItem) app.showHoldingsMenu(currentItem.symbol)
+            Accessible.role: Accessible.Table
+            Accessible.name: "Open positions"
 
             delegate: Rectangle {
                 id: row
-                width: list.width                                  // full width — alt-row backgrounds extend to right edge
-                height: 32
-                radius: 4
+                readonly property string symbol: model.instrument
+                readonly property var rowModel: model
+                width: ListView.view.width
+                height: root.rowH
+                color: mouse.containsMouse || ListView.isCurrentItem ? app.theme.cardAlt : "transparent"
 
-                // Shared row-state model (see WatchlistPane / TradesTable):
-                //   hovered → 1.5 px primary-colored outline around the
-                //              normal base (no fill change — keeps sign-colored
-                //              P/L text legible against the stripe)
-                //   odd row → subtle zebra stripe
-                //   even row → transparent (card bg shows through)
-                // Holdings doesn't expose a selection state (right-click
-                // opens the context menu directly), so there's no "selected"
-                // branch in the color binding.
-                color: index % 2 === 0 ? "transparent"
-                                       : Qt.lighter(app.theme.cardAlt, 1.02)
-                border.color: rowMouse.containsMouse ? app.theme.primary : "transparent"
-                border.width: 1.5
-
-                Behavior on color        { ColorAnimation { duration: 100 } }
-                Behavior on border.color { ColorAnimation { duration: 100 } }
-
-                Rectangle {                                        // short-position tint overlay
-                    visible: model.isShort
-                    anchors.fill: parent
-                    color: "#1e3a5f"
-                    opacity: 0.18
+                // Hairline between rows (not after the last one).
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 1
+                    color: app.theme.border
+                    visible: index < list.count - 1
                 }
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.rightMargin: root.scrollPad            // leave gap for scrollbar
+                    anchors.leftMargin: 4
+                    anchors.rightMargin: 4 + 10
                     spacing: 0
+                    Repeater {
+                        model: root.cols
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.preferredWidth: modelData.w * 1000
+                            Layout.minimumWidth: 24
 
-                    // Col 0 — Instrument
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1600; Layout.minimumWidth: 30
-                        text: model.instrument
-                        color: app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale; font.weight: Font.DemiBold
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 1 — Qty
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1000; Layout.minimumWidth: 30
-                        text: model.qtyText
-                        color: app.theme.text; font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 2 — Avg Cost
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1000; Layout.minimumWidth: 30
-                        text: model.avgCost
-                        color: app.theme.text; font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 3 — Mark
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1000; Layout.minimumWidth: 30
-                        text: model.mark
-                        color: app.theme.text; font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 4 — Unrealized P/L (sign-colored)
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1400; Layout.minimumWidth: 30
-                        text: model.unrealizedPl
-                        color: model.unrealizedSign > 0 ? app.theme.good
-                             : model.unrealizedSign < 0 ? app.theme.bad
-                             : app.theme.text
-                        font.pointSize: 10 * app.theme.fontScale; font.weight: Font.DemiBold
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 5 — Market Value
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 1400; Layout.minimumWidth: 30
-                        text: model.marketValue
-                        color: app.theme.text; font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
-                    }
-                    // Col 6 — Weight
-                    Label {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.preferredWidth: 700; Layout.minimumWidth: 30
-                        text: model.weight
-                        color: app.theme.textMuted; font.pointSize: 10 * app.theme.fontScale
-                        horizontalAlignment: Text.AlignLeft
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8; rightPadding: 8
-                        elide: Label.ElideRight
+                            Label {
+                                id: cell
+                                anchors.fill: parent
+                                anchors.rightMargin: badge.visible ? badge.width + 8 : 0
+                                text: row.rowModel[modelData.key]
+                                color: modelData.pl
+                                    ? (row.rowModel.unrealizedSign > 0 ? app.theme.good
+                                       : row.rowModel.unrealizedSign < 0 ? app.theme.bad : app.theme.text)
+                                    : (modelData.key === "weight" ? app.theme.textMuted : app.theme.text)
+                                font.pixelSize: 13 * app.theme.fontScale
+                                font.weight: modelData.key === "instrument" || modelData.key === "unrealizedPl"
+                                             ? Font.DemiBold : Font.Normal
+                                horizontalAlignment: modelData.right ? Text.AlignRight : Text.AlignLeft
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 8
+                                rightPadding: 8
+                                elide: Label.ElideRight
+                            }
+                            // "Short" badge after the symbol.
+                            Rectangle {
+                                id: badge
+                                visible: modelData.key === "instrument" && row.rowModel.isShort
+                                anchors.verticalCenter: parent.verticalCenter
+                                x: Math.min(cell.contentWidth + 14, parent.width - width)
+                                width: badgeText.implicitWidth + 12
+                                height: 20
+                                radius: 10
+                                color: app.theme.cardAlt
+                                border.width: 1
+                                border.color: app.theme.border
+                                Label {
+                                    id: badgeText
+                                    anchors.centerIn: parent
+                                    text: "Short"
+                                    color: app.theme.textMuted
+                                    font.pixelSize: 12 * app.theme.fontScale
+                                }
+                            }
+                        }
                     }
                 }
 
                 MouseArea {
-                    id: rowMouse
+                    id: mouse
                     anchors.fill: parent
-                    hoverEnabled: true                          // drives the row's hover-highlight color
-                    acceptedButtons: Qt.RightButton
-                    onClicked: app.showHoldingsMenu(model.instrument)
+                    hoverEnabled: true
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onClicked: function (mouse) {
+                        list.currentIndex = index
+                        if (mouse.button === Qt.RightButton) app.showHoldingsMenu(model.instrument)
+                    }
                 }
             }
         }
 
-        // Empty state — only after first data load.
-        Label {
-            anchors.centerIn: parent
-            visible: account && account.loaded && account.holdings.rowCount() === 0
-            text: "No open positions"
-            color: app.theme.textMuted
-            font.pointSize: 10 * app.theme.fontScale
+        // Empty state — only after the first data load.
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: 4
+            visible: account && account.loaded && list.count === 0
+            spacing: 2
+            Label {
+                text: "No open positions"
+                color: app.theme.text
+                font.pixelSize: 13 * app.theme.fontScale
+                font.weight: Font.DemiBold
+            }
+            Label {
+                text: "Log a trade to start tracking what you hold."
+                color: app.theme.textMuted
+                font.pixelSize: 13 * app.theme.fontScale
+            }
         }
     }
 }

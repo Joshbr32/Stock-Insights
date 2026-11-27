@@ -22,7 +22,7 @@
 # ────────────────────────────────────────────────────────────────────────
 
 # Files whose changes require a sw.js VERSION bump.
-SHELL_FILES_PATTERN='^pwa/(js/(app|api|portfolio)\.js|styles\.css|index\.html)$'
+SHELL_FILES_PATTERN='^pwa/(js/[^/]+\.js|styles\.css|index\.html|manifest\.webmanifest)$'
 
 # What's about to be committed (staged changes only).
 staged_files=$(git diff --cached --name-only)

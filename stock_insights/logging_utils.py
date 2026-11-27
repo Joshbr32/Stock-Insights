@@ -12,12 +12,15 @@ The file logger keeps full detail without ANSI color codes.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-SERIAL_COUNTER = 0
+# itertools.count's next() is atomic under the GIL, so serial_debug is safe to
+# call from worker threads without a lock.
+_serial = itertools.count(1)
 LOGGER_NAME = "stock_insights"
 
 
@@ -44,7 +47,8 @@ class _IconColorFormatter(logging.Formatter):
         record.levelicon = self.ICONS.get(record.levelno, "•")
         base = super().format(record)
         color = self.COLORS.get(record.levelno, "")
-        if not color or not sys.stdout.isatty():
+        stream = sys.stdout
+        if not color or stream is None or not stream.isatty():
             return base
         return f"{color}{base}{self.RESET}"
 
@@ -58,9 +62,7 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 def serial_debug(message: str) -> None:
     """Log a numbered debug event to make async flows easier to follow."""
-    global SERIAL_COUNTER
-    SERIAL_COUNTER += 1
-    get_logger("trace").debug("[%04d] %s", SERIAL_COUNTER, message)
+    get_logger("trace").debug("[%04d] %s", next(_serial), message)
 
 
 def _silence_noisy_loggers() -> None:
@@ -85,7 +87,11 @@ def setup_logging() -> logging.Logger:
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
-    root.handlers.clear()
+    # Close old handlers (not just drop them) so a repeated call doesn't leak
+    # the rotating file's open handle.
+    for old in list(root.handlers):
+        root.removeHandler(old)
+        old.close()
 
     file_handler = RotatingFileHandler(
         log_file,
@@ -98,17 +104,26 @@ def setup_logging() -> logging.Logger:
         logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s")
     )
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.DEBUG)
-    console_handler.setFormatter(
-        _IconColorFormatter(
-            "%(asctime)s | %(levelicon)s %(levelname)-8s | %(name)s | %(message)s",
-            "%H:%M:%S",
-        )
-    )
-
     root.addHandler(file_handler)
-    root.addHandler(console_handler)
+
+    # The windowed (console=False) PyInstaller build has sys.stdout == None;
+    # only attach the console handler when there is a stream to write to.
+    if sys.stdout is not None:
+        # The level icons are non-ASCII; don't let a legacy cp1252 console
+        # turn every log line into an encoding error.
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.setFormatter(
+            _IconColorFormatter(
+                "%(asctime)s | %(levelicon)s %(levelname)-8s | %(name)s | %(message)s",
+                "%H:%M:%S",
+            )
+        )
+        root.addHandler(console_handler)
     _silence_noisy_loggers()
 
     logger = get_logger()

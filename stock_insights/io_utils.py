@@ -1,18 +1,55 @@
-"""Small import/export helpers for trade data.
+"""Import/export helpers for trade data: CSV export, JSON backup/restore,
+and best-effort auto-snapshots under ~/.stock_insights/auto_backups.
 
 CSV columns are chosen to match what most US brokers / tax tools expect,
 so a power user can pull the file straight into TurboTax / Excel / a
 custom spreadsheet without any reformatting.
+
+Every file this module writes goes through `_atomic_write`, so a crash or
+full disk mid-write leaves the previous file intact instead of a
+truncated one (a half-written backup is worse than none: it fails restore).
 """
 from __future__ import annotations
 
 import csv
 import json
-from datetime import date
+import os
+import tempfile
+from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import IO, Iterable, Iterator, List, Optional
 
-from .portfolio import Trade, trade_to_dict
+from .logging_utils import get_logger
+from .portfolio import Trade, trade_to_dict, trades_from_json
+
+logger = get_logger("io_utils")
+
+
+@contextmanager
+def _atomic_write(file_path: Path, newline: Optional[str] = None) -> Iterator[IO[str]]:
+    """Open a UTF-8 temp file next to `file_path`; on clean exit, swap it in.
+
+    The temp file lives in the same directory so `os.replace` is a same-
+    volume rename (atomic on both NTFS and POSIX). On any exception the
+    temp file is removed and the original destination is left untouched.
+    """
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{file_path.name}.", suffix=".tmp", dir=str(file_path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as fh:
+            yield fh
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, file_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CSV export
@@ -63,8 +100,7 @@ def export_trades_to_csv(trades: Iterable[Trade], file_path: Path) -> int:
     """
     trades = list(trades)
     file_path = Path(file_path)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    with file_path.open("w", encoding="utf-8", newline="") as fh:
+    with _atomic_write(file_path, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, quoting=csv.QUOTE_MINIMAL)
         writer.writeheader()
         for t in trades:
@@ -119,7 +155,6 @@ def build_backup(store) -> dict:
     except Exception:
         trades = []
 
-    from datetime import datetime, timezone
     return {
         "schema_version": BACKUP_SCHEMA_VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -139,9 +174,12 @@ def build_backup(store) -> dict:
 def write_backup(store, file_path: Path) -> Path:
     """Serialize a backup snapshot to disk and return the written path."""
     file_path = Path(file_path)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot = build_backup(store)
-    file_path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    # Serialise before opening the temp file so a non-JSON value raises
+    # without touching the disk at all.
+    payload = json.dumps(snapshot, indent=2)
+    with _atomic_write(file_path) as fh:
+        fh.write(payload)
     return file_path
 
 
@@ -174,7 +212,6 @@ def write_auto_snapshot(store, kind: str = "snapshot") -> Optional[Path]:
     want to block the calling operation just because we couldn't save
     a safety copy — the auto-snapshot is best-effort).
     """
-    from datetime import datetime
     try:
         target_dir = _auto_backup_dir()
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -191,6 +228,8 @@ def write_auto_snapshot(store, kind: str = "snapshot") -> Optional[Path]:
         # Best-effort — never let a snapshot failure break a real op.
         # If disk is full, permissions are wrong, or the store is unhappy,
         # the user still gets to do whatever they were trying to do.
+        # Logged so a silently-failing safety net is at least discoverable.
+        logger.warning("Auto-snapshot (%s) failed", kind, exc_info=True)
         return None
 
 
@@ -206,12 +245,12 @@ def _prune_auto_snapshots(folder: Path, keep: int) -> None:
         for old in files[keep:]:
             try:
                 old.unlink()
-            except Exception:
+            except OSError:
                 # If a file is locked / in use, just skip it; we'll try
                 # again next snapshot.
                 pass
-    except Exception:
-        pass
+    except OSError as exc:
+        logger.debug("Auto-snapshot pruning skipped: %s", exc)
 
 
 def read_backup(file_path: Path) -> dict:
@@ -220,7 +259,12 @@ def read_backup(file_path: Path) -> dict:
     data = json.loads(file_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Backup file is not a JSON object.")
-    version = int(data.get("schema_version", 0))
+    try:
+        version = int(data.get("schema_version", 0))
+    except (TypeError, ValueError):
+        # e.g. "schema_version": [1] — report it as a bad backup (ValueError,
+        # per the docstring) rather than leaking a TypeError to the caller.
+        raise ValueError("Backup schema_version is not a number.") from None
     if version != BACKUP_SCHEMA_VERSION:
         raise ValueError(
             f"Backup schema version {version} not supported "
@@ -336,8 +380,6 @@ def apply_backup(store, snapshot: dict) -> dict:
     Existing data is OVERWRITTEN — callers should confirm with the user
     before invoking this.
     """
-    from .portfolio import trades_from_json
-
     summary = {"accounts": 0, "trades": 0, "watchlist": 0}
 
     # 1) Accounts list
@@ -387,7 +429,9 @@ def apply_backup(store, snapshot: dict) -> dict:
     # 5) Trades — group by account and save_account_trades per slice.
     raw_trades = snapshot.get("trades") or []
     if raw_trades:
-        all_trades = trades_from_json(json.dumps(raw_trades))
+        # trades_from_json accepts the parsed list directly; no need to
+        # json.dumps it just so it can json.loads it again.
+        all_trades = trades_from_json(raw_trades)
         # Tag each trade's account, then save per slice
         by_account: dict[str, list] = {}
         for t in all_trades:

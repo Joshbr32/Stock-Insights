@@ -6,18 +6,22 @@ same data, same accounts, just optimized for a phone screen.
 
 ## What you get
 
-- 📈 **Portfolio** — combined or per-account market value, holdings table,
-  trade analytics, and an equity-curve chart of cumulative realized P/L
-- 🗓️ **Date-range filter** — All time / This week / This month / Last 30
-  days / YTD. Drives both the analytics card and the trade list, mirroring
-  the desktop app's filter (and persisting across reloads via localStorage)
-- 📒 **Trades** — list, add, edit, delete trades; supports long/short and
-  pending orders
-- 🎯 **Goals** — shared and per-account goal dashboards with progress bars
-  and "what's needed per day/week/month" math
-- ⭐ **Watchlist** — add/remove symbols, live prices
-- 🔒 Login with the same credentials as the desktop app
-- 📱 Installs to home screen, works in dark mode automatically
+- **Home** - the pace rail (are you on pace for this year's goal?), total and
+  unrealised P/L, open positions with a per-symbol drill-down, and a
+  performance section: equity curve (with the goal's pace line), trade
+  analytics, and date-range / tag filters that persist across reloads
+- **Trades** - list, log, edit and delete trades; long/short and pending orders
+- **Goals** - shared and per-account goals, each with its own pace rail and
+  "needed per month / week / day" numbers
+- **Watchlist** - add and remove symbols, live prices
+- **Settings** - who you're signed in as, back up / restore (same JSON format
+  as the desktop), sign out
+- Live prices refresh every minute while the app is on screen and pause in the
+  background; light and dark follow the phone's setting
+- Installs to the home screen and opens offline (last-loaded shell)
+
+The visual language is "Harbor", shared with the desktop app:
+`docs/design/design-system.md`.
 
 ---
 
@@ -116,13 +120,16 @@ The token lasts 30 days, so you won't need to log in every time.
 ```
 .
 ├── index.html                 # App shell
-├── styles.css                 # All styling (editorial / cream paper aesthetic)
+├── styles.css                 # All styling (Harbor tokens, light/dark)
 ├── manifest.webmanifest       # PWA install metadata
 ├── sw.js                      # Service worker (offline shell)
 ├── js/
 │   ├── api.js                 # Fetch wrapper for the FastAPI backend
 │   ├── portfolio.js           # JS port of compute fns from portfolio.py
-│   └── app.js                 # Views, routing, event handlers
+│   ├── app.js                 # State, data loading, views, dialogs
+│   ├── charts.js              # Pace rail + equity-curve chart
+│   ├── ui.js                  # DOM builders, formatting, safe localStorage
+│   └── demo.js                # ?demo fixtures (loaded on demand, not precached)
 ├── icons/                     # PWA icons (192, 512, maskable)
 ├── make_icons.py              # Regenerate icons (optional)
 └── server_quotes_patch.py     # Server-side patch — adds /quotes endpoint
@@ -168,25 +175,32 @@ it once per checkout:
 bash scripts/install-git-hooks.sh
 ```
 
-After install, any commit that touches `pwa/js/app.js`, `pwa/js/api.js`,
-`pwa/js/portfolio.js`, `pwa/styles.css`, or `pwa/index.html` without
-also touching `pwa/sw.js` is blocked with a reminder. Bypass for
+After install, any commit that touches a shell file (`pwa/js/*.js`,
+`pwa/styles.css`, `pwa/index.html`) without also touching `pwa/sw.js` is
+blocked with a reminder. New JS modules must also be added to the `SHELL`
+precache list in `sw.js`, or the app won't open offline. Bypass for
 non-deploy commits with `git commit --no-verify`.
 
 ---
 
 ## Customizing
 
-- **Colors / fonts** — all design tokens are CSS variables at the top of
-  `styles.css`. The accent color is `--accent`, and dark-mode overrides
-  live in the `@media (prefers-color-scheme: dark)` block. The aesthetic
-  is "editorial broadsheet": Fraunces for display headlines, JetBrains
-  Mono for tabular numbers, warm cream paper background. Tweak away.
+- **Colors / fonts** - all tokens are CSS custom properties at the top of
+  `styles.css` (light) with dark overrides under
+  `@media (prefers-color-scheme: dark)`. They mirror the Harbor token table in
+  `docs/design/design-system.md`; change both together. Fonts are the system
+  stack only (no web fonts, so cold starts and offline use cost nothing).
 - **Quote refresh interval** — edit `QUOTE_TTL` in `server_quotes_patch.py`
-  (default 20s). The PWA itself only refreshes on demand (pull the ↻
-  button or switch tabs).
+  (default 20s). The PWA polls `/quotes` every 60 s while visible
+  (`QUOTE_POLL_MS` in `js/app.js`), stops in a background tab, and reloads
+  everything when you come back after 5 minutes (`STALE_RELOAD_MS`).
+- **Demo mode** - open `index.html?demo` (or `?demo=login`, `?demo=offline`)
+  to see every view with fixture data and no network. Serve the folder with
+  `python -m http.server 8000 --directory pwa`. Demo mode never registers the
+  service worker.
 - **Adding new fields to a trade** — add to the `incoming` object in
-  `saveTradeFromForm` (`js/app.js`) and the `TradeIn` model on the server.
+  `saveTradeFromForm` and `toTradeIn` (`js/app.js`) and the `TradeIn` model
+  on the server.
 
 ---
 
@@ -200,3 +214,6 @@ non-deploy commits with `git commit --no-verify`.
   trades sort newest-first by id.
 - **No offline writes** — service worker caches the app shell so it
   *opens* offline, but writes always go straight to the server.
+- **Trade tags** - the PWA sends `tag` with every trade, but the server's
+  `TradeIn` model has no `tag` field yet, so tags set on the phone are dropped
+  on save until the server stores them.

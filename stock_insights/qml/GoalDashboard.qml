@@ -1,132 +1,64 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
+// Goal block: answers "am I on pace?" at a glance.
+//   Goal $5,000 by Dec 31                      [$2.5K] [$5K] [$10K]
+//   +$3,474.85                                   $1,029 behind pace
+//   realized profit
+//   <pace rail>
+//   Unrealized | Year-end forecast | Left to goal | Needed per day / week | Trading days left
 Card {
     id: root
     property var account: null
-    padding: 16
+    padding: 20
+    spacing: 14
 
-    // Picks a color for the Realized Profit hero based on whether the
-    // user is in the green or in the red. Zero / no-data falls back to
-    // the theme's primary so the split hero still visually balances.
-    function realizedColor() {
-        if (!account) return app.theme.primary
-        var s = account.realizedSign
-        if (s > 0) return app.theme.good
-        if (s < 0) return app.theme.bad
-        return app.theme.primary
+    readonly property var goal: account && account.goal ? account.goal : ({})
+    readonly property var pace: account && account.pace ? account.pace : ({})
+
+    // Play the rail's fill animation once per account, the first time that
+    // account's data is on screen.
+    property var _seen: ({})
+    function _maybePlay() {
+        if (!account || !account.loaded || _seen[account.name]) return
+        _seen[account.name] = true
+        rail.play()
     }
-
-    SectionTitle {
-        title: "Goal Dashboard"
-        subtitle: account ? account.name : ""
+    onAccountChanged: _maybePlay()
+    Connections {
+        target: root.account
+        ignoreUnknownSignals: true
+        function onLoadedChanged() { root._maybePlay() }
     }
+    Component.onCompleted: _maybePlay()
 
-    // ── Split hero: Annual Target (left) + Realized Profit (right) ─────────
-    RowLayout {
-        Layout.fillWidth: true
-        spacing: 18
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 2
-            Label {
-                text: "Annual Target"
-                color: app.theme.textMuted
-                font.pointSize: 9 * app.theme.fontScale
-                font.weight: Font.DemiBold
-            }
-            Label {
-                text: account && account.goal ? (account.goal.target || "—") : "—"
-                color: app.theme.primary
-                font.pointSize: 18 * app.theme.fontScale
-                font.weight: Font.Bold
-                elide: Label.ElideRight
-                Layout.fillWidth: true
-            }
-        }
-
-        // Slim vertical divider between the two hero numbers — makes the
-        // split visually crisp without needing extra labels or borders.
-        Rectangle {
-            Layout.preferredWidth: 1
-            Layout.preferredHeight: 44
-            Layout.alignment: Qt.AlignVCenter
-            color: app.theme.border
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 2
-            Label {
-                text: "Realized Profit"
-                color: app.theme.textMuted
-                font.pointSize: 9 * app.theme.fontScale
-                font.weight: Font.DemiBold
-                horizontalAlignment: Text.AlignRight
-                Layout.fillWidth: true
-            }
-            Label {
-                text: account && account.goal ? (account.goal.realized || "—") : "—"
-                color: realizedColor()
-                font.pointSize: 18 * app.theme.fontScale
-                font.weight: Font.Bold
-                horizontalAlignment: Text.AlignRight
-                elide: Label.ElideRight
-                Layout.fillWidth: true
-            }
-        }
-    }
-
-    // ── Goal progress bar ──────────────────────────────────────────────────
-    RowLayout {
-        Layout.fillWidth: true
-        spacing: 10
-
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 6
-            color: app.theme.cardAlt
-            radius: 3
-
-            Rectangle {
-                anchors.left: parent.left
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                width: parent.width * (account ? account.goalProgressPct / 100 : 0)
-                radius: 3
-                gradient: Gradient {
-                    orientation: Gradient.Horizontal
-                    GradientStop { position: 0.0; color: app.theme.primary }
-                    GradientStop { position: 1.0; color: app.theme.secondary }
-                }
-                Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
-            }
-        }
-        Label {
-            text: (account ? account.goalProgressPct.toFixed(1) : "0") + "%"
-            color: app.theme.textMuted
-            font.pointSize: 9 * app.theme.fontScale
-            font.weight: Font.DemiBold
-            Layout.minimumWidth: 44
-            horizontalAlignment: Text.AlignRight
-        }
-    }
-
-    // ── Preset pills — moved out of the hero row so the Target/Realized
-    // split has room to breathe. Still visually tied to the hero because
-    // tapping one updates the Annual Target number right above.
+    // ── Goal line + presets ─────────────────────────────────────────────
     RowLayout {
         Layout.fillWidth: true
         spacing: 8
+
         Label {
-            text: "Preset Targets"
+            text: "Goal"
             color: app.theme.textMuted
-            font.pointSize: 9 * app.theme.fontScale
+            font.pixelSize: 13 * app.theme.fontScale
+        }
+        Label {
+            text: (root.pace.targetText || "—") + " " + (root.pace.endText || "")
+            color: app.theme.text
+            font.pixelSize: 13 * app.theme.fontScale
+            font.weight: Font.DemiBold
+        }
+        Item { Layout.fillWidth: true }
+        Label {
+            text: "Change goal"
+            color: app.theme.textMuted
+            font.pixelSize: 12 * app.theme.fontScale
+            visible: presetRow.count > 0 && root.width > 560
         }
         Repeater {
+            id: presetRow
             model: account ? account.presets : []
             Pill {
                 label: modelData.label
@@ -134,79 +66,98 @@ Card {
                 onClicked: app.setGoalTarget(modelData.value)
             }
         }
-        Item { Layout.fillWidth: true }
     }
 
-    Rectangle {
+    // ── Hero number + pace sentence ─────────────────────────────────────
+    RowLayout {
         Layout.fillWidth: true
-        Layout.preferredHeight: 1
-        color: app.theme.border
+        spacing: 16
+
+        ColumnLayout {
+            spacing: 0
+            Label {
+                text: root.goal.realized || "—"
+                color: account && account.realizedSign < 0 ? app.theme.bad : app.theme.text
+                font.family: app.theme.displayFontFamily
+                font.pixelSize: 40 * app.theme.fontScale
+                font.weight: Font.Bold
+                font.features: { "tnum": 1 }
+            }
+            Label {
+                text: "Realized profit"
+                color: app.theme.textMuted
+                font.pixelSize: 13 * app.theme.fontScale
+            }
+        }
+
+        Item { Layout.fillWidth: true }
+
+        Label {
+            Layout.alignment: Qt.AlignTop
+            Layout.topMargin: 12
+            text: root.pace.sentence || ""
+            color: root.pace.state === "behind" ? app.theme.bad
+                 : (root.pace.state === "ahead" || root.pace.state === "reached") ? app.theme.good
+                 : app.theme.textMuted
+            font.pixelSize: 20 * app.theme.fontScale
+            font.family: app.theme.displayFontFamily
+            font.weight: Font.DemiBold
+            horizontalAlignment: Text.AlignRight
+        }
     }
 
-    // Two-column metrics grid — Realized Profit has been promoted to the
-    // hero above, so its grid slot is now "Year-End Forecast" (realized
-    // plus remaining-days × avg-daily-profit), a genuinely new number.
+    PaceRail {
+        id: rail
+        Layout.fillWidth: true
+        Layout.topMargin: 2
+        Layout.bottomMargin: 6
+        pace: root.pace
+    }
+
+    // ── Supporting numbers ──────────────────────────────────────────────
     GridLayout {
         Layout.fillWidth: true
-        columns: 2
+        columns: root.width > 820 ? 6 : 3
         columnSpacing: 24
-        rowSpacing: 4
+        rowSpacing: 12
 
         Metric {
             Layout.fillWidth: true
-            label: "Unrealized Profit"
-            value: account && account.goal ? (account.goal.unrealized || "—") : "—"
-            sign:  account && account.goal && account.goal.unrealizedSign !== undefined
-                   ? account.goal.unrealizedSign : 0
+            stacked: true
+            label: "Unrealized"
+            value: root.goal.unrealized || "—"
+            sign: root.goal.unrealizedSign || 0
         }
         Metric {
             Layout.fillWidth: true
-            label: "Year-End Forecast"
-            value: account && account.goal ? (account.goal.yearEndForecast || "—") : "—"
-            sign:  account && account.goal && account.goal.yearEndForecastSign !== undefined
-                   ? account.goal.yearEndForecastSign : 0
+            stacked: true
+            label: "Year-end forecast"
+            value: root.goal.yearEndForecast || "—"
+            sign: root.goal.yearEndForecastSign || 0
         }
         Metric {
             Layout.fillWidth: true
-            label: "Profit to Goal"
-            value: account && account.goal ? (account.goal.remaining || "—") : "—"
-            sign:  account && account.goal && account.goal.remainingSign !== undefined
-                   ? account.goal.remainingSign : 0
+            stacked: true
+            label: "Left to goal"
+            value: (root.goal.remainingSign || 0) < 0 ? "Nothing left" : (root.goal.remaining || "—")
         }
         Metric {
             Layout.fillWidth: true
-            label: "Monthly Needed"
-            value: account && account.goal ? (account.goal.monthly || "—") : "—"
+            stacked: true
+            label: "Needed per day"
+            value: (root.goal.remainingSign || 0) < 0 ? "—" : (root.goal.daily || "—")
         }
         Metric {
             Layout.fillWidth: true
-            label: "Weekly Needed"
-            value: account && account.goal ? (account.goal.weekly || "—") : "—"
+            stacked: true
+            label: "Needed per week"
+            value: (root.goal.remainingSign || 0) < 0 ? "—" : (root.goal.weekly || "—")
         }
         Metric {
             Layout.fillWidth: true
-            label: "Daily Needed"
-            value: account && account.goal ? (account.goal.daily || "—") : "—"
-        }
-        Metric {
-            Layout.fillWidth: true
-            label: "Avg Daily"
-            value: account && account.goal ? (account.goal.avgDaily || "—") : "—"
-        }
-        Metric {
-            Layout.fillWidth: true
-            label: "Catch-up Today"
-            value: account && account.goal ? (account.goal.catchUp || "—") : "—"
-        }
-        Metric {
-            Layout.fillWidth: true
-            label: "Trading Days Elapsed"
-            value: account && account.goal ? (account.goal.daysElapsed || "—") : "—"
-        }
-        Metric {
-            Layout.fillWidth: true
-            label: "Trading Days Remaining"
-            value: account && account.goal ? (account.goal.daysRemaining || "—") : "—"
+            stacked: true
+            label: "Trading days left"
+            value: root.goal.daysRemaining || "—"
         }
     }
 }
