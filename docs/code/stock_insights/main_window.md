@@ -10,8 +10,9 @@
 | callback dict in `__init__` | QML API | Keys `add_ticker, remove_ticker, rename_ticker, refresh_marks, add_trade, edit_trade, delete_trade, set_goal_target, open_goal_options, open_trade_history_options, holdings_menu, trade_menu`. Keep keys + arities stable (qml_bridge calls them). Dialog/menu handlers go through `_safe_run`. |
 | `_safe_run(fn, *a)` | method | Defers to the next event-loop tick and shows errors. Required for anything QML triggers that opens a QDialog/QMenu (nested event loops crash on Windows). |
 | `_run_in_background(fn, args, kwargs, on_done, on_error, label)` | method | Thin wrapper over `BackgroundCalls.run`; callbacks run on the GUI thread. |
-| `_save_account(name, trades)` | method | Background `save_account_trades` then `refresh_all_accounts()`. |
-| `_on_move_trade` | method | Two chained background writes: source first, then destination (order prevents duplicates; see docstring). |
+| `_save_trades(account, trades, failure_note="")` | method | One background call that runs `store.save_trade(account, t)` for each trade in order, then `refresh_all_accounts()`. On error: refresh, then the "Couldn't save" box. |
+| `_delete_trade(account, uid)` | method | Background `store.delete_trade`, then refresh. |
+| trade handlers | methods | add / edit / mark down / double down / fulfil save one trade; close position saves each closed lot; delete uses the uid; `_on_move_trade` is one save under the destination account. None of them sends the whole account. Restore (`_on_restore`) still uses the bulk path through `io_utils.apply_backup`. |
 | `_set_connection_state(state, n)` | method | Status corner text/role/tooltip from `_CONNECTION_STATES`; no-op on repeat; mirrors to `AppController.set_status`. |
 | `_level1_tick` / `_kick_netcheck` / `_attempt_reconnect` | methods | Start single-flight workers (`SingleFlight`), ignored while one is running. |
 | `_kick_health_probe` / `_on_health_result` | methods | `/health` every 15 s (skipped when the netcheck says no internet); result goes in the status tooltip. |
@@ -31,15 +32,18 @@ QSettings `("StockInsights","StocksGUI")`: `ui/THEME_OVERRIDE`, `ui/MATCH_SYSTEM
 - Amber/`pace` is QML-only; status colours use `good`/`bad`/`text_muted` via `widgets.set_text_role`.
 - Visual check: `python scripts/ui_snapshot_dialogs.py --out <dir> --only main_window`.
 
+- Trade identity: a dialog's `to_trade()` builds a NEW `Trade` (new uid). An edit must copy `uid` from the trade being edited; changes to an existing trade are made on a `dataclasses.replace` copy, never on an object returned by the store (those are shared with its cache).
+- `source_index` from QML indexes the current account's trades in store order; the uid is looked up from that list at the moment of the action.
+
 ## Map
-- 1-98 imports, constants, `_CONNECTION_STATES`
-- 100-117 trade-lot helpers
-- 123-227 `__init__`; 229-263 minimum window size
-- 265-369 helpers (`_safe_run`, `_run_in_background`, trade dialog factory)
-- 371-461 menus, status corner, QML host; 463-493 status corner state
-- 495-573 watchlist; 575-699 trade CRUD + goal target
-- 701-764 launch snapshot, View toggles, goal options
-- 766-926 context menus (holdings / trade), close/mark down/double down/fulfill
-- 928-1085 settings, File menu actions, account + admin
-- 1087-1287 timers, marks, netcheck, health, reconnect, offline/sync status
-- 1289-1337 save settings + closeEvent
+- 1-101 imports, constants, `_CONNECTION_STATES`
+- 103-120 trade-lot helpers
+- 126-260 `__init__`; then minimum window size
+- 268-400 helpers (`_save_trades` 299, `_delete_trade`, `_safe_run`, `_run_in_background`, trade dialog factory 386)
+- 403-527 menus, status corner, QML host, status corner state
+- 529-607 watchlist; 609-702 trade CRUD (move 647) + goal target
+- 704-765 launch snapshot, View toggles, goal options
+- 767-928 context menus (holdings / trade), close 797 / mark down / double down / fulfill 911
+- 930-1087 settings, File menu actions, account + admin
+- 1089-1300 timers, marks, netcheck, health, reconnect, offline/sync status
+- 1302-1347 save settings + closeEvent

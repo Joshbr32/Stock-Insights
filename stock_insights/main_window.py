@@ -13,7 +13,9 @@ What lives here
   server /health probe, reconnect (background.py does the thread plumbing).
 • Watchlist persistence and add/remove/rename slots called by QML.
 • Trade CRUD callbacks called by QML — they open the dialogs in
-  stock_insights/dialogs and persist via the DataStore in the background.
+  stock_insights/dialogs and persist via the DataStore in the background,
+  one trade per save (DataStore.save_trade / delete_trade, keyed by
+  Trade.uid), never the whole account.
 • Admin entry points (view another user's portfolio, reset passwords).
 
 File menu export / backup / restore live in file_actions.py.
@@ -22,6 +24,7 @@ File menu export / backup / restore live in file_actions.py.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -293,16 +296,45 @@ class MainWindow(QMainWindow):
             f"Your change wasn't saved.\n\n{message}\n\n"
             "Try again. If it keeps failing, use File > Back up data to keep a copy.")
 
-    def _save_account(self, account_name: str, trades: List[Trade]) -> None:
-        """Persist a slice of trades for one account (in the background),
-        then refresh the QML models on the GUI thread."""
+    def _save_trades(self, account_name: str, trades: List[Trade], failure_note: str = "") -> None:
+        """Persist the given trades into `account_name`, one request per
+        trade, on a background thread; then refresh the QML models on the
+        GUI thread. A trade currently in another account is moved.
+
+        Pass copies (dataclasses.replace), not objects read from the store:
+        those are shared with the store's cache, and changing them before
+        the save is confirmed would show an edit that may not have happened.
+        """
+        trades = list(trades)
+        if not trades:
+            return
+
+        def _write() -> None:
+            for trade in trades:
+                self._store.save_trade(account_name, trade)
+
         self._run_in_background(
-            self._store.save_account_trades,
-            args=(account_name, list(trades)),
+            _write,
             on_done=lambda _result: self._app.refresh_all_accounts(),
-            on_error=self._warn_save_failed,
-            label=f"save_account_trades({account_name})",
+            on_error=lambda msg: self._on_trade_write_failed(f"{failure_note}{msg}"),
+            label=f"save_trade({account_name}, {len(trades)})",
         )
+
+    def _delete_trade(self, account_name: str, uid: str) -> None:
+        """Delete one trade by uid in the background, then refresh."""
+        self._run_in_background(
+            self._store.delete_trade,
+            args=(account_name, uid),
+            on_done=lambda _result: self._app.refresh_all_accounts(),
+            on_error=self._on_trade_write_failed,
+            label=f"delete_trade({account_name})",
+        )
+
+    def _on_trade_write_failed(self, message: str) -> None:
+        # Part of a multi-trade save may have gone through; show what the
+        # store holds now rather than what the user last saw.
+        self._app.refresh_all_accounts()
+        self._warn_save_failed(message)
 
     def _safe_run(self, fn, *args, **kwargs) -> None:
         """Run `fn` on the next event-loop iteration, catching any exception.
@@ -582,11 +614,9 @@ class MainWindow(QMainWindow):
         dlg = self._trade_dialog()
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        trade = dlg.to_trade()
+        trade = dlg.to_trade()  # a new Trade, so it carries a new uid
         trade.account = account.name
-        account_trades = self._account_trades(account.name, self._all_trades())
-        account_trades.append(trade)
-        self._save_account(account.name, account_trades)
+        self._save_trades(account.name, [trade])
 
     def _on_edit_trade(self, source_index: int) -> None:
         account, account_trades = self._current_account_trades()
@@ -597,9 +627,10 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         updated = dlg.to_trade()
+        # The dialog builds a new Trade; it is still the same trade.
+        updated.uid = trade.uid
         updated.account = (trade.account or account.name).strip() or account.name
-        account_trades[source_index] = updated
-        self._save_account(updated.account, account_trades)
+        self._save_trades(updated.account, [updated])
 
     def _on_delete_trade(self, source_index: int) -> None:
         account, account_trades = self._current_account_trades()
@@ -611,26 +642,19 @@ class MainWindow(QMainWindow):
                        f"{trade.share_count:,d} shares?",
                        "Delete trade", destructive=True, detail="This can't be undone."):
             return
-        del account_trades[source_index]
-        self._save_account(account.name, account_trades)
+        self._delete_trade(account.name, trade.uid)
 
     def _on_move_trade(self, source_index: int, destination_account: str) -> None:
         """Move one trade from the current portfolio to another of this user's
         portfolios (trade-history right-click menu).
 
-        The store has no atomic multi-account write, so this does two
-        sequential `save_account_trades` calls — source first, then
-        destination. The order matters: saving the destination first would
-        let `LocalDataStore.save_account_trades` still see the moved trade
-        under its old account, keep it, and duplicate it. On a
-        FallbackDataStore both writes go through the offline sync queue, so a
-        remote failure mid-move is replayed on reconnect.
+        A move is one save of the trade under the destination account: the
+        store (and the server) find it by uid and re-home it.
         """
         account = self._app.currentAccount
         if account is None or destination_account == account.name:
             return
-        all_trades = self._all_trades()
-        src_trades = self._account_trades(account.name, all_trades)
+        src_trades = self._account_trades(account.name, self._all_trades())
         if not (0 <= source_index < len(src_trades)):
             return
         moved = src_trades[source_index]
@@ -641,33 +665,9 @@ class MainWindow(QMainWindow):
                        "Move trade"):
             return
 
-        # Compute the destination slice BEFORE retagging `moved`, otherwise
-        # `_account_trades(destination, ...)` would already include it and
-        # the trade would be written twice.
-        src_remaining = [t for t in src_trades if t is not moved]
-        dst_existing = self._account_trades(destination_account, all_trades)
-        moved.account = destination_account
-        dst_with_moved = dst_existing + [moved]
-        src_name = account.name
-
-        def _on_src_done(_result):
-            self._run_in_background(
-                self._store.save_account_trades,
-                args=(destination_account, dst_with_moved),
-                on_done=lambda _r: self._app.refresh_all_accounts(),
-                on_error=lambda msg: self._warn_save_failed(
-                    f"The trade was removed from {src_name} but couldn't be added to "
-                    f"{destination_account}: {msg}"),
-                label=f"save_account_trades({destination_account})",
-            )
-
-        self._run_in_background(
-            self._store.save_account_trades,
-            args=(src_name, src_remaining),
-            on_done=_on_src_done,
-            on_error=self._warn_save_failed,
-            label=f"save_account_trades({src_name})",
-        )
+        self._save_trades(
+            destination_account, [replace(moved, account=destination_account)],
+            failure_note=f"The trade couldn't be moved to {destination_account}: ")
 
     def _on_set_goal_target(self, value: float) -> None:
         """Update goal target(s) for the current account. Accounts in the
@@ -813,10 +813,12 @@ class MainWindow(QMainWindow):
         closing = dlg.to_trade()
         if closing.sell_price is None or closing.close_date is None:
             return
-        for t in matching:
-            t.sell_price = float(closing.sell_price)
-            t.close_date = closing.close_date
-        self._save_account(account_name, account_trades)
+        # A position can be several lots; each is its own trade and is saved
+        # on its own (all in one background call, in order).
+        self._save_trades(account_name, [
+            replace(t, sell_price=float(closing.sell_price), close_date=closing.close_date)
+            for t in matching
+        ])
 
     def _holding_for(self, instrument: str, account_trades: List[Trade]) -> Optional[Holding]:
         qty, avg = _combined_lot(instrument, _open_lots(account_trades, instrument, is_short=False))
@@ -824,13 +826,12 @@ class MainWindow(QMainWindow):
             return None
         return Holding(instrument=instrument, qty=qty, avg_cost=avg, notes="")
 
-    def _append_trade(self, dlg, account_name: str, account_trades: List[Trade]) -> None:
+    def _append_trade(self, dlg, account_name: str) -> None:
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         trade = dlg.to_trade()
         trade.account = account_name
-        account_trades.append(trade)
-        self._save_account(account_name, account_trades)
+        self._save_trades(account_name, [trade])
 
     def _mark_down(self, instrument: str, account_name: str, account_trades: List[Trade]) -> None:
         holding = self._holding_for(instrument, account_trades)
@@ -842,7 +843,7 @@ class MainWindow(QMainWindow):
             quantity_increment=self._trade_quantity_increment(),
             parent=self,
         )
-        self._append_trade(dlg, account_name, account_trades)
+        self._append_trade(dlg, account_name)
 
     def _double_down(self, instrument: str, account_name: str, account_trades: List[Trade]) -> None:
         holding = self._holding_for(instrument, account_trades)
@@ -852,7 +853,7 @@ class MainWindow(QMainWindow):
             holding=holding, current_mark=self._current_mark(instrument),
             quantity_increment=self._trade_quantity_increment(), parent=self,
         )
-        self._append_trade(dlg, account_name, account_trades)
+        self._append_trade(dlg, account_name)
 
     def _on_trade_menu(self, source_index: int) -> None:
         account, account_trades = self._current_account_trades()
@@ -918,10 +919,10 @@ class MainWindow(QMainWindow):
         dlg = FulfillOrderDialog(trade, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        trade.is_pending = False
-        trade.open_date = dlg.get_fill_date()
-        trade.buy_price = dlg.get_fill_price()
-        self._save_account(account.name, account_trades)
+        self._save_trades(account.name, [replace(
+            trade, is_pending=False,
+            open_date=dlg.get_fill_date(), buy_price=dlg.get_fill_price(),
+        )])
 
     # ------------------------------------------------------------------
     # Settings / updates / user account dialogs

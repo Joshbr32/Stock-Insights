@@ -186,12 +186,43 @@ export const Api = {
         return this._request("/trades");
     },
 
-    /** Replace all trades for one account. trades[] uses the TradeIn schema. */
+    /** Replace all trades for one account (bulk; used by restore and as the
+     *  fallback for pre-1.1 servers). trades[] uses the TradeIn schema; a
+     *  `uid` on an entry is kept by a 1.1 server, ignored by older ones. */
     replaceAccountTrades(accountName, trades) {
         return this._request(`/trades/${encodeURIComponent(accountName)}`, {
             method: "PUT",
             body: {account_name: accountName, trades},
         });
+    },
+
+    /** Upsert one trade by uid (server 1.1): insert, update in place, or
+     *  move it to `accountName`. Idempotent. `trade` uses TradeIn and must
+     *  carry `uid`. Rejects with code 404/405 on a pre-1.1 server; see
+     *  isLegacyRouteError(). */
+    putTrade(accountName, trade) {
+        return this._request(
+            `/trades/${encodeURIComponent(accountName)}/${encodeURIComponent(trade.uid)}`,
+            {method: "PUT", body: trade},
+        );
+    },
+
+    /** Delete one trade by uid (server 1.1). Idempotent: succeeds whether
+     *  or not the trade still exists. */
+    deleteTradeByUid(accountName, uid) {
+        return this._request(
+            `/trades/${encodeURIComponent(accountName)}/${encodeURIComponent(uid)}`,
+            {method: "DELETE"},
+        );
+    },
+
+    /** True when `err` means "this server has no per-trade routes" (a
+     *  pre-1.1 server answers 404 Not Found or 405 Method Not Allowed), so
+     *  the caller should fall back to replaceAccountTrades(). */
+    isLegacyRouteError(err) {
+        // 404/405: a pre-1.1 server. 503: a 1.1 server whose database has not
+        // been migrated yet (per-trade routes off, whole-account PUT still works).
+        return err?.code === 404 || err?.code === 405 || err?.code === 503;
     },
 
     getGoalGroup() {

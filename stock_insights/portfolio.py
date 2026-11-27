@@ -11,7 +11,9 @@ change to math or rounding here must be made there identically.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+import uuid
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -59,6 +61,20 @@ def _nyse_day_count(start: date, end: date) -> int:
 
 # ---------- Core models ----------
 
+_UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def new_trade_uid() -> str:
+    """A fresh trade id: 32 lowercase hex chars (uuid4 without dashes)."""
+    return uuid.uuid4().hex
+
+
+def _clean_uid(value) -> str:
+    """`value` as a valid uid, or a new one when it is missing or malformed.
+    Dashed / upper-case uuids are accepted and normalised."""
+    text = str(value or "").strip().lower().replace("-", "")
+    return text if _UID_RE.fullmatch(text) else new_trade_uid()
+
 
 @dataclass
 class Trade:
@@ -77,6 +93,15 @@ class Trade:
     # "no tag set". Schema-compatible with old backups: trade_from_dict
     # defaults missing values to "" so v1 backups load cleanly.
     tag: str = ""
+    # Stable identity, created once when the trade is first logged and kept
+    # through every edit, move, backup and sync (the server stores it as
+    # dbo.trades.client_id). It is what lets a save send one trade instead
+    # of the whole account. Not part of equality: two trades with the same
+    # content still compare equal, as they did before the field existed.
+    uid: str = field(default="", compare=False)
+
+    def __post_init__(self) -> None:
+        self.uid = _clean_uid(self.uid)
 
     def normalized_instrument(self) -> str:
         return (self.instrument or "").strip().upper()
@@ -336,6 +361,7 @@ def trade_to_dict(trade: Trade) -> dict:
         # `tag` is optional — old backups (without this field) deserialize
         # to an empty string via trade_from_dict's defaulting.
         "tag": (trade.tag or "").strip(),
+        "uid": trade.uid,
     }
 
 
@@ -364,6 +390,8 @@ def trade_from_dict(data: dict) -> Optional[Trade]:
             # `tag` is new (added with strategy filter); old persisted
             # trades default to "" — full forward-compat with v1 backups.
             tag=str(data.get("tag", "") or "").strip(),
+            # Missing in data written before uids existed: Trade generates one.
+            uid=str(data.get("uid", "") or ""),
         )
     except Exception:
         return None
@@ -382,9 +410,16 @@ def trades_from_json(raw) -> List[Trade]:
     out: List[Trade] = []
     if not isinstance(raw, list):
         return out
+    seen_uids = set()
     for item in raw:
         trade = trade_from_dict(item)
         if trade is not None and trade.share_count > 0:
+            # A uid must identify one trade. A hand-edited or merged file can
+            # repeat one; the later copy gets a new id instead of silently
+            # overwriting the first on the next per-trade save.
+            if trade.uid in seen_uids:
+                trade.uid = new_trade_uid()
+            seen_uids.add(trade.uid)
             out.append(trade)
     return out
 

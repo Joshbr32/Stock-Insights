@@ -18,6 +18,7 @@ QSettings (passed in): `portfolio/trade_history_visible_columns`, `portfolio/tra
 ## How to change it safely
 - `read_only=True` must never write: `_load_state` skips `sync_goal_dashboard_accounts()` (a goal-group write) in that mode.
 - `refresh_view` runs on every marks update (30 s) per tab: keep per-row work cheap (theme colours are looked up once per render).
+- Edit mode still saves the whole account (`save_account_trades`); `_edit_trade` copies the edited trade's `uid` onto the dialog's new `Trade`.
 - Numbers must match the QML view and pwa/js/portfolio.js (they all come from portfolio.py).
 
 ## Map

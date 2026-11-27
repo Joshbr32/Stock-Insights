@@ -12,17 +12,21 @@ Rejected   : <user home>/.stockinsights_sync_queue.rejected.json
 
 Actions
 -------
-save_trades      : {account_name, trades:[...]}
+save_trade       : {account_name, trade:{...}}   one trade, upsert by trade.uid
+delete_trade     : {account_name, uid}
+save_trades      : {account_name, trades:[...]}  whole account (restore, admin
+                   viewer, and every trade save queued by versions before 1.1)
 save_accounts    : {accounts:[...]}
 set_goal_target  : {account_name, value}
 set_goal_presets : {account_name, presets:[...]}
 set_goal_group   : {account_names:[...], shared_goal, individual_goals, individual_presets}
 save_watchlist   : {symbols:[...]}
 
-Every action replaces whole state on the server (full-replace PUTs), so
-replaying an entry twice is harmless.  That is what makes it safe to remove
-an entry only after the server confirmed it: a crash in between just means
-one repeated write on the next start.
+Every action either replaces whole state on the server (full-replace PUTs)
+or upserts / deletes one trade by its uid, so replaying an entry twice is
+harmless.  That is what makes it safe to remove an entry only after the
+server confirmed it: a crash in between just means one repeated write on the
+next start.
 
 All functions are safe to call from several threads of one process.  Two app
 instances sharing the file are not coordinated.
@@ -53,6 +57,8 @@ _lock = threading.RLock()
 _STRUCTURAL_ACTIONS = frozenset({"save_accounts", "set_goal_group"})
 _PER_ACCOUNT_ACTIONS = frozenset({"save_trades", "set_goal_target", "set_goal_presets"})
 _KNOWN_ACTIONS = _STRUCTURAL_ACTIONS | _PER_ACCOUNT_ACTIONS | {"save_watchlist"}
+# Writes of a single trade, merged by the trade's uid (see _superseded_trade_index).
+_PER_TRADE_ACTIONS = frozenset({"save_trade", "delete_trade"})
 
 _MAX_REJECTED = 50
 
@@ -141,6 +147,53 @@ def _merge_key(action: str, payload: dict) -> Optional[tuple]:
     return None
 
 
+def _trade_uid(action: str, payload) -> Optional[str]:
+    """The uid a queued per-trade entry is about, or None."""
+    if not isinstance(payload, dict):
+        return None
+    if action == "delete_trade":
+        return payload.get("uid") or None
+    if action == "save_trade":
+        trade = payload.get("trade")
+        return (trade.get("uid") or None) if isinstance(trade, dict) else None
+    return None
+
+
+def _superseded_trade_index(entries: List[dict], username: str, action: str, payload: dict) -> Optional[int]:
+    """Index of the queued entry a new save_trade / delete_trade makes
+    redundant, or None.
+
+    Walks this user's entries newest first, looking for the latest entry
+    about the same uid:
+
+    * save after save     the older save is dropped (the newer one carries
+                          the trade's full state, including its account)
+    * delete after save   the save is dropped; the delete stays, since the
+                          trade may already exist on the server
+    * delete after delete the older delete is dropped
+    * save after delete   nothing is dropped (delete, then create again)
+
+    The walk stops at a structural write and at any whole-account trade
+    save: those rewrite many trades at once, so a per-trade write queued
+    before one must still be replayed before it.
+    """
+    uid = _trade_uid(action, payload)
+    if uid is None:
+        return None
+    for idx in range(len(entries) - 1, -1, -1):
+        entry = entries[idx]
+        if entry.get("username", "") != username:
+            continue
+        entry_action = entry.get("action", "")
+        if entry_action in _STRUCTURAL_ACTIONS or entry_action == "save_trades":
+            return None
+        if _trade_uid(entry_action, entry.get("payload")) == uid:
+            if action == "save_trade" and entry_action == "delete_trade":
+                return None
+            return idx
+    return None
+
+
 def _superseded_index(entries: List[dict], username: str, action: str, payload: dict) -> Optional[int]:
     """Index of the queued entry a new (action, payload) write makes
     redundant, or None.
@@ -148,8 +201,10 @@ def _superseded_index(entries: List[dict], username: str, action: str, payload: 
     Walks this user's entries newest first.  A structural write is only
     merged with the entry directly before it; any other write is merged
     with the latest entry of the same key unless a structural write was
-    queued in between.
+    queued in between.  Per-trade writes follow _superseded_trade_index.
     """
+    if action in _PER_TRADE_ACTIONS:
+        return _superseded_trade_index(entries, username, action, payload)
     key = _merge_key(action, payload)
     if key is None:
         return None
@@ -211,8 +266,8 @@ def is_empty(username: Optional[str] = None) -> bool:
 def enqueue(username: str, action: str, payload: dict) -> None:
     """Append one write operation to the queue.
 
-    An older queued write that this one fully replaces (same action for the
-    same account, e.g. two saves of one account's trades) is dropped, so the
+    An older queued write that this one fully replaces (two saves of the
+    same trade, the same action for the same account) is dropped, so the
     queue stays about as large as the number of things edited offline
     instead of growing with every edit.
     """
@@ -300,9 +355,18 @@ def flush(remote_store, username: Optional[str] = None) -> Tuple[int, int]:
 
 def _replay(store, action: str, payload: dict) -> None:
     """Execute one queued action against the remote store."""
-    from .portfolio import trades_from_json
+    from .portfolio import trade_from_dict, trades_from_json
 
-    if action == "save_trades":
+    if action == "save_trade":
+        trade = trade_from_dict(payload["trade"])
+        if trade is None:
+            raise ValueError("queued trade cannot be read")
+        store.save_trade(payload["account_name"], trade)
+
+    elif action == "delete_trade":
+        store.delete_trade(payload["account_name"], payload["uid"])
+
+    elif action == "save_trades":
         store.save_account_trades(payload["account_name"], trades_from_json(payload.get("trades", [])))
 
     elif action == "save_accounts":

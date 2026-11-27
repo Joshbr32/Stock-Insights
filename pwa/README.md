@@ -27,38 +27,18 @@ The visual language is "Harbor", shared with the desktop app:
 
 ## Setup (one-time)
 
-### 1. Patch your server
+### 1. Run the sync server
 
-Open `misc_helpers/server.py` and paste the contents of
-`server_quotes_patch.py` (everything below the marker line) into the
-route-handlers section — anywhere before the `_test_connection` function
-works. This adds a `GET /quotes` endpoint that the PWA needs for live
-prices (it proxies through your server's existing `yfinance` install,
-which avoids browser CORS issues with Yahoo).
-
-Restart the server.
+`server/server.py` already has everything the PWA needs: the `GET /quotes`
+endpoint for live prices (proxied server-side, which avoids browser CORS
+issues with the quote providers) and a static mount that serves this
+`pwa/` folder from the same origin. Start the server and the app is live at
+`http://your-server:8742/`.
 
 ### 2. Decide how to host the static files
 
-Pick one of these — they all work:
-
-**Option A — serve from the same FastAPI server (simplest).** Add this
-near the top of `server.py`, after the `app = FastAPI(...)` line:
-
-```python
-from fastapi.staticfiles import StaticFiles
-import pathlib
-
-_PWA_DIR = pathlib.Path(__file__).parent / "pwa"
-if _PWA_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(_PWA_DIR), html=True), name="pwa")
-```
-
-Then copy this whole folder into `misc_helpers/pwa/` next to
-`server.py`. Restart, and it's live at `http://your-server:8742/`.
-
-> ⚠️ Mount the static files **last** so it doesn't shadow API routes.
-> If routes start 404'ing, move the mount to the bottom of `server.py`.
+**Option A — the sync server (default).** Nothing to do; see step 1. The
+mount is registered last in `server.py` so it never shadows API routes.
 
 **Option B — host the static files anywhere.** Vercel, Netlify, GitHub
 Pages, an nginx box, `python -m http.server` on your LAN — anything that
@@ -131,15 +111,15 @@ The token lasts 30 days, so you won't need to log in every time.
 │   ├── ui.js                  # DOM builders, formatting, safe localStorage
 │   └── demo.js                # ?demo fixtures (loaded on demand, not precached)
 ├── icons/                     # PWA icons (192, 512, maskable)
-├── make_icons.py              # Regenerate icons (optional)
-└── server_quotes_patch.py     # Server-side patch — adds /quotes endpoint
+└── make_icons.py              # Regenerate icons (optional)
 ```
 
 ---
 
 ## How it talks to your server
 
-The PWA hits these existing endpoints (no new ones beyond `/quotes`):
+The PWA uses these endpoints (contract for server 1.1:
+`docs/api/server-1.1-changes.md`):
 
 | Verb | Path                   | Used for                                     |
 |------|------------------------|----------------------------------------------|
@@ -147,16 +127,22 @@ The PWA hits these existing endpoints (no new ones beyond `/quotes`):
 | POST | /auth/logout           | Sign out                                     |
 | GET  | /accounts              | Account list + targets                       |
 | GET  | /trades                | All trades for user                          |
-| PUT  | /trades/{account_name} | Save trades for one account (atomic replace) |
+| PUT  | /trades/{account_name}/{uid} | Save one trade (add, edit, or move to this account) |
+| DELETE | /trades/{account_name}/{uid} | Delete one trade (idempotent)        |
+| PUT  | /trades/{account_name} | Replace all trades of one account (restore, old servers) |
 | GET  | /goal-group            | Shared goal config                           |
 | GET  | /watchlist             | Watchlist symbols                            |
 | PUT  | /watchlist             | Save watchlist                               |
-| GET  | /quotes?symbols=A,B,C  | **NEW** — live prices                        |
+| GET  | /quotes?symbols=A,B,C  | Live prices                                  |
 
-Trade writes use the same atomic-replace-account-trades pattern as the
-desktop app, so adding/editing/deleting from your phone won't conflict
-with simultaneous edits on desktop *for different accounts*. Within a
-single account, last-write-wins.
+Every trade carries a `uid` (32 lowercase hex chars) that the client creates
+when the trade is first logged, so saving, editing and deleting touch only
+that one trade: edits on the phone and the desktop no longer overwrite each
+other unless they change the same trade. Moving a trade to another account
+is a `PUT` under the new account name. Against a pre-1.1 server (which
+answers 404/405 on the per-trade routes) the app falls back, for the rest
+of the session, to the old whole-account replace. Restore always uses the
+whole-account replace.
 
 ---
 
@@ -190,12 +176,13 @@ non-deploy commits with `git commit --no-verify`.
   `@media (prefers-color-scheme: dark)`. They mirror the Harbor token table in
   `docs/design/design-system.md`; change both together. Fonts are the system
   stack only (no web fonts, so cold starts and offline use cost nothing).
-- **Quote refresh interval** — edit `QUOTE_TTL` in `server_quotes_patch.py`
-  (default 20s). The PWA polls `/quotes` every 60 s while visible
+- **Quote refresh interval** — the server caches each quote for `QUOTE_TTL`
+  seconds (the quote cache in `server/server.py`, default 20 s). The PWA polls `/quotes` every 60 s while visible
   (`QUOTE_POLL_MS` in `js/app.js`), stops in a background tab, and reloads
   everything when you come back after 5 minutes (`STALE_RELOAD_MS`).
-- **Demo mode** - open `index.html?demo` (or `?demo=login`, `?demo=offline`)
-  to see every view with fixture data and no network. Serve the folder with
+- **Demo mode** - open `index.html?demo` (or `?demo=login`, `?demo=offline`,
+  `?demo=legacy` for a pre-1.1 server without per-trade routes) to see every
+  view with fixture data and no network. Serve the folder with
   `python -m http.server 8000 --directory pwa`. Demo mode never registers the
   service worker.
 - **Adding new fields to a trade** — add to the `incoming` object in
@@ -211,9 +198,11 @@ non-deploy commits with `git commit --no-verify`.
   picks them up. (Easy to add — `Api.saveAccounts` is wired, just no UI
   for it yet.)
 - **Trade reordering** — the desktop has drag-to-reorder; on mobile,
-  trades sort newest-first by id.
+  trades sort newest-first.
 - **No offline writes** — service worker caches the app shell so it
   *opens* offline, but writes always go straight to the server.
-- **Trade tags** - the PWA sends `tag` with every trade, but the server's
-  `TradeIn` model has no `tag` field yet, so tags set on the phone are dropped
-  on save until the server stores them.
+- **Trade tags** - stored from server 1.1 on; a pre-1.1 server drops them.
+- **Numbers match the desktop** - `js/portfolio.js` mirrors
+  `stock_insights/portfolio.py` exactly (see `docs/code/pwa/js/portfolio.md`).
+  Trading days are weekdays only on both sides; if `pandas_market_calendars`
+  is ever installed for the desktop, its NYSE-holiday counts will differ.

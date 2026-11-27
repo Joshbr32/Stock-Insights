@@ -5,13 +5,14 @@
 ## Key types and functions
 | Name | Kind | What it does / contract |
 |---|---|---|
-| `Trade` | dataclass | One trade. `buy_price` = entry (for a short, the short price); `sell_price` = exit (for a short, the cover price). `is_closed` needs BOTH sell_price and close_date. `trade_profit` is None unless closed; for shorts it is (buy-sell)*qty. `status` is WAITING/SHORT/COVERED/OPEN/CLOSED. |
+| `Trade` | dataclass | One trade. `buy_price` = entry (for a short, the short price); `sell_price` = exit (for a short, the cover price). `is_closed` needs BOTH sell_price and close_date. `trade_profit` is None unless closed; for shorts it is (buy-sell)*qty. `status` is WAITING/SHORT/COVERED/OPEN/CLOSED. `uid` (32 lowercase hex, uuid4) is the trade's identity for per-trade saves: generated in `__post_init__` when missing or malformed (dashed/upper-case uuids are normalised), kept by `dataclasses.replace`, excluded from `==` (`compare=False`). `tag` is a free-form strategy label. |
+| `new_trade_uid()` | fn | A fresh uid. |
 | `TradeRow`, `Holding`, `HoldingView`, `PortfolioSummary`, `TradeAnalytics`, `GoalProgress` | dataclasses | Return shapes. The QML bridge and widgets read the field names, so do not rename them. |
 | `_nyse_day_count(start, end)` | fn, `lru_cache(8192)` | Inclusive trading-day count. Uses the mcal schedule when available, otherwise O(1) weekday arithmetic. It is cached because every tick recounts the same date pairs. |
 | `business_days_between / _elapsed_in_year / _remaining_in_year` | fn | Wrappers over `_nyse_day_count`. `between` returns None when either date is None. |
 | `parse_date(value)` | fn | Accepts date, datetime, ISO, `Y/m/d`, `m/d/Y`, `d/m/Y`. Blank or "—" gives None; anything else raises ValueError. |
 | `filter_trades_by_date_range_with_orig_index(trades, key, today)` | fn | Returns `[(orig_index, trade)]`. MainWindow's edit and delete rely on the preserved index. Pending trades are always kept; the date used is close_date or open_date; an unknown key means "all". |
-| `trade_to_dict / trade_from_dict / trades_to_json / trades_from_json` | fn | Wire and backup format. `trades_from_json` takes a JSON string OR an already-parsed list, and drops bad rows and rows with share_count <= 0. A missing `tag` becomes "". |
+| `trade_to_dict / trade_from_dict / trades_to_json / trades_from_json` | fn | Wire and backup format. `trades_from_json` takes a JSON string OR an already-parsed list, and drops bad rows and rows with share_count <= 0. A missing `tag` becomes "". `uid` is written by `trade_to_dict`; a missing one is generated on load, and `trades_from_json` gives a repeated uid in one list a new value. |
 | `solve_buy_mark_for_target_avg` | fn | The buy price needed to bring the average cost to a target. Raises ValueError on bad input. |
 | `compute_trade_rows(trades)` | fn | One `TradeRow` per trade (index = position in the input). days_to_close is counted in trading days. |
 | `compute_holdings_from_trades(trades)` | fn | Groups open, non-pending trades by symbol. Shorts get their own bucket with negative qty. Sorted shorts first (qty<0), then by symbol. |
@@ -30,13 +31,15 @@ No persistence. Module state: `_nyse_cal` (the calendar object or None) and the 
 - If `_nyse_day_count` ever depends on anything other than its two dates, drop the cache or add that input to the key. Tests can call `_nyse_day_count.cache_clear()`.
 - Verify with `./.venv/Scripts/python.exe -m pytest tests/test_portfolio.py -q`. For a refactor, also snapshot the public functions' outputs on a synthetic trade list before and after, and diff them.
 
+- `uid` and `tag` are identity/labels, not math: nothing in the compute_* functions may depend on `uid`. The PWA mirrors the same field (`pwa/js`), and the server stores it as `dbo.trades.client_id`.
+
 ## Map
-- 1-17 module docstring, imports
-- 19-58 NYSE calendar + cached `_nyse_day_count`
-- 60-211 dataclasses (`Trade` 64, `TradeAnalytics` 167, `GoalProgress` 198)
-- 213-263 date helpers, business-day wrappers
-- 265-322 date-range filter
-- 324-407 serialisation, `solve_buy_mark_for_target_avg`
-- 409-552 trade rows, holdings, realized-by-symbol, `compute_portfolio`
-- 554-648 `compute_trade_analytics` (drawdown ~607)
-- 650-687 `compute_goal_progress`
+- 1-19 module docstring, imports
+- 21-60 NYSE calendar + cached `_nyse_day_count`
+- 62-236 uid helpers (67-77), dataclasses (`Trade` 80, `TradeAnalytics` 192, `GoalProgress` 223)
+- 238-288 date helpers, business-day wrappers
+- 290-347 date-range filter
+- 349-442 serialisation, `solve_buy_mark_for_target_avg`
+- 444-587 trade rows, holdings, realized-by-symbol, `compute_portfolio`
+- 589-683 `compute_trade_analytics` (drawdown ~642)
+- 685-722 `compute_goal_progress`

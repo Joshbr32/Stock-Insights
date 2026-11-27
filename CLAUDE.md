@@ -7,6 +7,7 @@ A personal trade tracker for a small group of friends. Three pieces share one SQ
 | Desktop app | `main.py`, `stock_insights/` | PySide6: QWidget shell + dialogs, QML main content  |
 | Phone app   | `pwa/`                       | Vanilla JS PWA, no build step, service worker       |
 | Sync server | `server/server.py`           | FastAPI + pyodbc; also serves `pwa/`; public via Cloudflare Tunnel |
+| Server PC   | `si_controller/`, `si_manager/` | Controller keeps the server running from boot; the manager window watches it |
 
 ## Start here
 
@@ -20,9 +21,12 @@ A personal trade tracker for a small group of friends. Three pieces share one SQ
 - **Live data.** `server/.env` and the `StockInsights` SQL Server are production. Never read `.env`, connect to the
   database, or call write endpoints on `si.coloniallawns.ca` / `COLONIAL_SERVER:8742`. Tests and scripts use fakes.
 - **Never touch the user's real settings** (`QSettings("StockInsights", "StocksGUI")`, `~/.stockinsights_sync_queue.json`).
-  Scripts redirect QSettings to a temp dir (see `scripts/ui_snapshot.py`).
+  Scripts redirect QSettings to a temp dir (see `scripts/ui_snapshot.py`). `QSettings(org, app)` ignores
+  `setDefaultFormat` and writes to the registry: tests must use the `isolated` fixture in `tests/test_sync.py`.
 - **Math mirror.** `stock_insights/portfolio.py` and `pwa/js/portfolio.js` compute the same numbers; change both.
   Known divergences are listed in `docs/code/pwa/js/portfolio.md`.
+- **Never touch the server PC's services, scheduled tasks or `%ProgramData%\StockInsights`.** Install scripts
+  (`server/install_autostart.ps1`) are run by the owner, elevated; see `docs/ops/server-pc.md`.
 - **HTTP contract.** `stock_insights/api_client.py` and `pwa/js/api.js` both talk to `server/server.py`; a route or
   JSON change touches all three.
 - **Versions.** Changing anything under `pwa/` that the service worker caches requires bumping `VERSION` in `pwa/sw.js`

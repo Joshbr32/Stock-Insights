@@ -4,44 +4,41 @@
 // and works offline. Colours come from CSS custom properties in
 // styles.css; amber (`--pace`) appears only on the pace tick and the
 // equity curve's pace line, as the Harbor design system requires.
+//
+// Pace maths mirrors the desktop pace rail
+// (qml_bridge.AccountController._pace_map / _build_pace_line); the
+// trading-day arithmetic itself lives in portfolio.js.
 
+import {goalExpectedByNow, tradingDaysBetween} from "./portfolio.js";
 import {el, fmtShortDate, money, plural, reducedMotion, signedMoney, svg} from "./ui.js";
 
 // ── Pace maths ────────────────────────────────────────────────────────
 
-/** Weekdays in [start, end], inclusive, by calendar day. Matches
- *  portfolio.js's tradingDaysBetween() (weekday counting, no holidays). */
-export function weekdaysBetween(start, end) {
-    const a = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-    const b = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-    if (b < a) return 0;
-    const days = Math.round((b - a) / 86400000) + 1;
-    const full = Math.floor(days / 7);
-    let count = full * 5;
-    for (let i = 0, dow = (a.getDay() + full * 7) % 7; i < days % 7; i++, dow = (dow + 1) % 7) {
-        if (dow !== 0 && dow !== 6) count++;
-    }
-    return count;
-}
+/** Weekdays in [start, end], inclusive. Kept as an export for callers;
+ *  same function as portfolio.js's tradingDaysBetween(). */
+export const weekdaysBetween = tradingDaysBetween;
 
-/** Fraction (0..1) of this year's trading days elapsed at `date`. The goal
- *  deadline is Dec 31 of the current year (same as computeGoalProgress). */
+/** Fraction (0..1) of this year's goal that should be realised by `date`:
+ *  elapsed / (elapsed + remaining) trading days, today counted in both,
+ *  exactly as compute_goal_progress does. */
 export function paceFraction(date, year = new Date().getFullYear()) {
     const jan1 = new Date(year, 0, 1), dec31 = new Date(year, 11, 31);
     if (date < jan1) return 0;
     if (date > dec31) return 1;
-    return weekdaysBetween(jan1, date) / weekdaysBetween(jan1, dec31);
+    return goalExpectedByNow(1, date);
 }
 
 /** Where realised P/L should be today to hit `target` by Dec 31. */
-export const paceToday = (target, today = new Date()) => target * paceFraction(today);
+export const paceToday = (target, today = new Date()) => goalExpectedByNow(target, today);
 
-/** "$1,240 ahead of pace" / "$860 behind pace" / "On pace" / "Goal reached". */
-export function paceSentence(realized, target, pace) {
+/** Pace status line, worded like the desktop rail: "Goal reached",
+ *  "$1,240 ahead of pace" (also when exactly on pace), "$860 behind pace",
+ *  or "Close a trade to start your pace" before the first close. */
+export function paceSentence(realized, target, pace, hasClosed = true) {
+    if (!hasClosed) return "Close a trade to start your pace";
     if (realized >= target) return "Goal reached";
     const diff = realized - pace;
-    if (Math.abs(diff) < 1) return "On pace";
-    return `${money(Math.abs(diff), {whole: true})} ${diff > 0 ? "ahead of" : "behind"} pace`;
+    return `${money(Math.abs(diff), {whole: true})} ${diff >= 0 ? "ahead of" : "behind"} pace`;
 }
 
 // ── Pace rail ─────────────────────────────────────────────────────────
@@ -51,16 +48,17 @@ export function paceSentence(realized, target, pace) {
 //  |==================●=======|-----------------------------|
 //  $0                today's pace $3,620               $10,000
 //
-// opts: {title, target, realized, today?, compact?, animate?}
-// `animate` runs the 400 ms fill once (the caller decides when: first
-// load of an account); it is skipped under prefers-reduced-motion.
-export function paceRail({title, target, realized, today = new Date(), compact = false, animate = false}) {
+// opts: {title, target, realized, hasClosed?, today?, compact?, animate?}
+// `hasClosed` false shows the neutral "start" state (a new account is not
+// "behind"). `animate` runs the 400 ms fill once (the caller decides when:
+// first load of an account); it is skipped under prefers-reduced-motion.
+export function paceRail({title, target, realized, hasClosed = true, today = new Date(), compact = false, animate = false}) {
     const pace = paceToday(target, today);
     const clamp = v => Math.max(0, Math.min(100, v));
     const fillPct = target > 0 ? clamp((realized / target) * 100) : 0;
     const pacePct = target > 0 ? clamp((pace / target) * 100) : 0;
-    const status = paceSentence(realized, target, pace);
-    const ahead = realized >= pace;
+    const status = paceSentence(realized, target, pace, hasClosed);
+    const statusClass = !hasClosed ? "" : realized >= pace ? " is-ahead" : " is-behind";
 
     const fill = el("div", {class: "pace-fill"});
     const dot = el("div", {class: "pace-dot"});
@@ -91,7 +89,7 @@ export function paceRail({title, target, realized, today = new Date(), compact =
     return el("section", {class: "pace" + (compact ? " pace-compact" : "")}, [
         el("div", {class: "pace-head"}, [
             el("h2", {class: "pace-goal"}, title),
-            el("p", {class: "pace-status " + (ahead ? "is-ahead" : "is-behind")}, status),
+            el("p", {class: "pace-status" + statusClass}, status),
         ]),
         el("p", {class: "pace-value num"}, [
             signedMoney(realized, {whole: compact}),
@@ -110,8 +108,9 @@ export function paceRail({title, target, realized, today = new Date(), compact =
 //
 // curve: [{x: epoch ms, y: cumulative realised P/L}] from buildEquityCurve.
 // opts.paceTarget: when set, draws the amber pace line for this year's goal
-//   and extends the x-axis to today so "where you are vs where you should
-//   be" reads directly. Only pass it when the curve is all-time realised
+//   (straight from $0 on Jan 1 to today's expected value, like the
+//   desktop's _build_pace_line) and widens the x-axis to cover Jan 1 ..
+//   today so "where you are vs where you should be" reads directly. Only pass it when the curve is all-time realised
 //   P/L for the same trades the goal counts (otherwise they don't compare).
 //
 // The SVG uses a fixed viewBox stretched to the card (preserveAspectRatio
@@ -119,23 +118,19 @@ export function paceRail({title, target, realized, today = new Date(), compact =
 // positioned in percentages so they stay round at any width.
 export function equityChart(curve, {paceTarget = null} = {}) {
     const W = 320, H = 140, PADY = 10;
-    const now = Date.now();
     const xs = curve.map(p => p.x), ys = curve.map(p => p.y);
-    const xMin = xs[0];
-    const xMax = paceTarget != null ? Math.max(xs[xs.length - 1], now) : xs[xs.length - 1];
+    const first = xs[0];  // the $0 seed, one day before the first close
 
-    // Pace line samples (a straight line would ignore weekends; 24 samples
-    // is visually exact at phone width).
-    let pacePts = [];
+    // Pace line: two points, as on the desktop chart.
+    const pacePts = [];
     if (paceTarget != null) {
-        const start = Math.max(xMin, new Date(new Date().getFullYear(), 0, 1).getTime());
-        if (start < xMax) {
-            for (let i = 0; i <= 24; i++) {
-                const x = start + (xMax - start) * i / 24;
-                pacePts.push({x, y: paceTarget * paceFraction(new Date(x))});
-            }
-        }
+        const now = new Date();
+        const todayClose = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 16).getTime();
+        pacePts.push({x: new Date(now.getFullYear(), 0, 1).getTime(), y: 0},
+            {x: todayClose, y: paceToday(paceTarget, now)});
     }
+    const xMin = pacePts.length ? Math.min(first, pacePts[0].x) : first;
+    const xMax = pacePts.length ? Math.max(xs[xs.length - 1], pacePts[1].x) : xs[xs.length - 1];
 
     const allY = ys.concat(pacePts.map(p => p.y));
     const yMin = Math.min(0, ...allY), yMax = Math.max(0, ...allY);
@@ -164,7 +159,7 @@ export function equityChart(curve, {paceTarget = null} = {}) {
 
     const trades = curve.length - 1;  // curve is seeded with a zero point
     const label = `Equity curve. Realised P/L ${signedMoney(last.y)} over ${plural(trades, "closed trade")}, `
-        + `${fmtShortDate(xMin + 86400000)} to ${fmtShortDate(last.x)}.`
+        + `${fmtShortDate(first + 86400000)} to ${fmtShortDate(last.x)}.`
         + (pacePts.length ? " The dashed line is the pace needed to reach the goal." : "")
         + " Use the arrow keys to step through points.";
 
@@ -225,7 +220,7 @@ export function equityChart(curve, {paceTarget = null} = {}) {
     return el("div", {class: "eq"}, [
         plot,
         el("div", {class: "eq-axis", "aria-hidden": "true"}, [
-            el("span", {}, fmtShortDate(xMin + 86400000)),
+            el("span", {}, fmtShortDate(xMin === first ? first + 86400000 : xMin)),
             pacePts.length ? el("span", {class: "eq-legend"}, [el("i", {class: "eq-legend-pace"}), "Pace"]) : null,
             el("span", {}, paceTarget != null ? "Today" : fmtShortDate(last.x)),
         ]),

@@ -18,6 +18,8 @@ import {
     computePortfolio,
     filterTradesByDateRange,
     isClosed,
+    cleanTradeUid,
+    newTradeUid,
     normalizeTrade,
     realizedBySymbol,
     tradeProfit,
@@ -163,6 +165,10 @@ function applyFilters(trades) {
     return out;
 }
 
+/** True once any trade has closed: before that the pace rail shows the
+ *  neutral "start" state, as the desktop does. */
+const hasClosedTrade = trades => trades.some(t => isClosed(t) && !t.is_pending);
+
 function availableTags() {
     const set = new Set();
     for (const t of State.trades) if (t.tag) set.add(t.tag);
@@ -195,10 +201,11 @@ function goalForSelection() {
         target: combined, trades: State.trades, covers: true};
 }
 
-/** TradeIn payload for PUT /trades/{account}. `tag` is sent for when the
- *  server stores it; today's TradeIn model ignores unknown fields. */
+/** TradeIn payload for PUT /trades/{account}[/{uid}]. A 1.1 server stores
+ *  `uid` and `tag`; an older one ignores fields it doesn't know. */
 function toTradeIn(t) {
     return {
+        uid: t.uid,
         instrument: t.instrument, share_count: t.share_count,
         buy_price: t.buy_price, sell_price: t.sell_price,
         open_date: t.open_date, close_date: t.close_date,
@@ -574,11 +581,12 @@ function viewHome() {
 
     let hero;
     if (goal) {
-        const realized = computeGoalProgress(goal.trades, goal.target).realized;
+        const realized = computeGoalProgress(goal.trades, goal.target).realized_profit;
         const animate = !State.animated.has(goal.key);
         State.animated.add(goal.key);
         hero = el("div", {class: "panel panel-hero"}, [
-            paceRail({title: goal.title, target: goal.target, realized, animate}),
+            paceRail({title: goal.title, target: goal.target, realized,
+                hasClosed: hasClosedTrade(goal.trades), animate}),
         ]);
     } else {
         hero = el("div", {class: "panel panel-hero"}, [
@@ -692,8 +700,8 @@ function performanceSection(trades, goal, onChange) {
             ["Average loss", signedMoney(an.avg_loss), tone(an.avg_loss)],
             ["Best trade", signedMoney(an.best_trade), tone(an.best_trade)],
             ["Worst trade", signedMoney(an.worst_trade), tone(an.worst_trade)],
-            ["Profit factor", an.profit_factor === Infinity ? "∞"
-                : an.profit_factor == null ? "—" : an.profit_factor.toFixed(2)],
+            // null with no losses (infinite) or no wins, as on the desktop.
+            ["Profit factor", an.profit_factor == null ? "—" : an.profit_factor.toFixed(2)],
             ["Largest drawdown", an.max_drawdown ? money(-an.max_drawdown) : "—", an.max_drawdown ? "bad" : ""],
             ["Current drawdown", an.current_drawdown ? money(-an.current_drawdown) : "—", an.current_drawdown ? "bad" : ""],
         ]), {meta: DATE_RANGE_LABELS[State.dateRangeKey] + (State.tagFilter ? `, tag ${State.tagFilter}` : "")}),
@@ -887,8 +895,60 @@ function openTradeEditor(existing) {
     openDialog(existing ? `Edit ${existing.instrument} trade` : "Log trade", form);
 }
 
-/** Writes are whole-account replaces (PUT /trades/{account}); a trade that
- *  moves account rewrites both accounts. */
+// ── Trade writes ──────────────────────────────────────────────────────
+// A 1.1 server takes one trade at a time (PUT/DELETE /trades/{account}/{uid});
+// moving a trade is a PUT under the new account. A pre-1.1 server answers
+// 404/405 (or 503 while its database is unmigrated) on those routes,
+// after which this session uses the old
+// whole-account replace (PUT /trades/{account}) for every write.
+let perTradeRoutes = true;
+
+/** Runs `perTrade()`; on a pre-1.1 server runs `legacy()` instead. */
+async function writeTrades(perTrade, legacy) {
+    if (perTradeRoutes) {
+        try {
+            return await perTrade();
+        } catch (ex) {
+            if (!Api.isLegacyRouteError(ex)) throw ex;
+            perTradeRoutes = false;
+            console.info("Server has no per-trade routes; using whole-account saves.");
+        }
+    }
+    return legacy();
+}
+
+/** Upsert one trade (new or edited, possibly moved to another account). */
+function saveTrade(existing, target, trade) {
+    return writeTrades(
+        async () => {
+            try {
+                return await Api.putTrade(target, toTradeIn(trade));
+            } catch (ex) {
+                // 409: the uid belongs to someone else's trade. Take a fresh
+                // uid and try once more; never loop.
+                if (ex?.code !== 409) throw ex;
+                trade.uid = newTradeUid();
+                return Api.putTrade(target, toTradeIn(trade));
+            }
+        },
+        async () => {
+            const touched = new Set([target]);
+            if (existing?.account && existing.account !== target) touched.add(existing.account);
+            for (const name of touched) {
+                const list = tradesFor(name).filter(x => x.uid !== trade.uid);
+                if (name === target) list.push(trade);
+                await Api.replaceAccountTrades(name, list.map(toTradeIn));
+            }
+        });
+}
+
+function removeTrade(existing) {
+    return writeTrades(
+        () => Api.deleteTradeByUid(existing.account, existing.uid),
+        () => Api.replaceAccountTrades(existing.account,
+            tradesFor(existing.account).filter(x => x.uid !== existing.uid).map(toTradeIn)));
+}
+
 async function saveTradeFromForm(existing, form, submit, err) {
     const fd = new FormData(form);
     const incoming = {
@@ -914,13 +974,8 @@ async function saveTradeFromForm(existing, form, submit, err) {
     submit.textContent = "Saving…";
 
     try {
-        const touched = new Set([target]);
-        if (existing?.account && existing.account !== target) touched.add(existing.account);
-        for (const name of touched) {
-            const list = tradesFor(name).filter(x => !existing || x.id !== existing.id);
-            if (name === target) list.push({account: target, ...incoming});
-            await Api.replaceAccountTrades(name, list.map(toTradeIn));
-        }
+        // A new trade gets its uid here, so a retried save can't duplicate it.
+        await saveTrade(existing, target, {...incoming, account: target, uid: existing?.uid || newTradeUid()});
         closeDialog();
         await reloadTrades();
         renderView();
@@ -938,8 +993,7 @@ async function saveTradeFromForm(existing, form, submit, err) {
 async function deleteTrade(existing) {
     if (!confirm(`Delete this ${existing.instrument} trade? This can't be undone.`)) return;
     try {
-        const rest = tradesFor(existing.account).filter(x => x.id !== existing.id);
-        await Api.replaceAccountTrades(existing.account, rest.map(toTradeIn));
+        await removeTrade(existing);
         closeDialog();
         await reloadTrades();
         renderView();
@@ -974,15 +1028,16 @@ function goalPanel(name, target, trades) {
     const prog = computeGoalProgress(trades, target);
     const {summary} = portfolioOf(trades);
     return panel(name, [
-        paceRail({title: `${money(target, {whole: true})} by Dec 31`, target, realized: prog.realized, compact: true}),
+        paceRail({title: `${money(target, {whole: true})} by Dec 31`, target, realized: prog.realized_profit,
+            hasClosed: hasClosedTrade(trades), compact: true}),
         kv([
             ["Total P/L incl. open positions", signedMoney(summary.total_pl), tone(summary.total_pl)],
             ["Left to reach the goal", money(prog.remaining_profit)],
-            ["Needed per month", money(prog.monthly_to_goal)],
-            ["Needed per week", money(prog.weekly_to_goal)],
-            ["Needed per trading day", money(prog.daily_to_goal)],
-            ["Average per trading day so far", signedMoney(prog.avg_daily), tone(prog.avg_daily)],
-            ["Trading days left", String(prog.days_remaining)],
+            ["Needed per month", money(prog.monthly_profit_to_goal)],
+            ["Needed per week", money(prog.weekly_profit_to_goal)],
+            ["Needed per trading day", money(prog.daily_profit_to_goal)],
+            ["Average per trading day so far", signedMoney(prog.avg_daily_profit), tone(prog.avg_daily_profit)],
+            ["Trading days left", String(prog.business_days_remaining)],
         ]),
     ]);
 }
@@ -1192,10 +1247,18 @@ async function applyBackupSnapshot(snap) {
     await attempt("watchlist", () => Api.setWatchlist(snap.watchlist));
 
     const byAccount = new Map();
+    const seenUids = new Set();
     for (const t of snap.trades) {
         const acct = (t.account || "").trim() || snap.accounts[0] || "Default";
         if (!byAccount.has(acct)) byAccount.set(acct, []);
-        byAccount.get(acct).push(t);
+        // Keep a valid, first-seen uid (the server keeps it). Drop a malformed
+        // or repeated one and let the server generate it, rather than have
+        // the account rejected (422) or one trade overwrite another.
+        const {uid, ...rest} = t;
+        const clean = cleanTradeUid(uid);
+        const keep = clean && !seenUids.has(clean);
+        if (keep) seenUids.add(clean);
+        byAccount.get(acct).push(keep ? {...rest, uid: clean} : rest);
     }
     for (const [acct, ts] of byAccount) {
         await attempt(`trades for ${acct}`, () => Api.replaceAccountTrades(acct, ts));

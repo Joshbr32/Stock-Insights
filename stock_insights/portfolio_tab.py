@@ -715,6 +715,8 @@ class PortfolioTab(QWidget):
         )
         if dlg.exec() != QDialog.DialogCode.Accepted: return
         updated = dlg.to_trade()
+        # The dialog builds a new Trade; keep the identity of the edited one.
+        updated.uid = self._trades[source_index].uid
         updated.account = (self._trades[source_index].account or self._account_name).strip() or self._account_name
         self._trades[source_index] = updated
         self._save_trades()

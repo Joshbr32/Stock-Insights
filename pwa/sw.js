@@ -21,7 +21,7 @@
 //                trade tags, mobile backup/restore
 // v5 (May 2026): per-symbol drill-down modal (mini equity curve +
 //                chronological trade list inside holding detail)
-const VERSION = "si-shell-v6";
+const VERSION = "si-shell-v7";
 const CACHE_PREFIX = "si-shell-";
 const SHELL = [
   "./",

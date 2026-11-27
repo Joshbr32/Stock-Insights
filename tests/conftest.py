@@ -1,6 +1,7 @@
 """Shared pytest setup: make the repo root importable and provide a fake store.
 
-No Qt event loop or network is needed by any test in this folder.
+No test needs a Qt event loop or the internet. test_sync.py and test_controller.py
+use throwaway HTTP servers on 127.0.0.1; test_server.py fakes pyodbc.
 """
 from __future__ import annotations
 

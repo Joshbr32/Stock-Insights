@@ -19,6 +19,7 @@
 ## Data and state
 - User-chosen CSV and backup paths (from a file dialog in main_window).
 - `~/.stock_insights/auto_backups/*.json`: the newest 5 (`AUTO_BACKUP_KEEP`) are kept.
+- Each trade in a backup carries `uid` and `tag` (from `trade_to_dict`). Backups made before uids existed restore fine: a uid is generated per trade. `BACKUP_SCHEMA_VERSION` stays 1 (the field is optional). Restore uses the bulk `save_account_trades`, not per-trade saves.
 - The backup JSON format is shared with the PWA (`app.js` around lines 1216 and 1322). Keep the two in step.
 
 ## How to change it safely

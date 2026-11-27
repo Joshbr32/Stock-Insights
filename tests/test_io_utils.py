@@ -174,10 +174,34 @@ class TestBackup:
 
     def test_write_read_roundtrip_validates(self, tmp_path, fake_store_cls):
         p = tmp_path / "b.json"
-        io.write_backup(fake_store_cls(trades=_trades()), str(p))
+        trades = _trades()
+        io.write_backup(fake_store_cls(trades=trades), str(p))
         snap = io.read_backup(p)
         assert io.validate_backup(snap) == []
-        assert snap["trades"][0] == trade_to_dict(_trades()[0])
+        # _trades() builds fresh Trade objects (fresh uids) on every call, so
+        # compare against the list the store was given.
+        assert snap["trades"][0] == trade_to_dict(trades[0])
+        assert [t["uid"] for t in snap["trades"]] == [t.uid for t in trades]
+
+    def test_restore_keeps_uids_and_tags(self, tmp_path, fake_store_cls):
+        trades = _trades()
+        p = tmp_path / "b.json"
+        io.write_backup(fake_store_cls(trades=trades, accounts=("Main", "Alt")), p)
+        target = fake_store_cls(accounts=("Main", "Alt"))
+        io.apply_backup(target, io.read_backup(p))
+        restored = [t for ts in target.saved_trades.values() for t in ts]
+        assert sorted(t.uid for t in restored) == sorted(t.uid for t in trades)
+        assert {t.uid: t.tag for t in restored}[trades[0].uid] == "swing"
+
+    def test_restore_old_backup_without_uids(self, fake_store_cls):
+        snap = _good()
+        for row in snap["trades"]:
+            row.pop("uid", None)
+        target = fake_store_cls()
+        io.apply_backup(target, snap)
+        restored = [t for ts in target.saved_trades.values() for t in ts]
+        assert restored and all(len(t.uid) == 32 for t in restored)
+        assert len({t.uid for t in restored}) == len(restored)
 
     def test_read_rejects_non_object(self, tmp_path):
         p = tmp_path / "b.json"

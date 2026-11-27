@@ -57,11 +57,16 @@ Keep these docs current: a change to a file's interface or invariants updates it
 - [styles.css](pwa/styles.md): all styling (Harbor tokens).
 - [sw.js](pwa/sw.md): service worker (offline shell; API never cached).
 - [make_icons.py](pwa/make_icons.md): icon generator.
-- [server_quotes_patch.py](pwa/server_quotes_patch.md): obsolete; kept for reference only.
 
 ## Server (`server/`)
 - [server.py](server/server.md): FastAPI + SQL Server sync API, quotes proxy, static PWA host.
 - [requirements and .env.example](server/requirements.md).
+
+## Server PC: controller and manager
+- [si_controller/](si_controller/__init__.md): keeps the sync server running (child process, health checks, back-off restarts, redacted logs); loopback API on 127.0.0.1:8746. [supervisor](si_controller/supervisor.md), [controller](si_controller/controller.md), [api](si_controller/api.md), [client](si_controller/client.md), [cli](si_controller/cli.md), [config](si_controller/config.md), [logs](si_controller/logs.md), [redaction](si_controller/redaction.md), [win](si_controller/win.md), [words](si_controller/words.md).
+- [si_manager/](si_manager/__init__.md): the Stock Insights Server Manager window (dashboard, server output, events, tasks); talks only to the controller API. [window](si_manager/window.md), [pages](si_manager/pages.md), [tasks](si_manager/tasks.md), [widgets](si_manager/widgets.md), [theme](si_manager/theme.md).
+- [server/install_autostart.ps1](server/install_autostart.md) and `uninstall_autostart.ps1`: start SQL Server and the controller at boot.
+- Runbook: [../ops/server-pc.md](../ops/server-pc.md). API changes in 1.1: [../api/server-1.1-changes.md](../api/server-1.1-changes.md).
 
 ## Tooling
 - [tests/](tests/README.md): pure-Python regression suite.

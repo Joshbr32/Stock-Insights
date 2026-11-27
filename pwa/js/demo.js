@@ -4,6 +4,13 @@
 // renders without a server or network. Loaded only by app.js when the
 // URL has ?demo, so it costs nothing in normal use; it is not in the
 // service worker's precache list on purpose. Nothing here is persisted.
+//
+// ?demo         a server 1.1 (per-trade PUT/DELETE /trades/{account}/{uid})
+// ?demo=legacy  a pre-1.1 server: the per-trade routes answer 404, so the
+//               app falls back to whole-account saves
+// ?demo=offline quotes fail;  ?demo=login  starts signed out
+
+import {newTradeUid} from "./portfolio.js";
 
 const SYMBOLS = {AAPL: 228.4, MSFT: 431.2, NVDA: 142.7, AMD: 151.3, TSLA: 248.9, SHOP: 101.5, COST: 902.1, PLTR: 61.8};
 
@@ -29,7 +36,7 @@ function fixtureTrades() {
         const win = rnd() < 0.62;
         const sell = +(buy * (win ? 1.02 + rnd() * 0.1 : 0.93 + rnd() * 0.05)).toFixed(2);
         out.push({
-            id: id++, account: accounts[i % 3], instrument: sym,
+            id: id++, uid: newTradeUid(), account: accounts[i % 3], instrument: sym,
             share_count: 5 + Math.floor(rnd() * 40), buy_price: buy, sell_price: sell,
             open_date: isoDaysAgo(open), close_date: isoDaysAgo(Math.max(1, open - 5 - Math.floor(rnd() * 20))),
             notes: i === 3 ? "Earnings run-up <b>not markup</b>" : "", tag: i % 4 === 0 ? "swing" : i % 5 === 0 ? "earnings" : "",
@@ -37,13 +44,13 @@ function fixtureTrades() {
         });
     }
     // Open positions, one short, one pending.
-    out.push({id: id++, account: "Main", instrument: "NVDA", share_count: 30, buy_price: 128.4, sell_price: null,
+    out.push({id: id++, uid: newTradeUid(), account: "Main", instrument: "NVDA", share_count: 30, buy_price: 128.4, sell_price: null,
         open_date: isoDaysAgo(20), close_date: null, notes: "Core position", tag: "", is_pending: false, is_short: false});
-    out.push({id: id++, account: "Swing", instrument: "TSLA", share_count: 10, buy_price: 262.0, sell_price: null,
+    out.push({id: id++, uid: newTradeUid(), account: "Swing", instrument: "TSLA", share_count: 10, buy_price: 262.0, sell_price: null,
         open_date: isoDaysAgo(6), close_date: null, notes: "", tag: "swing", is_pending: false, is_short: true});
-    out.push({id: id++, account: "Roth", instrument: "COST", share_count: 4, buy_price: 880.0, sell_price: null,
+    out.push({id: id++, uid: newTradeUid(), account: "Roth", instrument: "COST", share_count: 4, buy_price: 880.0, sell_price: null,
         open_date: isoDaysAgo(3), close_date: null, notes: "", tag: "", is_pending: false, is_short: false});
-    out.push({id: id++, account: "Main", instrument: "AMD", share_count: 25, buy_price: 140.0, sell_price: null,
+    out.push({id: id++, uid: newTradeUid(), account: "Main", instrument: "AMD", share_count: 25, buy_price: 140.0, sell_price: null,
         open_date: isoDaysAgo(1), close_date: null, notes: "Limit order", tag: "", is_pending: true, is_short: false});
     return out;
 }
@@ -64,6 +71,9 @@ export function installDemo(Api) {
     let nextId = 1000;
     const later = v => new Promise(r => setTimeout(() => r(structuredClone(v)), 120));
     const params = new URLSearchParams(location.search);
+    const legacy = params.get("demo") === "legacy";
+    // What api.js throws for a route an old server doesn't have.
+    const notFound = () => Object.assign(new Error("Not Found"), {code: 404});
 
     Object.assign(Api, {
         getToken: () => (db.authed ? "demo" : null),
@@ -82,11 +92,29 @@ export function installDemo(Api) {
         getAccounts: () => later(db.accounts),
         saveAccounts: async names => void (db.accounts = names.map((n, i) =>
             db.accounts.find(a => a.name === n) || {name: n, goal_target: 0, goal_presets: [], position: i})),
-        getTrades: () => later(db.trades),
+        // A pre-1.1 server has no uid column.
+        getTrades: () => later(legacy ? db.trades.map(({uid, ...t}) => t) : db.trades),
         async replaceAccountTrades(name, trades) {
             db.trades = db.trades.filter(t => t.account !== name)
-                .concat(trades.map(t => ({...t, account: name, id: nextId++})));
+                .concat(trades.map(t => ({...t, account: name, id: nextId++,
+                    uid: legacy ? newTradeUid() : (t.uid || newTradeUid())})));
             return later(null);
+        },
+        async putTrade(name, trade) {
+            if (legacy) throw notFound();
+            const i = db.trades.findIndex(t => t.uid === trade.uid);
+            const row = {...trade, account: name, id: i >= 0 ? db.trades[i].id : nextId++};
+            if (i >= 0) db.trades[i] = row;
+            else db.trades.push(row);
+            if (!db.accounts.some(a => a.name === name)) {
+                db.accounts.push({name, goal_target: 0, goal_presets: [], position: db.accounts.length});
+            }
+            return later({ok: true, uid: trade.uid});
+        },
+        async deleteTradeByUid(name, uid) {
+            if (legacy) throw notFound();
+            db.trades = db.trades.filter(t => !(t.uid === uid && t.account === name));
+            return later({ok: true});
         },
         getGoalGroup: () => later(db.goalGroup),
         setGoalGroup: async (names, goal) => void (db.goalGroup = {account_names: names, shared_goal: goal}),

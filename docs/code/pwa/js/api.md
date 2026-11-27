@@ -1,6 +1,6 @@
 # pwa/js/api.js
 **Purpose:** ES module exporting `Api`, the PWA's only HTTP client for the FastAPI server (`server/server.py`). Holds the bearer token and cached user info in localStorage.
-**Used by:** `pwa/js/app.js` (`import {Api} from "./api.js"`).  **Depends on:** browser `fetch`, `AbortController`, `localStorage`, `navigator.onLine`. Route contract: see `docs/code/server/server.md`.
+**Used by:** `pwa/js/app.js` (`import {Api} from "./api.js"`).  **Depends on:** browser `fetch`, `AbortController`, `localStorage`, `navigator.onLine`. Route contract: `docs/api/server-1.1-changes.md` and `docs/code/server/server.md`.
 
 ## Key types and functions
 | Name | Kind | Contract |
@@ -11,7 +11,10 @@
 | `Api.login(u, p)` | async | POST /auth/login, stores token + `{user_id, username, is_admin}`. Returns server JSON. 429 = throttled (message from server). |
 | `Api.logout()` | async | Best-effort POST /auth/logout (5 s timeout), always clears auth. |
 | `getAccounts, saveAccounts(accounts)` | methods | GET / PUT /accounts. |
-| `getTrades, replaceAccountTrades(name, trades)` | methods | GET /trades; PUT /trades/{encoded name} with `{account_name, trades}`. |
+| `getTrades, replaceAccountTrades(name, trades)` | methods | GET /trades (rows carry `uid`, `tag` from server 1.1); bulk PUT /trades/{encoded name} with `{account_name, trades}` — restore and the pre-1.1 fallback. |
+| `putTrade(name, trade)` | method | PUT /trades/{name}/{trade.uid}, body = TradeIn incl. `uid`. Upsert or move to `name`; idempotent. Resolves `{ok, uid}`. |
+| `deleteTradeByUid(name, uid)` | method | DELETE /trades/{name}/{uid}; idempotent. |
+| `isLegacyRouteError(err)` | method | true for code 404/405 = server has no per-trade routes (pre-1.1); caller falls back to `replaceAccountTrades`. |
 | `getGoalGroup, setGoalGroup(names, goal)` | methods | GET / PUT /goal-group. |
 | `getWatchlist, setWatchlist(symbols)` | methods | GET / PUT /watchlist. |
 | `getQuotes(symbols)` | async | De-dupes + upper-cases, GET /quotes; `{}` for an empty list. |
@@ -37,4 +40,4 @@ localStorage: `si.token` (bearer token, 30-day server expiry), `si.user` (JSON `
 - 52-80 server URL + auth state
 - 82-146 `_request`
 - 148-172 login / logout
-- 174-221 resource calls
+- 176-250 resource calls (per-trade routes at 197-224)

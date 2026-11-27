@@ -144,7 +144,7 @@ class TestSerialization:
         d = trade_to_dict(open_())
         assert set(d) == {"instrument", "share_count", "buy_price", "sell_price",
                           "open_date", "close_date", "notes", "account",
-                          "is_pending", "is_short", "tag"}
+                          "is_pending", "is_short", "tag", "uid"}
         assert d["sell_price"] is None and d["close_date"] == ""
 
     def test_old_backup_without_tag_defaults_empty(self):
@@ -467,3 +467,51 @@ class TestTags:
 
     def test_tag_null_in_dict(self):
         assert trade_from_dict({"instrument": "A", "tag": None}).tag == ""
+
+
+# ---------- uid (trade identity) ----------
+
+class TestUid:
+    def test_generated_on_construction(self):
+        a, b = Trade("A", 1, 1.0), Trade("A", 1, 1.0)
+        assert pf._UID_RE.fullmatch(a.uid) and pf._UID_RE.fullmatch(b.uid)
+        assert a.uid != b.uid
+
+    def test_not_part_of_equality(self):
+        assert Trade("A", 1, 1.0) == Trade("A", 1, 1.0)
+        assert Trade("A", 1, 1.0) != Trade("A", 2, 1.0)
+
+    def test_given_uid_kept_and_normalised(self):
+        uid = "0123456789abcdef0123456789abcdef"
+        assert Trade("A", 1, 1.0, uid=uid).uid == uid
+        dashed = "01234567-89AB-CDEF-0123-456789ABCDEF"
+        assert Trade("A", 1, 1.0, uid=dashed).uid == uid
+
+    @pytest.mark.parametrize("bad", ["", None, "xyz", "123", "g" * 32])
+    def test_bad_uid_replaced(self, bad):
+        assert pf._UID_RE.fullmatch(Trade("A", 1, 1.0, uid=bad).uid)
+
+    def test_roundtrips_through_dict_and_json(self):
+        t = open_(tag="swing")
+        assert trade_to_dict(t)["uid"] == t.uid
+        assert trade_from_dict(trade_to_dict(t)).uid == t.uid
+        assert trades_from_json(trades_to_json([t]))[0].uid == t.uid
+
+    def test_missing_uid_generated_on_load(self):
+        rows = [{"instrument": "A", "share_count": 1, "buy_price": 1},
+                {"instrument": "B", "share_count": 1, "buy_price": 1, "uid": None}]
+        out = trades_from_json(rows)
+        assert all(pf._UID_RE.fullmatch(t.uid) for t in out)
+        assert out[0].uid != out[1].uid
+
+    def test_duplicate_uid_in_file_made_unique(self):
+        uid = "a" * 32
+        rows = [{"instrument": "A", "share_count": 1, "buy_price": 1, "uid": uid},
+                {"instrument": "B", "share_count": 1, "buy_price": 1, "uid": uid}]
+        out = trades_from_json(rows)
+        assert out[0].uid == uid and out[1].uid != uid
+
+    def test_replace_keeps_uid(self):
+        from dataclasses import replace
+        t = open_()
+        assert replace(t, account="Other").uid == t.uid

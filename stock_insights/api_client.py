@@ -11,6 +11,12 @@ FallbackDataStore   Remote first; when the server is unreachable it serves
                     reads from the local cache and parks writes in
                     sync_queue until ReconnectWorker replays them.
 
+Trades are saved one at a time: save_trade / delete_trade address a trade by
+its `uid` (PUT / DELETE /trades/{account}/{uid}, server 1.1+).  The bulk
+save_account_trades stays for restore-from-backup and the admin viewer, and is
+what RemoteDataStore falls back to when the server predates the per-trade
+routes.
+
 Threading: store methods are called from the GUI thread and from short-lived
 QThreads (StoreCallWorker, ReconnectWorker), so every class here guards its
 shared state with a lock and never touches widgets.  FallbackDataStore
@@ -19,10 +25,12 @@ delivers its status callbacks on the GUI thread.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -39,7 +47,7 @@ except ImportError:
 from PySide6.QtCore import QCoreApplication, QObject, QSettings, QThread, Signal, Slot
 
 from .logging_utils import get_logger
-from .portfolio import Trade, trade_to_dict, trades_from_json, trades_to_json
+from .portfolio import Trade, new_trade_uid, trade_to_dict, trades_from_json, trades_to_json
 
 logger = get_logger("api_client")
 
@@ -80,6 +88,39 @@ class DataStore(ABC):
     @abstractmethod
     def save_account_trades(self, account_name: str, trades: List[Trade]) -> None:
         """Replace all trades for a single account (other accounts unchanged)."""
+
+    def save_trade(self, account_name: str, trade: Trade) -> str:
+        """Insert or update one trade, identified by `trade.uid`, in
+        `account_name`.  A trade that currently sits in another account is
+        moved.  Saving the same trade twice is harmless.
+
+        Returns the uid the trade is stored under.  That is `trade.uid`
+        except when the server had to refuse it (see RemoteDataStore).
+
+        This default works on any store through the bulk call: read the
+        account, apply the change, write the account back.
+        """
+        stored = replace(trade, account=account_name)
+        all_trades = self.get_all_trades()
+        # Source accounts first.  Written the other way round, a store that
+        # keeps one flat list would hold the trade under both accounts until
+        # the second write.
+        for source in _accounts_holding(all_trades, stored.uid):
+            if source != account_name:
+                self.save_account_trades(
+                    source, [t for t in _in_account(all_trades, source) if t.uid != stored.uid])
+        self.save_account_trades(
+            account_name, _upsert(_in_account(all_trades, account_name), stored))
+        return stored.uid
+
+    def delete_trade(self, account_name: str, uid: str) -> None:
+        """Delete the trade with this uid.  Deleting a trade that does not
+        exist is not an error.  `account_name` is the account the caller
+        believes holds it; the uid alone decides what is removed."""
+        all_trades = self.get_all_trades()
+        for source in _accounts_holding(all_trades, uid):
+            self.save_account_trades(
+                source, [t for t in _in_account(all_trades, source) if t.uid != uid])
 
     # ---- Accounts ----
     @abstractmethod
@@ -167,7 +208,8 @@ def _new_session() -> "requests.Session":
 
     The retry covers the common "pooled connection was closed by the proxy
     while idle" failure and brief 502/503/504 blips from the tunnel.  Every
-    data route is a GET or a full-replace PUT, so resending is idempotent.
+    data route is a GET, a full-replace PUT, or an upsert / delete by uid, so
+    resending is idempotent.
     Read timeouts are not retried: the server may still be processing, and
     a second attempt would only double the wait on the calling thread.
     """
@@ -175,7 +217,7 @@ def _new_session() -> "requests.Session":
         total=1, connect=1, read=0, status=1,
         backoff_factor=0.3,
         status_forcelist=(502, 503, 504),
-        allowed_methods=frozenset({"GET", "PUT"}),
+        allowed_methods=frozenset({"GET", "PUT", "DELETE"}),
         raise_on_status=False,
     )
     adapter = HTTPAdapter(pool_connections=2, pool_maxsize=4, max_retries=retry)
@@ -204,6 +246,58 @@ def _account_path(account_name: str) -> str:
     return quote(str(account_name), safe="")
 
 
+def _trade_path(account_name: str, uid: str) -> str:
+    return f"/trades/{_account_path(account_name)}/{quote(str(uid), safe='')}"
+
+
+def _account_of(trade: Trade) -> str:
+    return (trade.account or "").strip()
+
+
+def _in_account(trades: List[Trade], account_name: str) -> List[Trade]:
+    return [t for t in trades if _account_of(t) == account_name]
+
+
+def _accounts_holding(trades: List[Trade], uid: str) -> List[str]:
+    """Accounts with a trade of this uid (normally none or one)."""
+    return list(dict.fromkeys(_account_of(t) for t in trades if t.uid == uid))
+
+
+def _upsert(trades: List[Trade], trade: Trade) -> List[Trade]:
+    """Copy of `trades` with `trade` replacing the entry of the same uid, in
+    the same position, or appended when it is new.  That matches the server,
+    which lists trades in insertion order and updates rows in place."""
+    out = list(trades)
+    for i, existing in enumerate(out):
+        if existing.uid == trade.uid:
+            out[i] = trade
+            return out
+    out.append(trade)
+    return out
+
+
+def _trade_fields(t: Trade) -> dict:
+    """A trade's content as the server's TradeIn model, without its uid."""
+    return {
+        "instrument": t.normalized_instrument(),
+        "share_count": int(t.share_count),
+        "buy_price": float(t.buy_price),
+        "sell_price": None if t.sell_price is None else float(t.sell_price),
+        "open_date": t.open_date.isoformat() if t.open_date else None,
+        "close_date": t.close_date.isoformat() if t.close_date else None,
+        "notes": t.notes or "",
+        "is_pending": bool(t.is_pending),
+        "is_short": bool(t.is_short),
+        "tag": (t.tag or "").strip(),
+    }
+
+
+def _trade_payload(t: Trade) -> dict:
+    """One trade as sent to the server.  Servers older than 1.1 ignore
+    `tag` and `uid`."""
+    return {**_trade_fields(t), "uid": t.uid}
+
+
 class RemoteDataStore(DataStore):
     """DataStore backed by the FastAPI server.
 
@@ -216,6 +310,8 @@ class RemoteDataStore(DataStore):
     session : optional requests.Session to reuse (keeps the login connection)
 
     Reads are cached in memory until the matching write invalidates them.
+    A per-trade save or delete updates the cached trade list instead of
+    dropping it, so the refresh after a save costs no request.
     Safe to call from several threads.
     """
 
@@ -245,6 +341,16 @@ class RemoteDataStore(DataStore):
         self._account_gen = 0
         self._trade_gen = 0
         self._goal_group_gen = 0
+
+        # Can the server take PUT/DELETE /trades/{account}/{uid}?  None
+        # until the first per-trade call answers; False (for the rest of the
+        # session) once a server older than 1.1 answered 404/405, or a 1.1
+        # server whose database is not migrated yet answered 503.
+        self._per_trade_routes: Optional[bool] = None
+        # Old servers only (see _trades_from_rows): content-derived uid of a
+        # row -> the uid this session saved that trade under, so the trade
+        # keeps the uid its caller knows when the list is fetched again.
+        self._legacy_uids: Dict[str, str] = {}
 
     # ---- internal ----
 
@@ -279,6 +385,68 @@ class RemoteDataStore(DataStore):
 
     def _put(self, path: str, data: dict) -> Any:
         return self._request("PUT", path, json_body=data)
+
+    def _per_trade_call(self, method: str, path: str, json_body: Any = None) -> bool:
+        """Call a per-trade route.  True when the server applied it, False
+        when the server has no such route and the caller must use the bulk
+        route instead.  Raises like _request otherwise; the trade cache is
+        dropped then, because a request that timed out may still have been
+        applied."""
+        if self._per_trade_routes is False:
+            return False
+        try:
+            self._request(method, path, json_body=json_body)
+        except APIError as exc:
+            reason = self._per_trade_unavailable(exc)
+            if reason:
+                self._per_trade_routes = False
+                logger.warning(
+                    "Per-trade saves are not available (%s answered %s: %s); saving "
+                    "whole accounts for the rest of this session.",
+                    method, exc.status_code, reason)
+                return False
+            self._invalidate_trades()
+            raise
+        except BaseException:
+            self._invalidate_trades()
+            raise
+        self._per_trade_routes = True
+        return True
+
+    def _per_trade_unavailable(self, exc: APIError) -> str:
+        """Why a failed per-trade call means "use the whole-account route",
+        or "" when the failure is an ordinary error."""
+        # 404/405 from a server that never accepted a per-trade call: the
+        # route does not exist.  Once the route is known to work, the same
+        # status is a real error.
+        if exc.status_code in (404, 405) and self._per_trade_routes is None:
+            return "the server is older than 1.1, update it"
+        # A 1.1 server answers 503 on these routes until its database has
+        # the new columns, while the whole-account route keeps working.
+        # Any other 503 is an outage and must stay one (offline + queue).
+        if exc.status_code == 503 and self.ping_health().get("schema") == "needs_migration":
+            return "the server's database needs the 1.1 migration"
+        return ""
+
+    def _edit_trade_cache(self, edit: Callable[[List[Trade]], List[Trade]]) -> None:
+        """Apply a confirmed write to the cached trade list.
+
+        The list is replaced, never changed in place: readers hold the old
+        one.  The generation is bumped either way, so a GET that started
+        before the write cannot store its older answer afterwards.
+        """
+        with self._lock:
+            self._trade_gen += 1
+            if self._trade_cache is not None:
+                self._trade_cache = edit(self._trade_cache)
+
+    def _account_may_be_new(self, account_name: str) -> None:
+        """Saving a trade creates its account on the server when missing;
+        drop the account cache if this name is not in it."""
+        with self._lock:
+            cached = self._account_cache
+        if cached is not None and all(a.get("name") != account_name for a in cached):
+            self._invalidate_accounts()
 
     def _invalidate_trades(self) -> None:
         with self._lock:
@@ -338,7 +506,10 @@ class RemoteDataStore(DataStore):
             cached = self._trade_cache
             gen = self._trade_gen
         if cached is None:
-            cached = [_trade_from_row(row) for row in self._get("/trades")]
+            rows = self._get("/trades")
+            with self._lock:
+                known = dict(self._legacy_uids)
+            cached = _trades_from_rows(rows, self.username, known)
             with self._lock:
                 if gen == self._trade_gen:
                     self._trade_cache = cached
@@ -347,26 +518,60 @@ class RemoteDataStore(DataStore):
     def save_account_trades(self, account_name: str, trades: List[Trade]) -> None:
         payload = {
             "account_name": account_name,
-            "trades": [
-                {
-                    "instrument": t.normalized_instrument(),
-                    "share_count": int(t.share_count),
-                    "buy_price": float(t.buy_price),
-                    "sell_price": None if t.sell_price is None else float(t.sell_price),
-                    "open_date": t.open_date.isoformat() if t.open_date else None,
-                    "close_date": t.close_date.isoformat() if t.close_date else None,
-                    "notes": t.notes or "",
-                    "is_pending": bool(t.is_pending),
-                    "is_short": bool(t.is_short),
-                }
-                for t in trades
-            ]
+            "trades": [_trade_payload(t) for t in trades],
         }
         try:
             self._put(f"/trades/{_account_path(account_name)}", payload)
+            if self._per_trade_routes is False:
+                self._remember_legacy_uids(account_name, trades)
         finally:
             # Also on failure: a timed-out PUT may still have been applied.
             self._invalidate_trades()
+
+    def _remember_legacy_uids(self, account_name: str, trades: List[Trade]) -> None:
+        """After a whole-account save to a server that does not store uids,
+        note which content-derived uid each saved trade will come back
+        with."""
+        saved = [replace(t, account=account_name) for t in trades]
+        uids = {t.uid for t in saved}
+        with self._lock:
+            # Forget what these trades looked like before this save.
+            self._legacy_uids = {k: v for k, v in self._legacy_uids.items() if v not in uids}
+            for derived, trade in zip(_content_uids(saved, self.username), saved):
+                if derived != trade.uid:
+                    self._legacy_uids[derived] = trade.uid
+
+    def save_trade(self, account_name: str, trade: Trade) -> str:
+        # The copy keeps the cache independent of the caller's object.
+        stored = replace(trade, account=account_name)
+        try:
+            applied = self._per_trade_call(
+                "PUT", _trade_path(account_name, stored.uid), _trade_payload(stored))
+        except APIError as exc:
+            if exc.status_code != 409:
+                raise
+            # The uid belongs to another user's trade (e.g. a backup restored
+            # into a second login).  Save it under a new uid, once; a second
+            # 409 is raised and, being a 4xx, is never queued or retried.
+            stored = replace(stored, uid=new_trade_uid())
+            logger.warning("Trade uid %s is taken on the server; saved as %s", trade.uid, stored.uid)
+            applied = self._per_trade_call(
+                "PUT", _trade_path(account_name, stored.uid), _trade_payload(stored))
+        if applied:
+            # (The filter only matters after a 409: drop the refused uid.)
+            self._edit_trade_cache(lambda trades: _upsert(
+                [t for t in trades if t.uid != trade.uid or t.uid == stored.uid], stored))
+            self._account_may_be_new(account_name)
+        else:
+            # No per-trade route: rewrite the whole account instead.
+            DataStore.save_trade(self, account_name, stored)
+        return stored.uid
+
+    def delete_trade(self, account_name: str, uid: str) -> None:
+        if self._per_trade_call("DELETE", _trade_path(account_name, uid)):
+            self._edit_trade_cache(lambda trades: [t for t in trades if t.uid != uid])
+        else:
+            DataStore.delete_trade(self, account_name, uid)
 
     def get_account_names(self) -> List[str]:
         return [a["name"] for a in self._get_account_data()]
@@ -466,13 +671,16 @@ class RemoteDataStore(DataStore):
 
     def store_for_user(self, user_id: int, username: str) -> "RemoteDataStore":
         """Return a read-only-capable DataStore scoped to another user (admin use)."""
-        return RemoteDataStore(
+        store = RemoteDataStore(
             base_url=self._base,
             token=self._token,
             user_info_dict={"user_id": user_id, "username": username, "is_admin": False},
             for_user_id=user_id,
             session=self._session,
         )
+        # Same server, so what is known about its routes carries over.
+        store._per_trade_routes = self._per_trade_routes
+        return store
 
     def list_users(self) -> List[dict]:
         """Admin: list all users."""
@@ -572,15 +780,38 @@ class LocalDataStore(DataStore):
     def get_all_trades(self) -> List[Trade]:
         with self._lock:
             raw = self._settings.value(self._scoped_key(self.TRADES_KEY), [])
-        return trades_from_json(raw)
+            trades = trades_from_json(raw)
+            if trades and not _uids_stored(raw, trades):
+                # Data written before trades had uids: keep the ones just
+                # generated, otherwise every read would hand out different
+                # ids and a per-trade save could not find its trade.
+                self._write_trades(trades)
+        return trades
+
+    def _write_trades(self, trades: List[Trade]) -> None:
+        """Caller holds the lock."""
+        self._settings.setValue(self._scoped_key(self.TRADES_KEY), trades_to_json(trades))
+        self._settings.sync()
 
     def save_account_trades(self, account_name: str, trades: List[Trade]) -> None:
         # Read all trades, replace the slice for this account, write back
         with self._lock:
-            kept = [t for t in self.get_all_trades() if (t.account or "").strip() != account_name]
-            combined = kept + list(trades)
-            self._settings.setValue(self._scoped_key(self.TRADES_KEY), trades_to_json(combined))
-            self._settings.sync()
+            kept = [t for t in self.get_all_trades() if _account_of(t) != account_name]
+            self._write_trades(kept + list(trades))
+
+    def save_trade(self, account_name: str, trade: Trade) -> str:
+        # Same result as the DataStore default, in one read and one write
+        # (a move is then atomic instead of two account rewrites).
+        with self._lock:
+            self._write_trades(_upsert(self.get_all_trades(), replace(trade, account=account_name)))
+        return trade.uid
+
+    def delete_trade(self, account_name: str, uid: str) -> None:
+        with self._lock:
+            trades = self.get_all_trades()
+            kept = [t for t in trades if t.uid != uid]
+            if len(kept) != len(trades):
+                self._write_trades(kept)
 
     def get_account_names(self) -> List[str]:
         with self._lock:
@@ -816,6 +1047,56 @@ def _parse_date_str(value):
     return None
 
 
+def _content_uids(trades: List[Trade], username: str) -> List[str]:
+    """A uid for each trade derived from its content: owner, account and
+    fields, plus a counter that tells identical trades apart.  The tag is
+    left out because the servers this is for (older than 1.1) do not store
+    it."""
+    out: List[str] = []
+    seen: Dict[str, int] = {}
+    for trade in trades:
+        fields = {**_trade_fields(trade), "tag": ""}
+        content = json.dumps([username, _account_of(trade), fields], sort_keys=True)
+        n = seen[content] = seen.get(content, 0) + 1
+        out.append(hashlib.sha256(f"{content}#{n}".encode("utf-8")).hexdigest()[:32])
+    return out
+
+
+def _trades_from_rows(rows: List[dict], username: str,
+                      known_uids: Optional[Dict[str, str]] = None) -> List[Trade]:
+    """Build the trade list from a GET /trades answer.
+
+    Servers older than 1.1 send no uid.  Their rows get one derived from the
+    row's content, not a random one: the list is fetched again after every
+    whole-account save, and a trade must keep its uid across those fetches
+    for a later save or delete of it to find it.  `known_uids` maps such a
+    derived uid to the uid this session already uses for the trade.
+    """
+    trades = [_trade_from_row(row) for row in rows]
+    anonymous = [t for t, row in zip(trades, rows) if not row.get("uid")]
+    if anonymous:
+        taken = {t.uid for t, row in zip(trades, rows) if row.get("uid")}
+        for trade, derived in zip(anonymous, _content_uids(anonymous, username)):
+            uid = (known_uids or {}).get(derived, derived)
+            trade.uid = derived if uid in taken else uid
+            taken.add(trade.uid)
+    return trades
+
+
+def _uids_stored(raw, trades: List[Trade]) -> bool:
+    """True when every uid in `trades` came from the stored JSON `raw`
+    (False when trades_from_json had to generate or replace one)."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return False
+    if not isinstance(raw, list):
+        return False
+    stored = [item.get("uid") for item in raw if isinstance(item, dict)]
+    return len(stored) == len(set(stored)) and {t.uid for t in trades} <= set(stored)
+
+
 def _trade_from_row(r: dict) -> Trade:
     """Build a Trade from one GET /trades row."""
     return Trade(
@@ -829,6 +1110,8 @@ def _trade_from_row(r: dict) -> Trade:
         account=str(r.get("account") or ""),
         is_pending=bool(r.get("is_pending", False)),
         is_short=bool(r.get("is_short", False)),
+        tag=str(r.get("tag") or "").strip(),
+        uid=str(r.get("uid") or ""),
     )
 
 
@@ -1113,6 +1396,48 @@ class FallbackDataStore(DataStore):
             lambda: self._local.save_account_trades(account_name, trades),
             lambda: self._remote.save_account_trades(account_name, trades),
         )
+
+    def save_trade(self, account_name: str, trade: Trade) -> str:
+        stored = replace(trade, account=account_name)
+        saved_as = [stored.uid]
+
+        def remote() -> None:
+            saved_as[0] = self._remote.save_trade(account_name, stored) or stored.uid
+
+        self._write(
+            "save_trade",
+            lambda: {"account_name": account_name, "trade": trade_to_dict(stored)},
+            lambda: self._local.save_trade(account_name, stored),
+            lambda: self._remote_trade_write(remote),
+        )
+        if saved_as[0] != stored.uid:
+            # The server stored it under a new uid (the old one was taken):
+            # give the local copy the same identity.
+            with self._state_lock:
+                self._write_gen += 1
+                self._local.delete_trade(account_name, stored.uid)
+                self._local.save_trade(account_name, replace(stored, uid=saved_as[0]))
+        return saved_as[0]
+
+    def delete_trade(self, account_name: str, uid: str) -> None:
+        self._write(
+            "delete_trade",
+            lambda: {"account_name": account_name, "uid": uid},
+            lambda: self._local.delete_trade(account_name, uid),
+            lambda: self._remote_trade_write(lambda: self._remote.delete_trade(account_name, uid)),
+        )
+
+    def _remote_trade_write(self, remote_fn: Callable[[], None]) -> None:
+        """Run a per-trade remote write.  The remote store answers it by
+        swapping in an updated trade list; the local cache already received
+        the same change, so that new list counts as mirrored and the next
+        read does not rewrite every cached trade."""
+        before = self._remote._trade_cache
+        remote_fn()
+        after = self._remote._trade_cache
+        with self._state_lock:
+            if before is not None and after is not None and self._mirrored_src.get("trades") is before:
+                self._mirrored_src["trades"] = after
 
     # ---- accounts ----
 
