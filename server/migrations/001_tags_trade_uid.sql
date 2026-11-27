@@ -8,7 +8,7 @@
 --
 -- Run as a database owner, against the app's database:
 --   SSMS:    open this file, pick the StockInsights database, Execute (F5)
---   sqlcmd:  sqlcmd -S localhost\STOCKINSIGHTS -d StockInsights -E -b -I -i 001_tags_trade_uid.sql
+--   sqlcmd:  sqlcmd -S localhost\STOCKINSIGHTS -d StockInsights -E -C -b -I -i 001_tags_trade_uid.sql
 --            (-b stops on the first error, -I turns QUOTED_IDENTIFIER on,
 --             -E = Windows login; use -U/-P for a SQL login)
 -- No USE statement on purpose: the database is whatever you connected to.

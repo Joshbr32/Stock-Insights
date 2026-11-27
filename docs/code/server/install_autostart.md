@@ -5,7 +5,7 @@
 ## Parameters (install)
 | Name | Default | Meaning |
 |---|---|---|
-| `-Account` | `CurrentUser` | `CurrentUser` = the installing account through an S4U logon (no password stored; same Python, packages and file access as running server.py by hand). `System` = LocalSystem; refused when the server's packages live in the user's `pip --user` folder. |
+| `-Account` | `Auto` | `Auto` = `System` unless the server's packages live in the user's `pip --user` folder, then `CurrentUser`. `CurrentUser` = the installing account through an S4U logon (no password stored); refused for Azure AD accounts, where Windows never starts an S4U task. `System` = LocalSystem; refused when the packages are in the user folder. |
 | `-PythonExe` | first of `server\.venv`, `.venv`, `python` on PATH that imports the server's packages | The server's Python (also runs the controller). WindowsApps stubs are skipped. |
 | `-SqlService` | `MSSQL$STOCKINSIGHTS`, else the one `MSSQL$*STOCKINSIGHTS*`, else the only SQL service | Fails with the list when ambiguous. |
 | `-TunnelService`, `-Port`, `-ApiPort`, `-DataRoot` | `cloudflared`, 8742, 8746, `%ProgramData%\StockInsights\controller` | Ports 8740-8745 (Colonial) are refused. |

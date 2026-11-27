@@ -300,7 +300,7 @@ def test_manager_tasks_commands():
     assert sql_server_name("MSSQL$STOCKINSIGHTS") == r"localhost\STOCKINSIGHTS"
     assert sql_server_name("MSSQLSERVER") == "localhost"
     tasks = {t.key: t for t in build_tasks("MSSQL$OTHER")}
-    assert tasks["migrate"].command.startswith(r"sqlcmd -S localhost\OTHER -d StockInsights -E -b -I")
+    assert tasks["migrate"].command.startswith(r"sqlcmd -S localhost\OTHER -d StockInsights -E -C -b -I")
     assert tasks["migrate"].elevated and not tasks["logs"].elevated
     script = base64.b64decode(powershell_args(tasks["install"]).split()[-1]).decode("utf-16-le")
     assert "install_autostart.ps1" in script and "Read-Host" in script

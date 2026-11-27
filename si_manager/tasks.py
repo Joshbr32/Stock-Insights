@@ -52,7 +52,7 @@ def build_tasks(sql_service: str = "MSSQL$STOCKINSIGHTS", home: Path | None = No
              "StockInsights database with sqlcmd, signed in as you (Windows sign-in). The server "
              "applies it itself at start-up when its SQL login may; run this when the Dashboard "
              "says the schema needs it. Safe to run twice. Restart the server afterwards.",
-             f'sqlcmd -S {server} -d StockInsights -E -b -I -i "{MIGRATION}"',
+             f'sqlcmd -S {server} -d StockInsights -E -C -b -I -i "{MIGRATION}"',
              elevated=True,
              missing="" if MIGRATION.exists() else
              f"The migration file is not in this copy of the repository ({MIGRATION.name})."),

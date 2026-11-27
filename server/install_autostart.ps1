@@ -31,10 +31,14 @@
 
 .PARAMETER Account
   Who the controller (and so the server) runs as.
-    CurrentUser (default): your own Windows account, without storing a password
+    Auto (default): System when the server's packages are installed for all
+      users; otherwise CurrentUser.
+    CurrentUser: your own Windows account, without storing a password
       (S4U logon). Same Python, packages and file access as when you start
       server.py by hand today. SQL Server is reached with the SQL login in
       server\.env, so no network credentials are needed.
+      Not possible for an Azure AD (work or school) account: Windows cannot run
+      a task for it without a stored password, so the task would never start.
     System: the LocalSystem account. Refused when the server's packages were
       installed with "pip install --user" (SYSTEM cannot see those).
 
@@ -52,8 +56,8 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('CurrentUser', 'System')]
-    [string]$Account   = 'CurrentUser',
+    [ValidateSet('Auto', 'CurrentUser', 'System')]
+    [string]$Account   = 'Auto',
     [string]$PythonExe = '',
     [string]$SqlService = '',
     [string]$TunnelService = 'cloudflared',
@@ -123,13 +127,20 @@ foreach ($c in $candidates) {
 }
 if (-not $py) { throw 'No Python here can import fastapi, uvicorn and pyodbc. Install server\requirements.txt, or pass -PythonExe.' }
 Note "Python: $py ($((Invoke-Native $py @('-V')).Out))"
-if ($Account -eq 'System') {
-    $where = (Invoke-Native $py @('-c', 'import fastapi, pyodbc; print(fastapi.__file__); print(pyodbc.__file__)')).Out
-    foreach ($w in $where) {
-        if ($env:APPDATA -and $w.StartsWith($env:APPDATA, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "The server's packages are in your user folder ($w), which SYSTEM cannot see. Use -Account CurrentUser."
-        }
-    }
+$where = (Invoke-Native $py @('-c', 'import fastapi, uvicorn, pyodbc, dotenv; print(fastapi.__file__); print(uvicorn.__file__); print(pyodbc.__file__); print(dotenv.__file__)')).Out
+$userPackages = @($where | Where-Object { $env:APPDATA -and $_.StartsWith($env:APPDATA, [StringComparison]::OrdinalIgnoreCase) })
+# S4U ("run whether signed in or not, no password") needs a local or domain
+# account; for an Azure AD account Windows registers the task but never starts it.
+$azureAd = $env:USERDOMAIN -eq 'AzureAD'
+if ($Account -eq 'Auto') {
+    $Account = if ($userPackages) { 'CurrentUser' } else { 'System' }
+    Note "Account: $Account (chosen automatically)"
+}
+if ($Account -eq 'System' -and $userPackages) {
+    throw "The server's packages are in your user folder ($($userPackages[0])), which SYSTEM cannot see. Install server\requirements.txt without --user, then run this again."
+}
+if ($Account -eq 'CurrentUser' -and $azureAd) {
+    throw "Windows cannot run a start-up task as an Azure AD account without its password. Install server\requirements.txt for all users (without --user) and run this with -Account System."
 }
 
 # ------------------------------------------------------------ 2. SQL Server

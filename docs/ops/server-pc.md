@@ -43,17 +43,18 @@ The installer refuses ports 8740-8745 for Stock Insights.
 
 ## Which account runs it, and why
 
-The default is **your own Windows account, without a stored password** (Task Scheduler's
-"S4U" logon, `-Account CurrentUser`). It runs whether or not you are signed in.
+The default (`-Account Auto`) is **SYSTEM** when the server's packages are installed for
+all users, which is the case on the server PC today (installed 2026-11-26: the task runs as
+SYSTEM). It runs whether or not anyone is signed in.
 
 - The server signs in to SQL Server with the SQL login in `server\.env`
-  (`PORTFOLIO_SQL_USER` / `PORTFOLIO_SQL_PASSWORD`), so it needs no Windows network
-  credentials, which S4U does not have.
-- It reads `server\.env` and runs the Python you run the server with today, with the
-  same packages. Packages installed with `pip install --user` live in your profile and
-  only your account sees them; that is why SYSTEM is not the default.
-- `-Account System` is available; the installer refuses it when the server's packages
-  are in your user folder.
+  (`PORTFOLIO_SQL_USER` / `PORTFOLIO_SQL_PASSWORD`), so it needs no Windows credentials.
+- Packages installed with `pip install --user` live in your profile and SYSTEM cannot see
+  them; then Auto picks `-Account CurrentUser` (your account, no stored password: Task
+  Scheduler's "S4U" logon).
+- **S4U does not work for an Azure AD (work or school) account**: Windows registers the
+  task but never starts it (last result 267011, "has not run"). The installer refuses that
+  combination; install the server's packages without `--user` and use SYSTEM.
 
 Whoever can read `C:\ProgramData\StockInsights\controller\token` can start and stop the
 server. The folder is readable only by you, SYSTEM and Administrators.
@@ -81,7 +82,7 @@ server. The folder is readable only by you, SYSTEM and Administrators.
    without you starting anything.
 
 If the schema needs updating (the Dashboard's Database panel says so), use
-**Tasks > Update the database schema** (administrator window, `sqlcmd ... -E -b -I -i
+**Tasks > Update the database schema** (administrator window, `sqlcmd ... -E -C -b -I -i
 server\migrations\001_tags_trade_uid.sql`, as your Windows sign-in). Take a backup first,
 then press Restart.
 
