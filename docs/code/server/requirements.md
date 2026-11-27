@@ -17,7 +17,7 @@ Password hashing uses stdlib `hashlib.scrypt` (needs OpenSSL 1.1+, true of every
 
 ## migrations/001_tags_trade_uid.sql
 GO-separated T-SQL batches, each guarded so the file is idempotent and non-destructive: SET options; add `dbo.trades.tag`; add `dbo.trades.client_id`; backfill uids (dynamic SQL); filtered unique index `UX_trades_client_id`; widen `dbo.users.password_hash` to NVARCHAR(255) keeping nullability; `IX_trades_account_id`, `IX_sessions_user_id`, `IX_sessions_expires_at` when no index leads with that column. No `USE` statement: it runs against the connected database.
-Manual run: `sqlcmd -S localhost\STOCKINSIGHTS -d StockInsights -E -b -I -i server\migrations\001_tags_trade_uid.sql` (or open in SSMS and F5).
+Manual run: `sqlcmd -S localhost\STOCKINSIGHTS -d StockInsights -E -C -b -I -i server\migrations\001_tags_trade_uid.sql` (or open in SSMS and F5).
 
 ## How to change it safely
 Add a variable to `.env.example` whenever `server.py` reads a new `PORTFOLIO_*` env var. Never put real values in `.env.example`. Never edit a migration that may already have run; add `002_*.sql` instead (files run in name order). Keep each batch self-contained: `server.py` executes batches one by one and only splits on lines that are exactly `GO`.
